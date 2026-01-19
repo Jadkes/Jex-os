@@ -23,17 +23,34 @@ A minimal 32-bit Operating System built for learning purposes.
 
 ## How to Build and Run
 
-### Prerequisites
+### 1. Installation (For Debian/Ubuntu/Kali)
 
-You need `gcc`, `nasm` (or `as`), `ld`, and `qemu-system-i386`.
+Open your terminal and run the following command to install all necessary tools:
 
-### Building
+```bash
+sudo apt update && sudo apt install -y build-essential qemu-system-x86 git
+```
+
+### 2. Download the Project
+
+Clone the repository to your local machine:
+
+```bash
+git clone https://github.com/inasj-cyber/Jex-os.git
+cd Jex-os
+```
+
+### 3. Building the OS
+
+Compile the kernel and assembly files:
 
 ```bash
 make
 ```
 
-### Running
+### 4. Running the OS
+
+Launch the OS in the QEMU emulator:
 
 ```bash
 make run
