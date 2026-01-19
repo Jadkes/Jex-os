@@ -7,6 +7,8 @@
 #include "irq.h"
 #include "keyboard.h"
 #include "shell.h"
+#include "multiboot.h"
+#include "pmm.h"
 #include "ports.h"
 
 /* Hardware text mode color constants. */
@@ -158,7 +160,7 @@ void terminal_writestring(const char* data)
 	terminal_write(data, strlen(data));
 }
 
-void kernel_main(void) 
+void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) 
 {
 	terminal_initialize();
     init_gdt();
@@ -166,6 +168,11 @@ void kernel_main(void)
     isr_install();
     init_irq();
     init_keyboard();
+
+    /* Initialize Physical Memory Manager */
+    if (magic == 0x2BADB002) {
+        pmm_init(mboot_info);
+    }
 
     /* Enable interrupts */
     __asm__ volatile("sti");

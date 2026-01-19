@@ -1,5 +1,6 @@
 #include "shell.h"
 #include "rtc.h"
+#include "pmm.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -60,7 +61,7 @@ int buffer_index = 0;
 void print_prompt()
 {
     terminal_setcolor(0x02); // Green
-    terminal_writestring("jexos> ");
+    terminal_writestring("root@jexos:/> ");
     terminal_setcolor(0x07); // Light Grey
 }
 
@@ -84,6 +85,7 @@ void help_command()
     terminal_writestring("  logo   - Show the JexOS logo\n");
     terminal_writestring("  time   - Show current time (UTC)\n");
     terminal_writestring("  date   - Show current date\n");
+    terminal_writestring("  free   - Show memory usage\n");
     terminal_writestring("  panic  - Trigger a kernel panic\n");
 }
 
@@ -142,6 +144,29 @@ void execute_command()
         int_to_string(t.year, buf);
         terminal_writestring(buf);
         terminal_writestring("\n");
+    }
+    else if (strcmp(shell_buffer, "free") == 0)
+    {
+        uint32_t free_mem = pmm_get_free_memory();
+        uint32_t used_mem = pmm_get_used_memory();
+        uint32_t total_mem = pmm_get_total_memory();
+        char buf[32];
+
+        terminal_writestring("Memory Status:\n");
+        terminal_writestring("  Total: ");
+        int_to_string(total_mem / 1024, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" KB\n");
+
+        terminal_writestring("  Used:  ");
+        int_to_string(used_mem / 1024, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" KB\n");
+
+        terminal_writestring("  Free:  ");
+        int_to_string(free_mem / 1024, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" KB\n");
     }
     else if (strcmp(shell_buffer, "panic") == 0)
     {

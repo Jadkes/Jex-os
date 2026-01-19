@@ -27,6 +27,10 @@ _start:
 	/* Set up the stack pointer */
 	mov $stack_top, %esp
 
+    /* Push Multiboot Magic and Info Structure to stack */
+    push %ebx
+    push %eax
+
 	/* Call the kernel main function */
 	call kernel_main
 
