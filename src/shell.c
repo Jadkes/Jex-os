@@ -1,6 +1,8 @@
 #include "shell.h"
 #include "rtc.h"
 #include "pmm.h"
+#include "fat12.h"
+#include "power.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -9,7 +11,6 @@ extern void terminal_writestring(const char* data);
 extern void terminal_putchar(char c);
 extern void terminal_initialize();
 extern void terminal_setcolor(uint8_t color);
-extern int strcmp(const char* s1, const char* s2); // We need to implement this or find it
 
 /* Simple integer to string conversion */
 void int_to_string(int n, char* str) {
@@ -43,7 +44,7 @@ void int_to_string(int n, char* str) {
     }
 }
 
-/* We don't have string.h, so let's implement a simple strcmp here or in kernel.c */
+/* We don't have string.h, so let's implement a simple strcmp and strncmp */
 int strcmp(const char* s1, const char* s2)
 {
     while(*s1 && (*s1 == *s2))
@@ -52,6 +53,20 @@ int strcmp(const char* s1, const char* s2)
         s2++;
     }
     return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+int strncmp(const char* s1, const char* s2, size_t n)
+{
+    while(n--)
+    {
+        if(*s1 != *s2)
+            return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+        if(*s1 == 0)
+            break;
+        s1++;
+        s2++;
+    }
+    return 0;
 }
 
 #define SHELL_BUFFER_SIZE 256
@@ -80,18 +95,24 @@ void print_logo()
 void help_command()
 {
     terminal_writestring("Available commands:\n");
-    terminal_writestring("  help   - Show this help message\n");
-    terminal_writestring("  clear  - Clear the screen\n");
-    terminal_writestring("  logo   - Show the JexOS logo\n");
-    terminal_writestring("  time   - Show current time (UTC)\n");
-    terminal_writestring("  date   - Show current date\n");
-    terminal_writestring("  free   - Show memory usage\n");
-    terminal_writestring("  panic  - Trigger a kernel panic\n");
+    terminal_writestring("  help      - Show this help message\n");
+    terminal_writestring("  clear     - Clear the screen\n");
+    terminal_writestring("  logo      - Show the JexOS logo\n");
+    terminal_writestring("  time/date - Show current time/date\n");
+    terminal_writestring("  free      - Show memory usage\n");
+    terminal_writestring("  ls        - List files\n");
+    terminal_writestring("  touch <f> - Create file\n");
+    terminal_writestring("  echo <f> <t> - Write to file\n");
+    terminal_writestring("  cat <f>   - Read file\n");
+    terminal_writestring("  rm <f>    - Delete file\n");
+    terminal_writestring("  reboot    - Restart JexOS\n");
+    terminal_writestring("  shutdown  - Power off JexOS\n");
+    terminal_writestring("  panic     - Trigger a kernel panic\n");
 }
 
 void execute_command()
 {
-    terminal_writestring("\n"); // Move to next line after user hits Enter
+    terminal_writestring("\n"); 
 
     if (strcmp(shell_buffer, "help") == 0)
     {
@@ -100,27 +121,62 @@ void execute_command()
     else if (strcmp(shell_buffer, "clear") == 0)
     {
         terminal_initialize();
-        print_logo(); // Nice touch to show logo after clear
+        print_logo();
     }
     else if (strcmp(shell_buffer, "logo") == 0)
     {
         print_logo();
     }
+    else if (strcmp(shell_buffer, "ls") == 0)
+    {
+        fat12_ls();
+    }
+    else if (strncmp(shell_buffer, "touch ", 6) == 0)
+    {
+        fat12_touch(shell_buffer + 6);
+    }
+    else if (strncmp(shell_buffer, "cat ", 4) == 0)
+    {
+        fat12_cat(shell_buffer + 4);
+    }
+    else if (strncmp(shell_buffer, "rm ", 3) == 0)
+    {
+        fat12_rm(shell_buffer + 3);
+    }
+    else if (strncmp(shell_buffer, "echo ", 5) == 0)
+    {
+        char* filename = shell_buffer + 5;
+        char* text = NULL;
+        for (int i = 0; filename[i] != '\0'; i++) {
+            if (filename[i] == ' ') {
+                filename[i] = '\0';
+                text = filename + i + 1;
+                break;
+            }
+        }
+        if (text) fat12_echo(filename, text);
+        else terminal_writestring("Usage: echo <filename> <text>\n");
+    }
+    else if (strcmp(shell_buffer, "reboot") == 0)
+    {
+        reboot();
+    }
+    else if (strcmp(shell_buffer, "shutdown") == 0)
+    {
+        shutdown();
+    }
     else if (strcmp(shell_buffer, "time") == 0)
     {
         rtc_time_t t = read_rtc();
         char buf[10];
-        
         int_to_string(t.hours, buf);
         if (t.hours < 10) terminal_putchar('0');
         terminal_writestring(buf);
         terminal_putchar(':');
-        
         int_to_string(t.minutes, buf);
         if (t.minutes < 10) terminal_putchar('0');
         terminal_writestring(buf);
         terminal_putchar(':');
-        
         int_to_string(t.seconds, buf);
         if (t.seconds < 10) terminal_putchar('0');
         terminal_writestring(buf);
@@ -130,17 +186,14 @@ void execute_command()
     {
         rtc_time_t t = read_rtc();
         char buf[10];
-        
         int_to_string(t.day, buf);
         if (t.day < 10) terminal_putchar('0');
         terminal_writestring(buf);
         terminal_putchar('/');
-        
         int_to_string(t.month, buf);
         if (t.month < 10) terminal_putchar('0');
         terminal_writestring(buf);
         terminal_putchar('/');
-        
         int_to_string(t.year, buf);
         terminal_writestring(buf);
         terminal_writestring("\n");
@@ -151,18 +204,15 @@ void execute_command()
         uint32_t used_mem = pmm_get_used_memory();
         uint32_t total_mem = pmm_get_total_memory();
         char buf[32];
-
         terminal_writestring("Memory Status:\n");
         terminal_writestring("  Total: ");
         int_to_string(total_mem / 1024, buf);
         terminal_writestring(buf);
         terminal_writestring(" KB\n");
-
         terminal_writestring("  Used:  ");
         int_to_string(used_mem / 1024, buf);
         terminal_writestring(buf);
         terminal_writestring(" KB\n");
-
         terminal_writestring("  Free:  ");
         int_to_string(free_mem / 1024, buf);
         terminal_writestring(buf);
@@ -170,16 +220,11 @@ void execute_command()
     }
     else if (strcmp(shell_buffer, "panic") == 0)
     {
-        // Trigger a divide by zero
-        int a = 1;
-        int b = 0;
+        int a = 1, b = 0;
         int c = a / b;
         terminal_putchar(c);
     }
-    else if (shell_buffer[0] == '\0')
-    {
-        // Empty command, do nothing
-    }
+    else if (shell_buffer[0] == '\0') {}
     else
     {
         terminal_writestring("Unknown command: ");
@@ -187,10 +232,8 @@ void execute_command()
         terminal_writestring("\n");
     }
 
-    // Reset buffer
     for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
     buffer_index = 0;
-
     print_prompt();
 }
 
@@ -200,8 +243,6 @@ void shell_init()
     terminal_writestring("\nWelcome to JexOS v0.1!\n");
     terminal_writestring("Type 'help' for a list of commands.\n\n");
     print_prompt();
-    
-    // Clear buffer
     for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
     buffer_index = 0;
 }
@@ -218,7 +259,7 @@ void shell_input(char key)
         {
             buffer_index--;
             shell_buffer[buffer_index] = 0;
-            terminal_putchar('\b'); // Remove from screen
+            terminal_putchar('\b');
         }
     }
     else
@@ -227,7 +268,7 @@ void shell_input(char key)
         {
             shell_buffer[buffer_index] = key;
             buffer_index++;
-            shell_buffer[buffer_index] = 0; // Null terminate
+            shell_buffer[buffer_index] = 0;
             terminal_putchar(key);
         }
     }

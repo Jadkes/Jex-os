@@ -19,7 +19,13 @@ static inline void outb(uint16_t port, uint8_t val)
     asm volatile ( "outb %0, %1" : : "a"(val), "Nd"(port) );
 }
 
-/* Wait a very small amount of time (useful for some hardware ops) */
+/* Write a word (16-bits) to a port */
+static inline void outw(uint16_t port, uint16_t val)
+{
+    asm volatile ( "outw %0, %1" : : "a"(val), "Nd"(port) );
+}
+
+/* Wait a very small amount of time */
 static inline void io_wait(void)
 {
     outb(0x80, 0);

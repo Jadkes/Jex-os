@@ -9,7 +9,10 @@
 #include "shell.h"
 #include "multiboot.h"
 #include "pmm.h"
+#include "paging.h"
 #include "ports.h"
+#include "kheap.h"
+#include "fat12.h"
 
 /* Hardware text mode color constants. */
 enum vga_color {
@@ -173,6 +176,15 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info)
     if (magic == 0x2BADB002) {
         pmm_init(mboot_info);
     }
+    
+    /* Initialize Paging (Identity Map 4MB) */
+    init_paging();
+
+    /* Initialize Kernel Heap at 4MB */
+    init_kheap(0x400000);
+
+    /* Initialize Filesystem */
+    init_fat12();
 
     /* Enable interrupts */
     __asm__ volatile("sti");

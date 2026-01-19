@@ -1,5 +1,6 @@
 #include "isr.h"
 #include "idt.h"
+#include "paging.h"
 #include <stddef.h>
 
 /* Helper to print to terminal from here */
@@ -117,9 +118,12 @@ void isr_install()
 
 void isr_handler(registers_t regs)
 {
-    // VGA Color: White text on Red background (0x4F)
-    // 0x4 = Red Background
-    // 0xF = White Foreground
+    if (regs.int_no == 14) {
+        page_fault_handler(regs);
+        return;
+    }
+
+    // VGA Color: White text on Red background (0x4F) 
     terminal_setcolor(0x4F); 
     terminal_initialize(); // Clear screen with this color
     

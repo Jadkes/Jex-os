@@ -12,7 +12,7 @@ ASFLAGS = --32
 LDFLAGS = -m elf_i386 -T linker.ld -nostdlib
 
 # Source files
-SOURCES_C = src/kernel.c src/gdt.c src/isr.c src/idt.c src/irq.c src/keyboard.c src/shell.c src/rtc.c src/pmm.c
+SOURCES_C = src/kernel.c src/gdt.c src/isr.c src/idt.c src/irq.c src/keyboard.c src/shell.c src/rtc.c src/pmm.c src/paging.c src/kheap.c src/fat12.c src/power.c
 SOURCES_S = src/boot.s src/gdt_flush.s src/interrupts.s
 
 # Object files
