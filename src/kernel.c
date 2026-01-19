@@ -13,6 +13,7 @@
 #include "ports.h"
 #include "kheap.h"
 #include "fat12.h"
+#include "timer.h"
 
 /* Hardware text mode color constants. */
 enum vga_color {
@@ -185,6 +186,9 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info)
 
     /* Initialize Filesystem */
     init_fat12();
+
+    /* Initialize Timer (100Hz) */
+    init_timer(100);
 
     /* Enable interrupts */
     __asm__ volatile("sti");
