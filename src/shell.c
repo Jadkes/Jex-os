@@ -156,10 +156,27 @@ void execute_command()
     else if (strcmp(shell_buffer, "shutdown") == 0) {
         shutdown();
     }
-    else if (strcmp(shell_buffer, "usermode") == 0) {
-        terminal_writestring("Dropping privileges to Ring 3...\n");
-        jump_to_user_mode();
-    }
+        else if (strcmp(shell_buffer, "usermode") == 0)
+        {
+            terminal_writestring("Preparing Ring 3 transition...\n");
+            
+            /* 1. Allocate a 4KB stack for the User */
+            extern void* kmalloc(size_t size);
+            uint32_t user_stack = (uint32_t)kmalloc(4096);
+            uint32_t user_stack_top = user_stack + 4096;
+    
+            /* 2. Tell the TSS where our CURRENT kernel stack is.
+               We use a simple trick: the current ESP is a good kernel stack. */
+            uint32_t esp;
+            asm volatile("mov %%esp, %0" : "=r"(esp));
+            extern void set_kernel_stack(uint32_t stack);
+            set_kernel_stack(esp);
+    
+            terminal_writestring("Dropping privileges...\n");
+            
+            extern void jump_to_user_mode(uint32_t stack);
+            jump_to_user_mode(user_stack_top);
+        }
     else if (strcmp(shell_buffer, "time") == 0) {
         rtc_time_t t = read_rtc();
         char buf[10];

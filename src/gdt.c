@@ -4,7 +4,7 @@
 extern void gdt_flush(uint32_t);
 extern void tss_flush();
 
-gdt_entry_t gdt_entries[6]; // 5 existing + 1 for TSS
+gdt_entry_t gdt_entries[6];
 gdt_ptr_t   gdt_ptr;
 tss_entry_t tss_entry;
 
@@ -21,7 +21,6 @@ static void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t acc
     gdt_entries[num].access      = access;
 }
 
-/* Internal function to write the TSS descriptor into the GDT */
 static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
 {
     uint32_t base = (uint32_t) &tss_entry;
@@ -29,14 +28,14 @@ static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
 
     gdt_set_gate(num, base, limit, 0xE9, 0x00);
 
-    /* Clear the TSS */
     uint8_t* ptr = (uint8_t*)&tss_entry;
     for(size_t i = 0; i < sizeof(tss_entry); i++) ptr[i] = 0;
 
-    tss_entry.ss0  = ss0;  /* Kernel Data Segment */
-    tss_entry.esp0 = esp0; /* Kernel Stack Pointer */
+    tss_entry.ss0  = ss0;
+    tss_entry.esp0 = esp0;
 
-    /* Set iomap_base to the size of the TSS to disable the I/O permission bitmap */
+    tss_entry.cs   = 0x0b;
+    tss_entry.ss = tss_entry.ds = tss_entry.es = tss_entry.fs = tss_entry.gs = 0x13;
     tss_entry.iomap_base = sizeof(tss_entry);
 }
 
@@ -56,8 +55,7 @@ void init_gdt()
     gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); /* User Code */
     gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); /* User Data */
 
-    /* We'll pass the current stack pointer to the TSS. 
-       In a real OS, each process has its own kernel stack. */
+    /* Initially set esp0 to 0, it will be updated in kernel_main */
     write_tss(5, 0x10, 0x0); 
 
     gdt_flush((uint32_t)&gdt_ptr);
