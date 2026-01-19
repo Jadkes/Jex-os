@@ -1,11 +1,12 @@
 #include "gdt.h"
+#include <stddef.h>
 
-/* Lets us access our ASM function from our C code. */
 extern void gdt_flush(uint32_t);
+extern void tss_flush();
 
-/* Internal GDT variables */
-gdt_entry_t gdt_entries[5];
+gdt_entry_t gdt_entries[6]; // 5 existing + 1 for TSS
 gdt_ptr_t   gdt_ptr;
+tss_entry_t tss_entry;
 
 static void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran)
 {
@@ -20,29 +21,45 @@ static void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t acc
     gdt_entries[num].access      = access;
 }
 
+/* Internal function to write the TSS descriptor into the GDT */
+static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
+{
+    uint32_t base = (uint32_t) &tss_entry;
+    uint32_t limit = base + sizeof(tss_entry);
+
+    gdt_set_gate(num, base, limit, 0xE9, 0x00);
+
+    /* Clear the TSS */
+    uint8_t* ptr = (uint8_t*)&tss_entry;
+    for(size_t i = 0; i < sizeof(tss_entry); i++) ptr[i] = 0;
+
+    tss_entry.ss0  = ss0;  /* Kernel Data Segment */
+    tss_entry.esp0 = esp0; /* Kernel Stack Pointer */
+
+    /* Set iomap_base to the size of the TSS to disable the I/O permission bitmap */
+    tss_entry.iomap_base = sizeof(tss_entry);
+}
+
+void set_kernel_stack(uint32_t stack)
+{
+    tss_entry.esp0 = stack;
+}
+
 void init_gdt()
 {
-    gdt_ptr.limit = (sizeof(gdt_entry_t) * 5) - 1;
+    gdt_ptr.limit = (sizeof(gdt_entry_t) * 6) - 1;
     gdt_ptr.base  = (uint32_t)&gdt_entries;
 
-    /* 0: Null descriptor */
-    gdt_set_gate(0, 0, 0, 0, 0);
+    gdt_set_gate(0, 0, 0, 0, 0);                /* Null */
+    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); /* Kernel Code */
+    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); /* Kernel Data */
+    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); /* User Code */
+    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); /* User Data */
 
-    /* 1: Kernel Code Segment. Base: 0, Limit: 4GB,
-       Access Byte: 0x9A (Present, Ring 0, Code, Exec/Read)
-       Flags: 0xCF (4KB Granularity, 32-bit opcodes) */
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);
-
-    /* 2: Kernel Data Segment. Base: 0, Limit: 4GB,
-       Access Byte: 0x92 (Present, Ring 0, Data, Read/Write)
-       Flags: 0xCF */
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
-
-    /* 3: User Code Segment. Access: 0xFA (Present, Ring 3, Code) */
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
-
-    /* 4: User Data Segment. Access: 0xF2 (Present, Ring 3, Data) */
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);
+    /* We'll pass the current stack pointer to the TSS. 
+       In a real OS, each process has its own kernel stack. */
+    write_tss(5, 0x10, 0x0); 
 
     gdt_flush((uint32_t)&gdt_ptr);
+    tss_flush();
 }

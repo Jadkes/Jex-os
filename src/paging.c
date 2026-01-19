@@ -51,10 +51,17 @@ void init_paging()
 
         page_table_t* table = get_table(table_idx);
         
-        table->pages[page_idx].frame = i;
         table->pages[page_idx].present = 1;
         table->pages[page_idx].rw = 1;
-        table->pages[page_idx].user = 0;
+        table->pages[page_idx].user = 1; /* ALLOW USER MODE */
+        table->pages[page_idx].frame = i;
+    }
+
+    /* Update directory entries too */
+    for(int i = 0; i < 1024; i++) {
+        if(kernel_directory.tables[i].present) {
+            kernel_directory.tables[i].user = 1;
+        }
     }
 
     /* 3. Load CR3 with the address of the page directory */

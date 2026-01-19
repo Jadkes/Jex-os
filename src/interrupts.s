@@ -57,9 +57,14 @@ ISR_NOERRCODE 29
 ISR_ERRCODE   30
 ISR_NOERRCODE 31
 
-/* This acts as a common handler for all ISRs. It saves the processor state,
-   sets up the kernel mode segments, calls the C-level fault handler,
-   and finally restores the stack frame. */
+.global isr128
+isr128:
+    cli
+    push $0
+    push $128
+    jmp isr_common_stub
+
+/* This acts as a common handler for all ISRs. */
 isr_common_stub:
     pusha                    /* Pushes edi,esi,ebp,esp,ebx,edx,ecx,eax */
 
