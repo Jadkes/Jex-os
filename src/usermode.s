@@ -1,16 +1,16 @@
 .global jump_to_user_mode
 
-/* jump_to_user_mode(uint32_t user_stack_top) */
+/* jump_to_user_mode(uint32_t entry_point, uint32_t user_stack_top) */
 jump_to_user_mode:
     cli
-    /* Get the user stack from the parameter (at 4(%esp)) */
-    mov 4(%esp), %ebx
+    /* Get entry_point from 4(%esp) and user_stack_top from 8(%esp) */
+    mov 4(%esp), %ecx
+    mov 8(%esp), %ebx
 
     /* Set up user mode segments */
     mov $0x23, %ax 
     mov %ax, %ds
     mov %ax, %es
-    mov %ax, %fs
     mov %ax, %gs
 
     /* Push the stack frame for iret */
@@ -23,19 +23,17 @@ jump_to_user_mode:
     push %eax
 
     push $0x1B      /* User CS */
-    lea user_start, %eax
-    push %eax       /* User EIP */
+    push %ecx       /* User EIP (from parameter) */
     
     iret
 
-user_start:
-    /* We are now in RING 3! */
+.global default_user_start
+default_user_start:
+    /* This is the backup Ring 3 code if no ELF is loaded */
     mov $0, %eax
     mov $msg, %ebx
     int $0x80
-
-    /* Loop forever in user mode */
     1: jmp 1b
 
 msg:
-    .asciz "\n[USER MODE] Hello from Ring 3 via Syscall!\n"
+    .asciz "\n[USER MODE] No ELF provided. Running default Ring 3 test via Syscall!\n"

@@ -4,13 +4,13 @@
 #include "syscall.h"
 #include <stddef.h>
 
-/* Helper to print to terminal from here */
 extern void terminal_writestring(const char* data);
 extern void terminal_setcolor(uint8_t color);
 extern void terminal_initialize();
 extern void syscall_handler(registers_t *regs);
+extern void log_serial(const char* str);
+extern void log_hex_serial(uint32_t n);
 
-/* Exception messages */
 const char *exception_messages[] = {
     "Division By Zero", "Debug", "Non Maskable Interrupt", "Breakpoint",
     "Into Detected Overflow", "Out of Bounds", "Invalid Opcode", "No Coprocessor",
@@ -50,7 +50,6 @@ void isr_install()
     idt_set_gate(28, (uint32_t)isr28, 0x08, 0x8E); idt_set_gate(29, (uint32_t)isr29, 0x08, 0x8E);
     idt_set_gate(30, (uint32_t)isr30, 0x08, 0x8E); idt_set_gate(31, (uint32_t)isr31, 0x08, 0x8E);
     
-    /* Syscall handler at 0x80 (128) */
     idt_set_gate(128, (uint32_t)isr128, 0x08, 0xEE);
 }
 
@@ -64,6 +63,10 @@ void isr_handler(registers_t regs)
         page_fault_handler(regs);
         return;
     }
+
+    log_serial("EXCEPTION: ");
+    log_serial(exception_messages[regs.int_no]);
+    log_serial("\n");
 
     terminal_setcolor(0x4F); 
     terminal_initialize(); 

@@ -50,5 +50,7 @@ void fat12_touch(const char* name);
 void fat12_echo(const char* name, const char* text);
 void fat12_cat(const char* name);
 void fat12_rm(const char* name);
+int fat12_read_file(const char* name, uint8_t* buffer);
+void fat12_write_raw(const char* name, uint8_t* data, uint32_t size);
 
 #endif

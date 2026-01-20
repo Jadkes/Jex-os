@@ -1,11 +1,5 @@
 #include "kheap.h"
 
-/* 
-   Simple placement allocator.
-   In a more advanced version, we would use a proper heap with free lists.
-   But for a FAT12 driver and basic shell, this is very stable.
-*/
-
 uint32_t placement_address;
 
 void init_kheap(uint32_t start_addr) {
@@ -13,7 +7,6 @@ void init_kheap(uint32_t start_addr) {
 }
 
 void *kmalloc(size_t size) {
-    /* Align to 4 bytes */
     if (placement_address & 0xFFF) {
         placement_address &= 0xFFFFF000;
         placement_address += 0x1000;
@@ -25,7 +18,22 @@ void *kmalloc(size_t size) {
 }
 
 void kfree(void *p) {
-    /* For now, we don't free in a placement allocator. 
-       This is 'Linus style' for early boot/simple kernels. */
     (void)p;
+}
+
+void* memcpy(void* dest, const void* src, size_t n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* s = (const unsigned char*)src;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+    return dest;
+}
+
+void* memset(void* s, int c, size_t n) {
+    unsigned char* p = (unsigned char*)s;
+    for (size_t i = 0; i < n; i++) {
+        p[i] = (unsigned char)c;
+    }
+    return s;
 }

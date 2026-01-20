@@ -1,13 +1,7 @@
 #include "pmm.h"
 #include <stddef.h>
 
-/* Helper for memset */
-void* memset(void* bufptr, int value, size_t size) {
-	unsigned char* buf = (unsigned char*) bufptr;
-	for (size_t i = 0; i < size; i++)
-		buf[i] = (unsigned char) value;
-	return bufptr;
-}
+extern void* memset(void* s, int c, size_t n);
 
 /* 
    We will manage up to 128MB of RAM for now to keep the bitmap small.

@@ -14,4 +14,8 @@ void kfree(void *p);
 /* Initialize heap with a start address */
 void init_kheap(uint32_t start_addr);
 
+/* Memory utilities */
+void* memcpy(void* dest, const void* src, size_t n);
+void* memset(void* s, int c, size_t n);
+
 #endif

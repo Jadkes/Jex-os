@@ -77,3 +77,7 @@ make run  # Launch in QEMU with Sound enabled
 - `src/rtc.c/h`: Real Time Clock driver.
 - `src/ports.h`: I/O port helpers.
 - `src/power.c/h`: Reboot and Shutdown handlers.
+
+## Disclaimer
+This OS is for educational purposes only.
+It is not intended for production use.
