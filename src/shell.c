@@ -7,6 +7,7 @@
 #include "speaker.h"
 #include "elf.h"
 #include "gdt.h"
+#include "editor.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -18,6 +19,9 @@ extern void jump_to_user_mode(uint32_t entry, uint32_t stack);
 extern void default_user_start();
 extern void log_serial(const char* str);
 extern void log_hex_serial(uint32_t n);
+
+extern void editor_input(char key);
+extern int editor_running;
 
 void play_tune() {
     beep(392, 100); beep(523, 100); beep(659, 100);
@@ -85,6 +89,7 @@ void help_command() {
     terminal_writestring("  help      - Show this help message\n");
     terminal_writestring("  ls        - List files\n");
     terminal_writestring("  touch <f> - Create file\n");
+    terminal_writestring("  edit <f>  - Open Text Editor\n");
     terminal_writestring("  echo <f><t>- Write to file\n");
     terminal_writestring("  cat <f>   - Read file\n");
     terminal_writestring("  rm <f>    - Delete file\n");
@@ -114,6 +119,7 @@ void execute_command() {
         terminal_setcolor(0x07);
     }
     else if (strncmp(shell_buffer, "touch ", 6) == 0) fat12_touch(shell_buffer + 6);
+    else if (strncmp(shell_buffer, "edit ", 5) == 0) start_editor(shell_buffer + 5);
     else if (strncmp(shell_buffer, "cat ", 4) == 0) fat12_cat(shell_buffer + 4);
     else if (strncmp(shell_buffer, "rm ", 3) == 0) fat12_rm(shell_buffer + 3);
     else if (strncmp(shell_buffer, "sleep ", 6) == 0) sleep(atoi(shell_buffer + 6));
@@ -205,11 +211,11 @@ void execute_command() {
 }
 
 void shell_init() {
-    for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
-    buffer_index = 0;
     print_logo();
     terminal_writestring("\nWelcome to JexOS v0.1!\nType 'help' for a list of commands.\n\n");
     print_prompt();
+    for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
+    buffer_index = 0;
 }
 
 void shell_main() {
@@ -218,6 +224,11 @@ void shell_main() {
 }
 
 void shell_input(char key) {
+    if (editor_running) {
+        editor_input(key);
+        return;
+    }
+
     if (key == '\n') execute_command();
     else if (key == '\b') {
         if (buffer_index > 0) { buffer_index--; shell_buffer[buffer_index] = 0; terminal_putchar('\b'); }

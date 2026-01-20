@@ -14,6 +14,7 @@
 #include "kheap.h"
 #include "fat12.h"
 #include "timer.h"
+#include "fs.h"
 
 #define PORT 0x3f8
 void init_serial() {
@@ -162,10 +163,11 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     init_paging();
     init_kheap(0x1000000);
     init_fat12();
-        init_timer(100);
-        __asm__ volatile("sti");
+    fs_init();
+    init_timer(100);
+    __asm__ volatile("sti");
     
-        shell_main();
+    shell_main();
     
-        while(1) __asm__ volatile("hlt");
-    }
+    while(1) __asm__ volatile("hlt");
+}
