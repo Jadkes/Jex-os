@@ -8,6 +8,7 @@
 #include "elf.h"
 #include "gdt.h"
 #include "editor.h"
+#include "hello_elf.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -21,7 +22,7 @@ extern void log_serial(const char* str);
 extern void log_hex_serial(uint32_t n);
 extern void update_cursor(int x, int y);
 extern void terminal_putentryat(char c, uint8_t color, size_t x, size_t y);
-extern size_t terminal_row; // Needed to update cursor visually
+extern size_t terminal_row; 
 
 extern void editor_input(char key);
 extern int editor_running;
@@ -32,11 +33,10 @@ extern int editor_running;
 char shell_buffer[SHELL_BUFFER_SIZE];
 char history[MAX_HISTORY][SHELL_BUFFER_SIZE];
 int history_count = 0;
-int history_index = 0; // 0 is oldest, history_count-1 is newest
+int history_index = 0;
 
 int buffer_len = 0;
-int buffer_index = 0;
-int cursor_pos = 0; // Relative to start of buffer
+int cursor_pos = 0;
 
 void play_tune() {
     beep(392, 100); beep(523, 100); beep(659, 100);
@@ -86,20 +86,12 @@ void print_prompt() {
 }
 
 void shell_refresh_line() {
-    // 1. Move cursor to start of line (14 chars in)
-    // We assume the prompt is already printed at the start of terminal_row
-    
-    // Clear the rest of the line
     for (int i = 14; i < 80; i++) {
         terminal_putentryat(' ', 0x07, i, terminal_row);
     }
-
-    // Print buffer
     for (int i = 0; i < buffer_len; i++) {
         terminal_putentryat(shell_buffer[i], 0x07, 14 + i, terminal_row);
     }
-
-    // Update hardware cursor
     update_cursor(14 + cursor_pos, terminal_row);
 }
 
@@ -122,16 +114,17 @@ void help_command() {
     terminal_writestring("  echo <f><t>- Write to file\n");
     terminal_writestring("  cat <f>   - Read file\n");
     terminal_writestring("  rm <f>    - Delete file\n");
-    terminal_writestring("  sleep <ms>- Sleep for milliseconds\n");
-    terminal_writestring("  beep <f><m>- Beep at freq <f> for <m> ms\n");
+    terminal_writestring("  sleep <m>- Sleep for ms\n");
+    terminal_writestring("  beep <f><m>- Beep\n");
     terminal_writestring("  music     - Play JexOS fanfare\n");
     terminal_writestring("  time/date - Show current time/date\n");
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  exec <f>  - Load and run ELF file\n");
+    terminal_writestring("  loadhello - Load the LibC Hello App\n");
     terminal_writestring("  mktest    - Create fixed TEST.ELF\n");
-    terminal_writestring("  usermode  - Enter default Ring 3 test\n");
+    terminal_writestring("  usermode  - Enter Ring 3 test\n");
     terminal_writestring("  teto      - Hidden message\n");
     terminal_writestring("  panic     - Trigger a kernel panic\n");
 }
@@ -139,20 +132,17 @@ void help_command() {
 void execute_command() {
     terminal_writestring("\n"); 
     
-    // Add to history if not empty
     if (buffer_len > 0) {
         if (history_count < MAX_HISTORY) {
-            // Simple add
             for(int i=0; i<=buffer_len; i++) history[history_count][i] = shell_buffer[i];
             history_count++;
         } else {
-            // Shift left
             for (int i = 0; i < MAX_HISTORY - 1; i++) {
                 for(int j=0; j<SHELL_BUFFER_SIZE; j++) history[i][j] = history[i+1][j];
             }
             for(int i=0; i<=buffer_len; i++) history[MAX_HISTORY-1][i] = shell_buffer[i];
         }
-        history_index = history_count; // Point to new empty slot
+        history_index = history_count;
     }
 
     if (strcmp(shell_buffer, "help") == 0) help_command();
@@ -182,6 +172,12 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
+    else if (strcmp(shell_buffer, "loadhello") == 0) {
+        terminal_writestring("Loading HELLO.ELF (Compiled with LibC)...\n");
+        fat12_touch("HELLO.ELF");
+        fat12_write_raw("HELLO.ELF", user_hello_elf, user_hello_elf_len);
+        terminal_writestring("Done.\n");
+    }
     else if (strcmp(shell_buffer, "mktest") == 0) {
         terminal_writestring("Creating fixed TEST.ELF at 16MB...\n");
         uint8_t elf_blob[] = {
@@ -252,11 +248,9 @@ void execute_command() {
         terminal_writestring("Unknown command: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
 
-    // Reset buffer
     for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
     buffer_len = 0;
     cursor_pos = 0;
-    buffer_index = 0; // Legacy support
     print_prompt();
 }
 
@@ -282,7 +276,6 @@ void shell_input(char key) {
         return;
     }
     
-    // Handle Arrows
     if ((unsigned char)key == 0x82) { // Left
         if (cursor_pos > 0) cursor_pos--;
         shell_refresh_line();
@@ -293,10 +286,9 @@ void shell_input(char key) {
         shell_refresh_line();
         return;
     }
-    if ((unsigned char)key == 0x80) { // Up (History)
+    if ((unsigned char)key == 0x80) { // Up
         if (history_count > 0) {
             if (history_index > 0) history_index--;
-            // Copy history to buffer
             int i = 0;
             while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) {
                 shell_buffer[i] = history[history_index][i];
@@ -309,11 +301,10 @@ void shell_input(char key) {
         }
         return;
     }
-    if ((unsigned char)key == 0x81) { // Down (History)
+    if ((unsigned char)key == 0x81) { // Down
         if (history_count > 0 && history_index < history_count) {
             history_index++;
             if (history_index == history_count) {
-                // Empty current line
                 shell_buffer[0] = 0;
                 buffer_len = 0;
                 cursor_pos = 0;
@@ -334,7 +325,6 @@ void shell_input(char key) {
 
     if (key == '\b') {
         if (cursor_pos > 0) {
-            // Delete character at cursor_pos-1
             for (int i = cursor_pos - 1; i < buffer_len; i++) {
                 shell_buffer[i] = shell_buffer[i+1];
             }
@@ -343,9 +333,7 @@ void shell_input(char key) {
             shell_refresh_line();
         }
     } else if (buffer_len < SHELL_BUFFER_SIZE - 1) {
-        // Insert character
         if (cursor_pos < buffer_len) {
-            // Shift right
             for (int i = buffer_len; i > cursor_pos; i--) {
                 shell_buffer[i] = shell_buffer[i-1];
             }
@@ -353,7 +341,7 @@ void shell_input(char key) {
         shell_buffer[cursor_pos] = key;
         buffer_len++;
         cursor_pos++;
-        shell_buffer[buffer_len] = 0; // Null terminate
+        shell_buffer[buffer_len] = 0;
         shell_refresh_line();
     }
 }

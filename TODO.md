@@ -6,9 +6,9 @@ The goal of version 0.2 is to allow JexOS to compile and run C programs natively
 
 ### 1. Minimal LibC (Standard C Library)
 To run a compiler like TCC, we need standard functions. We cannot implement *everything*, but we need the basics:
-- [ ] `stdio.h`: `fopen`, `fclose`, `fread`, `fwrite`, `printf`, `fprintf`.
+- [x] `stdio.h`: `printf`, `fopen`, `fclose`, `fread`, `fwrite`.
 - [ ] `stdlib.h`: `malloc`, `free`, `exit`, `atoi`.
-- [ ] `string.h`: `memcpy`, `memset`, `strcmp`, `strcpy`, `strlen`.
+- [x] `string.h`: `memcpy`, `memset`, `strcmp`, `strcpy`, `strlen`.
 - [ ] `unistd.h`: `open`, `close`, `read`, `write`, `sbrk` (for malloc).
 
 ### 2. TCC (Tiny C Compiler) Port
