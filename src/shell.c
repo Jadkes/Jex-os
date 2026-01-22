@@ -19,9 +19,24 @@ extern void jump_to_user_mode(uint32_t entry, uint32_t stack);
 extern void default_user_start();
 extern void log_serial(const char* str);
 extern void log_hex_serial(uint32_t n);
+extern void update_cursor(int x, int y);
+extern void terminal_putentryat(char c, uint8_t color, size_t x, size_t y);
+extern size_t terminal_row; // Needed to update cursor visually
 
 extern void editor_input(char key);
 extern int editor_running;
+
+#define SHELL_BUFFER_SIZE 256
+#define MAX_HISTORY 5
+
+char shell_buffer[SHELL_BUFFER_SIZE];
+char history[MAX_HISTORY][SHELL_BUFFER_SIZE];
+int history_count = 0;
+int history_index = 0; // 0 is oldest, history_count-1 is newest
+
+int buffer_len = 0;
+int buffer_index = 0;
+int cursor_pos = 0; // Relative to start of buffer
 
 void play_tune() {
     beep(392, 100); beep(523, 100); beep(659, 100);
@@ -64,14 +79,28 @@ int strncmp(const char* s1, const char* s2, size_t n) {
     return 0;
 }
 
-#define SHELL_BUFFER_SIZE 256
-char shell_buffer[SHELL_BUFFER_SIZE];
-int buffer_index = 0;
-
 void print_prompt() {
     terminal_setcolor(0x02);
     terminal_writestring("root@jexos:/> ");
     terminal_setcolor(0x07);
+}
+
+void shell_refresh_line() {
+    // 1. Move cursor to start of line (14 chars in)
+    // We assume the prompt is already printed at the start of terminal_row
+    
+    // Clear the rest of the line
+    for (int i = 14; i < 80; i++) {
+        terminal_putentryat(' ', 0x07, i, terminal_row);
+    }
+
+    // Print buffer
+    for (int i = 0; i < buffer_len; i++) {
+        terminal_putentryat(shell_buffer[i], 0x07, 14 + i, terminal_row);
+    }
+
+    // Update hardware cursor
+    update_cursor(14 + cursor_pos, terminal_row);
 }
 
 void print_logo() {
@@ -89,7 +118,7 @@ void help_command() {
     terminal_writestring("  help      - Show this help message\n");
     terminal_writestring("  ls        - List files\n");
     terminal_writestring("  touch <f> - Create file\n");
-    terminal_writestring("  edit <f>  - Open Text Editor\n");
+    terminal_writestring("  vix <f>   - Open Text Editor\n");
     terminal_writestring("  echo <f><t>- Write to file\n");
     terminal_writestring("  cat <f>   - Read file\n");
     terminal_writestring("  rm <f>    - Delete file\n");
@@ -109,6 +138,23 @@ void help_command() {
 
 void execute_command() {
     terminal_writestring("\n"); 
+    
+    // Add to history if not empty
+    if (buffer_len > 0) {
+        if (history_count < MAX_HISTORY) {
+            // Simple add
+            for(int i=0; i<=buffer_len; i++) history[history_count][i] = shell_buffer[i];
+            history_count++;
+        } else {
+            // Shift left
+            for (int i = 0; i < MAX_HISTORY - 1; i++) {
+                for(int j=0; j<SHELL_BUFFER_SIZE; j++) history[i][j] = history[i+1][j];
+            }
+            for(int i=0; i<=buffer_len; i++) history[MAX_HISTORY-1][i] = shell_buffer[i];
+        }
+        history_index = history_count; // Point to new empty slot
+    }
+
     if (strcmp(shell_buffer, "help") == 0) help_command();
     else if (strcmp(shell_buffer, "clear") == 0) { terminal_initialize(); print_logo(); }
     else if (strcmp(shell_buffer, "logo") == 0) print_logo();
@@ -119,7 +165,7 @@ void execute_command() {
         terminal_setcolor(0x07);
     }
     else if (strncmp(shell_buffer, "touch ", 6) == 0) fat12_touch(shell_buffer + 6);
-    else if (strncmp(shell_buffer, "edit ", 5) == 0) start_editor(shell_buffer + 5);
+    else if (strncmp(shell_buffer, "vix ", 4) == 0) start_editor(shell_buffer + 4);
     else if (strncmp(shell_buffer, "cat ", 4) == 0) fat12_cat(shell_buffer + 4);
     else if (strncmp(shell_buffer, "rm ", 3) == 0) fat12_rm(shell_buffer + 3);
     else if (strncmp(shell_buffer, "sleep ", 6) == 0) sleep(atoi(shell_buffer + 6));
@@ -206,16 +252,18 @@ void execute_command() {
         terminal_writestring("Unknown command: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
 
+    // Reset buffer
     for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
-    buffer_index = 0; print_prompt();
+    buffer_len = 0;
+    cursor_pos = 0;
+    buffer_index = 0; // Legacy support
+    print_prompt();
 }
 
 void shell_init() {
     print_logo();
-    terminal_writestring("\nWelcome to JexOS v0.1!\nType 'help' for a list of commands.\n\n");
+    terminal_writestring("\nWelcome to JexOS v0.1 Final!\nType 'help' for a list of commands.\n\n");
     print_prompt();
-    for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
-    buffer_index = 0;
 }
 
 void shell_main() {
@@ -229,10 +277,83 @@ void shell_input(char key) {
         return;
     }
 
-    if (key == '\n') execute_command();
-    else if (key == '\b') {
-        if (buffer_index > 0) { buffer_index--; shell_buffer[buffer_index] = 0; terminal_putchar('\b'); }
-    } else if (buffer_index < SHELL_BUFFER_SIZE - 1) {
-        shell_buffer[buffer_index] = key; buffer_index++; shell_buffer[buffer_index] = 0; terminal_putchar(key);
+    if (key == '\n') {
+        execute_command();
+        return;
+    }
+    
+    // Handle Arrows
+    if ((unsigned char)key == 0x82) { // Left
+        if (cursor_pos > 0) cursor_pos--;
+        shell_refresh_line();
+        return;
+    }
+    if ((unsigned char)key == 0x83) { // Right
+        if (cursor_pos < buffer_len) cursor_pos++;
+        shell_refresh_line();
+        return;
+    }
+    if ((unsigned char)key == 0x80) { // Up (History)
+        if (history_count > 0) {
+            if (history_index > 0) history_index--;
+            // Copy history to buffer
+            int i = 0;
+            while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) {
+                shell_buffer[i] = history[history_index][i];
+                i++;
+            }
+            shell_buffer[i] = 0;
+            buffer_len = i;
+            cursor_pos = i;
+            shell_refresh_line();
+        }
+        return;
+    }
+    if ((unsigned char)key == 0x81) { // Down (History)
+        if (history_count > 0 && history_index < history_count) {
+            history_index++;
+            if (history_index == history_count) {
+                // Empty current line
+                shell_buffer[0] = 0;
+                buffer_len = 0;
+                cursor_pos = 0;
+            } else {
+                int i = 0;
+                while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) {
+                    shell_buffer[i] = history[history_index][i];
+                    i++;
+                }
+                shell_buffer[i] = 0;
+                buffer_len = i;
+                cursor_pos = i;
+            }
+            shell_refresh_line();
+        }
+        return;
+    }
+
+    if (key == '\b') {
+        if (cursor_pos > 0) {
+            // Delete character at cursor_pos-1
+            for (int i = cursor_pos - 1; i < buffer_len; i++) {
+                shell_buffer[i] = shell_buffer[i+1];
+            }
+            buffer_len--;
+            cursor_pos--;
+            shell_refresh_line();
+        }
+    } else if (buffer_len < SHELL_BUFFER_SIZE - 1) {
+        // Insert character
+        if (cursor_pos < buffer_len) {
+            // Shift right
+            for (int i = buffer_len; i > cursor_pos; i--) {
+                shell_buffer[i] = shell_buffer[i-1];
+            }
+        }
+        shell_buffer[cursor_pos] = key;
+        buffer_len++;
+        cursor_pos++;
+        shell_buffer[buffer_len] = 0; // Null terminate
+        shell_refresh_line();
     }
 }

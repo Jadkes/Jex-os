@@ -10,7 +10,7 @@ uint8_t* ram_disk;
 
 /* 
    Helper to format a string into a FAT12 11-byte filename 
-   "test.txt" -> "TEST    TXT"
+   Preserves case for JexOS aesthetics.
 */
 void format_filename(const char* input, uint8_t* output) {
     int i = 0, j = 0;
@@ -19,10 +19,7 @@ void format_filename(const char* input, uint8_t* output) {
 
     // Copy name
     while (input[i] != '.' && input[i] != '\0' && j < 8) {
-        char c = input[i];
-        if (c >= 'a' && c <= 'z') c -= 32; // Uppercase
-        output[j++] = c;
-        i++;
+        output[j++] = input[i++];
     }
 
     // Skip the dot
@@ -31,10 +28,7 @@ void format_filename(const char* input, uint8_t* output) {
     // Copy extension
     j = 8;
     while (input[i] != '\0' && j < 11) {
-        char c = input[i];
-        if (c >= 'a' && c <= 'z') c -= 32;
-        output[j++] = c;
-        i++;
+        output[j++] = input[i++];
     }
 }
 
@@ -49,7 +43,9 @@ int fat12_filename_equal(uint8_t* raw, const char* search) {
 
 void init_fat12() {
     ram_disk = (uint8_t*)kmalloc(RAM_DISK_SIZE);
+    /* Zero out to ensure clean directory */
     memset(ram_disk, 0, RAM_DISK_SIZE);
+    
     fat12_boot_sector_t* boot = (fat12_boot_sector_t*)ram_disk;
     boot->bytes_per_sector = 512;
     boot->sectors_per_cluster = 1;
@@ -59,22 +55,25 @@ void init_fat12() {
     boot->total_sectors_16 = 2880;
     boot->sectors_per_fat_16 = 9;
     boot->boot_sector_signature = 0xAA55;
+    
     terminal_writestring("FAT12 RAM Disk Initialized (1.44MB).\n");
 }
 
 void fat12_ls() {
     uint32_t root_offset = 19 * 512;
     fat12_entry_t* entries = (fat12_entry_t*)(ram_disk + root_offset);
+    
     int found = 0;
     for (int i = 0; i < 224; i++) {
         if (entries[i].filename[0] == 0x00) break;
         if (entries[i].filename[0] == 0xE5) continue;
+        
         found = 1;
         // Print Name
         for (int j = 0; j < 8; j++) {
             if (entries[i].filename[j] != ' ') terminal_putchar(entries[i].filename[j]);
         }
-        // Print Extension
+        // Print Extension if exists
         if (entries[i].extension[0] != ' ') {
             terminal_putchar('.');
             for (int j = 0; j < 3; j++) {
@@ -90,12 +89,12 @@ void fat12_ls() {
 void fat12_touch(const char* name) {
     uint32_t root_offset = 19 * 512;
     fat12_entry_t* entries = (fat12_entry_t*)(ram_disk + root_offset);
+    
     for (int i = 0; i < 224; i++) {
         if (entries[i].filename[0] == 0x00 || entries[i].filename[0] == 0xE5) {
             uint8_t formatted[11];
             format_filename(name, formatted);
-            memcpy(entries[i].filename, formatted, 8);
-            memcpy(entries[i].extension, formatted + 8, 3);
+            memcpy(entries[i].filename, formatted, 11); // Copy all 11 bytes
             entries[i].file_size = 0;
             entries[i].attributes = 0x20;
             if (entries[i].filename[0] == 0x00 && i < 223) entries[i+1].filename[0] = 0x00;
@@ -107,6 +106,7 @@ void fat12_touch(const char* name) {
 void fat12_echo(const char* name, const char* text) {
     uint32_t root_offset = 19 * 512;
     fat12_entry_t* entries = (fat12_entry_t*)(ram_disk + root_offset);
+    
     for (int i = 0; i < 224; i++) {
         if (fat12_filename_equal(entries[i].filename, name)) {
             uint32_t data_offset = (33 + i) * 512;
@@ -126,6 +126,7 @@ void fat12_echo(const char* name, const char* text) {
 void fat12_cat(const char* name) {
     uint32_t root_offset = 19 * 512;
     fat12_entry_t* entries = (fat12_entry_t*)(ram_disk + root_offset);
+    
     for (int i = 0; i < 224; i++) {
         if (fat12_filename_equal(entries[i].filename, name)) {
             uint32_t data_offset = (33 + i) * 512;
@@ -140,6 +141,7 @@ void fat12_cat(const char* name) {
 void fat12_rm(const char* name) {
     uint32_t root_offset = 19 * 512;
     fat12_entry_t* entries = (fat12_entry_t*)(ram_disk + root_offset);
+    
     for (int i = 0; i < 224; i++) {
         if (fat12_filename_equal(entries[i].filename, name)) {
             entries[i].filename[0] = 0xE5;

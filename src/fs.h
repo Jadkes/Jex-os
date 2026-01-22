@@ -7,16 +7,17 @@
 #define MAX_OPEN_FILES 16
 
 typedef struct {
-    int id;                 // File Descriptor ID (0-15)
-    int used;               // Is this slot used?
-    uint32_t offset;        // Current Read/Write pointer
-    uint32_t file_size;     // Size of the file
-    uint32_t data_start_sector; // Where data begins on disk
-    fat12_entry_t dir_entry; // Cached directory entry
-    uint32_t dir_entry_idx;  // Index in root directory (to update size later)
+    int id;                 
+    int used;               
+    uint32_t offset;        
+    uint32_t file_size;     
+    uint32_t data_start_sector; 
+    fat12_entry_t dir_entry; 
+    uint32_t dir_entry_idx;  
 } file_descriptor_t;
 
 void fs_init();
+int fs_create(const char* filename);
 int fs_open(const char* filename, int flags);
 int fs_read(int fd, void* buffer, uint32_t size);
 int fs_write(int fd, const void* buffer, uint32_t size);

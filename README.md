@@ -2,24 +2,35 @@
 
 A minimal 32-bit Operating System built for learning purposes.
 
-## 🚀 Latest Update: The Sound of Victory!
-JexOS now features a fully functional **PC Speaker Driver**, allowing the kernel to generate tones and play music. This update also includes a refined boot logo and improved system stability.
+## 🚀 Version 0.1 Final Stable Release
+This version represents the culmination of JexOS 0.1 development. It features a fully self-hosting capable foundation with a working text editor (`vix`), binary execution (`exec`), and a robust file system.
 
 ## Features
 
-- **Audio Support**: PC Speaker driver with `beep` and `music` commands (plays the iconic victory fanfare!).
 - **Multiboot Compliant**: Boots with GRUB or QEMU.
 - **32-bit Protected Mode**: Uses GDT, IDT, and TSS.
 - **User Mode (Ring 3)**: Full privilege separation with stable system calls (`int 0x80`).
 - **Interrupt Handling**: Custom ISRs and IRQs (Keyboard, Timer, RTC).
-- **Keyboard Driver**: Fully functional with backspace, **Shift** key support, and special characters.
+- **Keyboard Driver**: Fully functional with backspace, **Shift**, **Arrows** (Navigation), and **Command History**.
 - **VGA Text Mode**: Scrolling, newline support, hardware cursor, and Cyan-themed ASCII art.
 - **Filesystem**: FAT12 RAM-disk with basic file operations (`ls`, `touch`, `cat`, `echo`, `rm`).
+- **Editor**: **Vix** (Visual Editor) - A nano-like text editor running in Kernel Mode.
+- **Shell**: `root@jexos:/>` prompt with:
+  - **History**: Up/Down arrows to recall commands.
+  - **Editing**: Left/Right arrows to move cursor.
+  - `help`: List commands.
+  - `vix <file>`: Edit files interactively.
+  - `ls`, `touch`, `cat`, `echo`, `rm`: File management.
+  - `exec <file>`: Run ELF binaries.
+  - `mktest`: Create a sample ELF binary.
+  - `clear`: Clear the screen.
+  - `music`: Play the JexOS fanfare.
+  - `reboot`/`shutdown`: Power management.
 - **Memory Management**:
   - **PMM**: Physical Memory Manager (Bitmap-based).
-  - **Paging**: Identity mapping (first 128MB) for absolute stability.
-  - **KHeap**: Kernel heap allocator for dynamic data.
-- **Power Management**: Functional `reboot` and `shutdown` commands.
+  - **Paging**: Identity mapping (first 512MB).
+  - **KHeap**: Kernel heap allocator.
+- **Kernel Panic**: Custom "Red Screen of Death".
 
 ## How to Build and Run
 
@@ -59,24 +70,20 @@ make run  # Launch in QEMU with Sound enabled
 ## Project Structure
 
 - `src/boot.s`: Assembly entry point.
-- `src/speaker.c/h`: PC Speaker audio driver.
-- `src/timer.c/h`: PIT timer and sleep implementation.
-- `src/fat12.c/h`: FAT12 Filesystem driver.
-- `src/syscall.c/h`: System call interface.
-- `src/usermode.s`: Ring 3 transition logic.
-- `src/shell.c/h`: JexShell with argument parsing.
 - `src/kernel.c`: Main kernel logic.
-- `src/gdt.c/h`: Global Descriptor Table & TSS.
-- `src/idt.c/h`: Interrupt Descriptor Table.
-- `src/isr.c/h`: Interrupt Service Routines.
-- `src/irq.c/h`: Hardware Interrupts (PIC).
-- `src/keyboard.c/h`: Keyboard driver.
-- `src/pmm.c/h`: Physical Memory Manager.
-- `src/paging.c/h`: Paging implementation.
-- `src/kheap.c/h`: Kernel Heap allocator.
-- `src/rtc.c/h`: Real Time Clock driver.
-- `src/ports.h`: I/O port helpers.
-- `src/power.c/h`: Reboot and Shutdown handlers.
+- `src/shell.c`: Advanced Shell (History, Cursor).
+- `src/editor.c`: Vix Text Editor.
+- `src/fat12.c`: FAT12 Filesystem driver (Case-preserving).
+- `src/elf.c`: ELF Binary Loader.
+- `src/syscall.c`: System Calls.
+- `src/timer.c`: PIT Driver.
+- `src/speaker.c`: PC Speaker Driver.
+- `src/keyboard.c`: Scancode to ASCII & Arrow keys.
+- `src/gdt.c`: GDT & TSS.
+- `src/idt.c`: IDT.
+- `src/paging.c`: Memory Paging.
+- `src/pmm.c`: Physical Memory Manager.
+- `src/kheap.c`: Kernel Heap.
 
 ## Disclaimer
 This OS is for educational purposes only.
