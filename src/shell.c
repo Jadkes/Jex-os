@@ -8,16 +8,10 @@
 #include "exec.h"
 #include "syscall.h"
 #include "jexfs.h"
+#include "kheap.h"
+#include "string.h"
 #include <stddef.h>
 #include <stdint.h>
-
-// Forward declarations
-char* strchr(const char* s, int c);
-char* strrchr(const char* s, int c);
-char* strncpy(char* dest, const char* src, size_t n);
-char* strcpy(char* dest, const char* src);
-char* strcat(char* dest, const char* src);
-size_t strlen(const char* s);
 
 extern void terminal_writestring(const char* data);
 extern void terminal_putchar(char c);
@@ -30,12 +24,9 @@ extern void log_hex_serial(uint32_t n);
 extern void update_cursor(int x, int y);
 extern void terminal_putentryat(char c, uint8_t color, size_t x, size_t y);
 extern size_t terminal_row; 
-
 extern void editor_input(char key);
 extern int editor_running;
-
-#include "kheap.h"
-#include "pmm.h"
+extern void read_block(uint32_t block, uint8_t* buffer);
 
 extern void beep(int freq, int duration);
 extern void start_editor(const char* filename);
@@ -45,17 +36,90 @@ extern void shutdown(void);
 extern void set_kernel_stack(uint32_t stack);
 
 #define SHELL_BUFFER_SIZE 256
-#define MAX_HISTORY 5
+#define MAX_HISTORY 10
+#define HISTORY_FILE ".history"
 
 char shell_buffer[SHELL_BUFFER_SIZE];
 char history[MAX_HISTORY][SHELL_BUFFER_SIZE];
 int history_count = 0;
 int history_index = 0;
-
 int buffer_len = 0;
 int cursor_pos = 0;
-
 char shell_cwd[128] = "/";
+
+static const char* shell_commands[] = {
+    "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
+    "mkcode", "tcc", "cc", "free", "reboot", "shutdown", "clear", "music", NULL
+};
+
+int get_prompt_len() { return 11 + strlen(shell_cwd) + 2; }
+
+void shell_refresh_line() {
+    int prompt_len = get_prompt_len();
+    for (int i = prompt_len; i < 80; i++) terminal_putentryat(' ', 0x07, i, terminal_row);
+    for (int i = 0; i < buffer_len; i++) terminal_putentryat(shell_buffer[i], 0x07, prompt_len + i, terminal_row);
+    update_cursor(prompt_len + cursor_pos, terminal_row);
+}
+
+void print_prompt() {
+    terminal_setcolor(0x02); terminal_writestring("root@jexos:");
+    terminal_setcolor(0x0B); terminal_writestring(shell_cwd);
+    terminal_setcolor(0x02); terminal_writestring("> ");
+    terminal_setcolor(0x07);
+}
+
+void shell_autocomplete() {
+    if (buffer_len == 0) return;
+    char* last_space = strrchr(shell_buffer, ' ');
+    char* search_term = last_space ? last_space + 1 : shell_buffer;
+    int search_len = strlen(search_term);
+    const char* match = NULL;
+    int match_count = 0;
+    if (!last_space) {
+        for (int i = 0; shell_commands[i]; i++) {
+            if (strncmp(shell_commands[i], search_term, search_len) == 0) {
+                match = shell_commands[i]; match_count++;
+            }
+        }
+    }
+    struct jex_inode dir_inode; jexfs_read_inode(cwd_inode, &dir_inode);
+    uint8_t buf[BLOCK_SIZE]; read_block(dir_inode.blocks[0], buf);
+    struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
+    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+        if (de[i].inode != 0) {
+            if (strcmp(de[i].name, ".") == 0 || strcmp(de[i].name, "..") == 0) continue;
+            if (strncmp(de[i].name, search_term, search_len) == 0) {
+                match = de[i].name; match_count++;
+            }
+        }
+    }
+    if (match_count == 1 && match) {
+        int term_offset = search_term - shell_buffer;
+        strcpy(shell_buffer + term_offset, (char*)match);
+        buffer_len = strlen(shell_buffer); cursor_pos = buffer_len;
+        shell_refresh_line();
+    }
+}
+
+void shell_save_history() {
+    fs_create(HISTORY_FILE);
+    int fd = fs_open(HISTORY_FILE, 0);
+    if (fd != -1) {
+        fs_write(fd, &history_count, sizeof(int));
+        for (int i = 0; i < history_count; i++) fs_write(fd, history[i], SHELL_BUFFER_SIZE);
+        fs_close(fd);
+    }
+}
+
+void shell_load_history() {
+    int fd = fs_open(HISTORY_FILE, 0);
+    if (fd != -1) {
+        fs_read(fd, &history_count, sizeof(int));
+        if (history_count > MAX_HISTORY) history_count = MAX_HISTORY;
+        for (int i = 0; i < history_count; i++) fs_read(fd, history[i], SHELL_BUFFER_SIZE);
+        history_index = history_count; fs_close(fd);
+    }
+}
 
 void play_tune() {
     beep(392, 100); beep(523, 100); beep(659, 100);
@@ -71,56 +135,14 @@ void int_to_string(int n, char* str) {
     str[i] = '\0';
     int start = 0; int end = i - 1;
     while (start < end) {
-        char temp = str[start]; str[start] = str[end]; str[end] = temp;
-        start++; end--;
+        char temp = str[start]; str[start] = str[end]; str[end] = temp; start++; end--;
     }
 }
 
 int atoi(const char* str) {
     int res = 0;
-    for (int i = 0; str[i] != '\0'; ++i) {
-        if (str[i] >= '0' && str[i] <= '9') res = res * 10 + str[i] - '0';
-    }
+    for (int i = 0; str[i] != '\0'; ++i) { if (str[i] >= '0' && str[i] <= '9') res = res * 10 + str[i] - '0'; }
     return res;
-}
-
-int strcmp(const char* s1, const char* s2) {
-    while(*s1 && (*s1 == *s2)) { s1++; s2++; }
-    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
-}
-
-int strncmp(const char* s1, const char* s2, size_t n) {
-    while(n--) {
-        if(*s1 != *s2) return *(const unsigned char*)s1 - *(const unsigned char*)s2;
-        if(*s1 == 0) break;
-        s1++; s2++;
-    }
-    return 0;
-}
-
-int get_prompt_len() {
-    return 11 + strlen(shell_cwd) + 2; // "root@jexos:" + cwd + "> "
-}
-
-void print_prompt() {
-    terminal_setcolor(0x02);
-    terminal_writestring("root@jexos:");
-    terminal_setcolor(0x0B);
-    terminal_writestring(shell_cwd);
-    terminal_setcolor(0x02);
-    terminal_writestring("> ");
-    terminal_setcolor(0x07);
-}
-
-void shell_refresh_line() {
-    int prompt_len = get_prompt_len();
-    for (int i = prompt_len; i < 80; i++) {
-        terminal_putentryat(' ', 0x07, i, terminal_row);
-    }
-    for (int i = 0; i < buffer_len; i++) {
-        terminal_putentryat(shell_buffer[i], 0x07, prompt_len + i, terminal_row);
-    }
-    update_cursor(prompt_len + cursor_pos, terminal_row);
 }
 
 void print_logo() {
@@ -136,7 +158,7 @@ void print_logo() {
 void help_command() {
     terminal_writestring("Available commands:\n");
     terminal_writestring("  help      - Show this help message\n");
-    terminal_writestring("  ls        - List files (JexFS)\n");
+    terminal_writestring("  ls        - List files\n");
     terminal_writestring("  cd <dir>  - Change directory\n");
     terminal_writestring("  touch <f> - Create file\n");
     terminal_writestring("  mkdir <d> - Create directory\n");
@@ -156,57 +178,43 @@ void help_command() {
 
 void execute_command() {
     terminal_writestring("\n"); 
-    
     if (buffer_len > 0) {
         if (history_count < MAX_HISTORY) {
             for(int i=0; i<=buffer_len; i++) history[history_count][i] = shell_buffer[i];
             history_count++;
         } else {
-            for (int i = 0; i < MAX_HISTORY - 1; i++) {
-                for(int j=0; j<SHELL_BUFFER_SIZE; j++) history[i][j] = history[i+1][j];
-            }
+            for (int i = 0; i < MAX_HISTORY - 1; i++) strcpy(history[i], history[i+1]);
             for(int i=0; i<=buffer_len; i++) history[MAX_HISTORY-1][i] = shell_buffer[i];
         }
-        history_index = history_count;
+        history_index = history_count; shell_save_history();
     }
-
     if (strcmp(shell_buffer, "help") == 0) help_command();
     else if (strcmp(shell_buffer, "clear") == 0) { terminal_initialize(); print_logo(); }
     else if (strcmp(shell_buffer, "ls") == 0) jexfs_list_dir(cwd_inode);
     else if (strncmp(shell_buffer, "ls ", 3) == 0) {
         int inode = jexfs_open(shell_buffer + 3);
-        if (inode != -1) jexfs_list_dir(inode);
-        else terminal_writestring("Directory not found.\n");
+        if (inode != -1) jexfs_list_dir(inode); else terminal_writestring("Directory not found.\n");
     }
-    else if (strcmp(shell_buffer, "cd") == 0) {
-        cwd_inode = 1;
-        strcpy(shell_cwd, "/");
-    }
+    else if (strcmp(shell_buffer, "cd") == 0) { cwd_inode = 1; strcpy(shell_cwd, "/"); }
     else if (strncmp(shell_buffer, "cd ", 3) == 0) {
-        char* path = shell_buffer + 3;
-        while(*path == ' ') path++;
+        char* path = shell_buffer + 3; while(*path == ' ') path++;
         if (strcmp(path, "..") == 0) {
             int inode = jexfs_open("..");
             if (inode != -1) {
                 cwd_inode = inode;
                 if (strcmp(shell_cwd, "/") != 0) {
                     char* last = strrchr(shell_cwd, '/');
-                    if (last == shell_cwd) strcpy(shell_cwd, "/");
-                    else *last = '\0';
+                    if (last == shell_cwd) strcpy(shell_cwd, "/"); else *last = '\0';
                 }
             }
         } else {
             int inode = jexfs_open(path);
             if (inode != -1) {
-                struct jex_inode ci;
-                jexfs_read_inode(inode, &ci);
+                struct jex_inode ci; jexfs_read_inode(inode, &ci);
                 if (ci.mode == 2) {
                     cwd_inode = inode;
                     if (path[0] == '/') strcpy(shell_cwd, path);
-                    else {
-                        if (strcmp(shell_cwd, "/") != 0) strcat(shell_cwd, "/");
-                        strcat(shell_cwd, path);
-                    }
+                    else { if (strcmp(shell_cwd, "/") != 0) strcat(shell_cwd, "/"); strcat(shell_cwd, path); }
                 } else terminal_writestring("Not a directory.\n");
             } else terminal_writestring("Directory not found.\n");
         }
@@ -258,21 +266,18 @@ void execute_command() {
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
     else if (strcmp(shell_buffer, "mkcode") == 0) {
-        terminal_writestring("Creating hello.c on Persistent Disk...\n");
         const char* code = "int main() {\n  printf(\"Hello from JexFS Persistence!\\n\");\n  return 0;\n}";
-        fs_create("hello.c");
-        int fd = fs_open("hello.c", 0); fs_write(fd, code, strlen(code)); fs_close(fd);
-        terminal_writestring("Done.\n");
+        fs_create("hello.c"); int fd = fs_open("hello.c", 0); fs_write(fd, code, strlen(code)); fs_close(fd);
+        terminal_writestring("hello.c created.\n");
     }
     else if (strncmp(shell_buffer, "tcc ", 4) == 0) {
         char* filename = shell_buffer + 4; while (*filename == ' ') filename++;
         int fd = fs_open(filename, 0);
-        if (fd < 0) terminal_writestring("Failed to open C source file\n");
+        if (fd < 0) terminal_writestring("Failed to open file\n");
         else {
             char* source = (char*)kmalloc(4096); int bytes = fs_read(fd, source, 4095);
             source[bytes] = '\0'; fs_close(fd);
-            char* argv[] = {filename, NULL};
-            extern int exec_c_code(const char* c_source, char** argv);
+            char* argv[] = {filename, NULL}; extern int exec_c_code(const char* c_source, char** argv);
             exec_c_code(source, argv); kfree(source);
         }
     }
@@ -288,7 +293,7 @@ void execute_command() {
             output_file[j] = '\0';
         }
         int fd = fs_open(filename, 0);
-        if (fd < 0) { terminal_writestring("Failed to open source file\n"); }
+        if (fd < 0) terminal_writestring("Source not found.\n");
         else {
             char* source = (char*)kmalloc(4096); int bytes = fs_read(fd, source, 4095);
             source[bytes] = '\0'; fs_close(fd);
@@ -296,10 +301,9 @@ void execute_command() {
             if (tcc && tcc_compile_string(tcc, source) == 0) {
                 uint8_t* elf_data; uint32_t elf_size;
                 if (tcc_output_memory(tcc, &elf_data, &elf_size) == 0) {
-                    int out_fd = fs_open(output_file, 0);
-                    if (out_fd < 0) { fs_create(output_file); out_fd = fs_open(output_file, 0); }
+                    fs_create(output_file); int out_fd = fs_open(output_file, 0);
                     fs_write(out_fd, elf_data, elf_size); fs_close(out_fd);
-                    terminal_writestring("Compilation successful: "); terminal_writestring(output_file); terminal_writestring(" created\n");
+                    terminal_writestring("Compiled: "); terminal_writestring(output_file); terminal_writestring("\n");
                 }
             } else terminal_writestring("Compilation failed\n");
             if (tcc) tcc_delete(tcc); kfree(source);
@@ -310,27 +314,6 @@ void execute_command() {
         extern int execve_file(const char* filename, char** argv, char** envp);
         execve_file(filename, argv, NULL);
     }
-    else if (strcmp(shell_buffer, "fork") == 0) {
-        int pid = fork();
-        if (pid == 0) {
-            // Child
-            for(int i=0; i<5; i++) {
-                terminal_writestring(" [CHILD] Hello! PID: 2\n");
-                // Manual busy wait to see multitasking
-                for(volatile int j=0; j<10000000; j++);
-            }
-            terminal_writestring(" [CHILD] Work done. Exiting.\n");
-            while(1); // For now no exit()
-        } else {
-            terminal_writestring(" [PARENT] Spawned child PID: ");
-            char buf[10]; int_to_string(pid, buf);
-            terminal_writestring(buf);
-            terminal_writestring("\n");
-        }
-    }
-    else if (strcmp(shell_buffer, "ps") == 0) {
-        task_list();
-    }
     else if (strcmp(shell_buffer, "free") == 0) {
         char buf[32];
         terminal_writestring("Memory Status:\n  Total: "); int_to_string(pmm_get_total_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
@@ -338,37 +321,37 @@ void execute_command() {
         terminal_writestring("  Free:  "); int_to_string(pmm_get_free_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
     }
     else if (shell_buffer[0] != '\0') {
-        terminal_writestring("Unknown command: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
+        terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
-
     for (int i = 0; i < SHELL_BUFFER_SIZE; i++) shell_buffer[i] = 0;
     buffer_len = 0; cursor_pos = 0;
     print_prompt();
 }
 
-void shell_init() {
-    print_logo();
-    terminal_writestring("\nWelcome to JexOS v0.3 Persistence Release!\nType 'help' for a list of commands.\n\n");
-    print_prompt();
-}
-
 void shell_loop() {
     print_prompt();
-    while(1) __asm__ volatile("hlt");
+    extern int is_serial_received(); extern char read_serial();
+    while(1) {
+        while (is_serial_received()) {
+            char c = read_serial(); if (c == '\r') c = '\n'; shell_input(c);
+        }
+        __asm__ volatile("hlt");
+    }
+}
+
+void shell_init() {
+    shell_load_history();
+    print_logo();
+    terminal_writestring("\nWelcome to JexOS v0.5 Peak UX Release!\nType 'help' for a list of commands.\n\n");
+    print_prompt();
 }
 
 void shell_main() {
     shell_init();
-    
-    extern int is_serial_received();
-    extern char read_serial();
-
+    extern int is_serial_received(); extern char read_serial();
     while(1) {
-        // Drain the serial buffer as fast as possible
         while (is_serial_received()) {
-            char c = read_serial();
-            if (c == '\r') c = '\n';
-            shell_input(c);
+            char c = read_serial(); if (c == '\r') c = '\n'; shell_input(c);
         }
         __asm__ volatile("hlt");
     }
@@ -377,6 +360,7 @@ void shell_main() {
 void shell_input(char key) {
     if (editor_running) { editor_input(key); return; }
     if (key == '\n') { execute_command(); return; }
+    if (key == '\t') { shell_autocomplete(); return; }
     int prompt_len = get_prompt_len();
     if ((unsigned char)key == 0x82) { if (cursor_pos > 0) cursor_pos--; shell_refresh_line(); return; }
     if ((unsigned char)key == 0x83) { if (cursor_pos < buffer_len) cursor_pos++; shell_refresh_line(); return; }

@@ -1,45 +1,37 @@
-# JexOS 0.4 Roadmap: The Multitasking Era
+# JexOS 0.5 Roadmap: Peak UX & Games
 
-The goal of version 0.4 is to transform JexOS from a single-tasking OS into a true multitasking system with process isolation and Inter-Process Communication (IPC).
+The goal of version 0.5 is to make JexOS fun and highly usable. We've built the foundations (multitasking, persistence, isolation); now we build the experience.
 
 ## 🛠️ Core Objectives
 
-### 1. Multitasking & Scheduling
-Currently, JexOS can only run one process at a time. We need a scheduler to manage multiple tasks.
-- [x] **Task State Segment (TSS)**: Finish implementing TSS for stable hardware context switching. [DONE]
-- [x] **Process Control Block (PCB)**: Create a `struct task` to store registers, PID, state, and memory maps. [DONE]
-- [x] **Round-Robin Scheduler**: Implement a Timer-based (IRQ0) scheduler to switch between processes. [DONE]
-- [x] **`fork()` Syscall**: Implement process cloning (the "Linux 0.11 way"). [DONE]
-- [ ] **`waitpid()` & `exit()`**: Proper parent-child process synchronization.
+### 1. Shell & User Experience (UX)
+Make the shell feel like a professional Linux terminal.
+- [ ] **Tab Completion**: Auto-complete filenames and commands when pressing TAB.
+- [ ] **Command Aliases**: Support `alias ll='ls -l'`.
+- [ ] **Top**: A real-time process monitor showing CPU and memory usage per PID.
+- [ ] **Uptime**: A command to see how long JexOS has been "alive".
 
-### 2. Virtual Memory Isolation
-Moving beyond identity mapping to ensure processes cannot crash each other.
-- [ ] **Process Page Directories**: Give every process its own 4GB virtual address space.
-- [ ] **Kernel Mirroring**: Map the kernel into the higher half (or lower half) of every process's page table.
-- [ ] **Copy-on-Write (COW)**: (Advanced) Optimize `fork()` by sharing pages until they are modified.
+### 2. BSD-inspired Terminal Games
+Bringing entertainment to the kernel.
+- [ ] **JexSnake**: A classic snake game built specifically for the JexOS terminal.
+- [ ] **2048**: A terminal port of the popular puzzle game.
+- [ ] **Worm**: A vintage BSD-style game.
 
-### 3. File System Enhancements (JexFS)
-Moving from basic operations to a full Unix-like file management experience.
-- [x] **Standard Commands**: Implement `mv` (rename), `cp` (copy), `rm` (delete), and `mkdir` (create directory). [DONE]
-- [x] **Persistent Block Management**: Improve the block allocator to reuse freed blocks. [DONE]
-- [x] **Path Support**: Support nested directories (e.g., `/bin/hello`). [DONE]
+### 3. Power Utilities
+- [ ] **Grep**: Search for strings within files (`cat file.c | grep printf`).
+- [ ] **Find**: Locate files by name across the directory tree.
+- [ ] **Clear Improved**: Add `Ctrl+L` shortcut to clear the screen.
 
-### 4. Inter-Process Communication (IPC)
-Allowing processes to talk to each other.
-- [ ] **Pipes**: Implement `pipe()` syscall for streaming data between processes.
-- [ ] **Shell Redirection**: Update the shell to support `ls | cat` style commands.
-
-### 5. Vix Editor 3.0 & LibC
-- [x] **Syntax Highlighting**: Add support for more colors (comments, numbers). [DONE]
-- [x] **Scrolling**: Fix the editor to handle files larger than 25 lines. [DONE]
-- [ ] **`signal.h`**: Implement basic signal handling (SIGINT, SIGKILL).
+### 4. System Stability (v0.5 Under-the-Hood)
+- [ ] **Keyboard Buffering**: Improve the driver so typing during high-load (like during compilation) doesn't drop keys.
+- [ ] **Dynamic Environment**: A basic `env` system for `PATH` support.
 
 ## 🗓️ Execution Plan
 
-1.  **Step 1**: Implement the PCB structure and a manual context switch function. [DONE]
-2.  **Step 2**: Hook the scheduler into the Timer Interrupt (IRQ0). [DONE]
-3.  **Step 3**: Implement `fork()` and test running two "Hello World" loops at once. [DONE]
-4.  **Step 4**: Implement Virtual Memory isolation so each process has its own stack and heap. [NEXT]
+1.  **Step 1**: Implement Tab Completion in the shell.
+2.  **Step 2**: Build the `uptime` and `top` commands.
+3.  **Step 3**: Port or create JexSnake.
+4.  **Step 4**: Implement `grep` for basic text searching.
 
 ## 🚀 Target
-**"Run a compiler in the background while I continue writing code in the foreground."** [IN PROGRESS]
+**"Play Snake while my C code compiles in the background."**

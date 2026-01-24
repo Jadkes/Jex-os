@@ -1,27 +1,28 @@
 # 🪐 JexOS
 **The minimal 32-bit Operating System that actually lives.**
 
-JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.4.8**, JexOS introduces the "Lazy Peak" workflow, seamlessly connecting your host development environment with the guest OS.
+JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.5.1**, JexOS enters the "Peak UX" phase, offering a professional terminal experience with modern features.
 
 ---
 
-## 🚀 Version 0.4.8: The Lazy Peak (Copy/Paste) Update
-This release focuses on developer productivity, making it easier than ever to bring external code into JexOS.
+## 🚀 Version 0.5.1: The Peak UX Update
+This release focuses on making JexOS a joy to use, bringing standard Linux terminal quality-of-life features to the shell.
 
-### 📋 Host-to-Guest Copy/Paste
-- **High-Speed Serial Bridge**: JexOS now treats the serial port (COM1) as a second keyboard. 
-- **Instant Injection**: Simply paste code into your Linux terminal, and it will be "typed" into JexOS instantly. 
-- **Universal Input**: Works everywhere—pasting C functions into Vix 3.0 or complex commands into the shell.
-- **Optimized Rendering**: The Vix editor is now smart enough to handle high-speed text streams without lagging the CPU.
+### ⌨️ Professional Shell UX
+- **Tab Completion**: Intelligent autocompletion for commands and filenames. Press `TAB` to speed up your workflow.
+- **Persistent Command History**: Your shell history is now stored on disk (`.history`). Commands survive reboots, just like a real Unix system.
+- **Dynamic Linux Prompt**: An adaptive, color-coded prompt that tracks your current directory: `root@jexos:/path> `.
+- **Host-to-Guest Copy/Paste**: Optimized serial bridge for instant code injection from your host terminal.
 
-### 👥 Multitasking & Isolation (v0.4.x Foundations)
-- **Virtual Memory Isolation**: Every process now runs in its own private 4GB virtual address space.
-- **Deep Page Cloning**: `fork()` now creates full isolated copies of process memory, preventing cross-process crashes.
-- **Stable Scheduler**: A round-robin preemptive scheduler managing concurrent task states.
+### ✍️ Vix 3.0: The IDE Experience
+- **Infinite Vertical Scrolling**: Edit large source files with automatic view tracking.
+- **Advanced Syntax Highlighting**: Real-time coloring for C keywords, numbers, comments, and syscalls.
+- **Integrated Build**: Press `Ctrl+B` to save, compile, and run your code instantly.
 
-### 📂 Persistence & IDE
-- **JexFS**: Permanent storage on a 1.44MB HDD image.
-- **Vix 3.0**: A professional IDE with infinite scrolling, syntax highlighting, and integrated build tools.
+### 📂 JexFS Persistence
+- **Hierarchy Support**: Full support for nested directories and navigation (`cd`, `mkdir`).
+- **Standard Utilities**: A suite of professional-grade tools: `cp`, `mv`, `rm`, `ls`, `cat`, and `touch`.
+- **Reliable Storage**: Powered by a native IDE PIO driver communicating with a persistent `jexos.img`.
 
 ---
 
@@ -29,35 +30,22 @@ This release focuses on developer productivity, making it easier than ever to br
 
 | Feature | Description |
 | :--- | :--- |
-| **Copy/Paste** | Inject text from your host OS directly into JexOS applications. |
-| **Memory Isolation** | Private page directories for every process (v0.4.4+). |
+| **Tab Completion**| Press TAB to autocomplete commands and files. |
+| **Persistence** | Permanent file and history storage on disk. |
 | **Self-Hosting** | Native C compilation using the integrated TCC. |
-| **IDE (Vix 3.0)** | Advanced code editor with real-time feedback and build triggers. |
-| **Persistence** | Persistent file storage surviving reboots. |
+| **Memory Isolation**| Private page directories for every process. |
+| **IDE (Vix 3.0)** | Professional code editor with build triggers. |
 
 ---
 
-## 🏔️ The Lazy Peak Workflow
-
-1. **Host-Side Copy**: Copy any C code block on your Linux machine.
-2. **Open Editor**: In JexOS, type `vix main.c`.
-3. **Paste**: Right-click/Paste into your Linux terminal. Watch your code appear instantly in JexOS!
-4. **Build & Run**: Press `Ctrl+B` inside Vix to execute your pasted code.
-
----
-
-## 🛠️ Installation & Building
-
-```bash
-git clone https://github.com/inasj-cyber/Jex-os.git
-cd Jex-os
-make      # Builds kernel and persistent image
-make run  # Boots JexOS in QEMU
-```
+## 🗺️ Roadmap to v0.6
+- [ ] **JexSnake**: The first official terminal game.
+- [ ] **Multitasking Scheduler**: Preemptive context switching (Stable).
+- [ ] **Pipes & Redirection**: Standard IPC support.
 
 ---
 
 ## 🤝 Contributing
-JexOS is an educational project. Contributions to process management, IPC, or driver optimization are welcome!
+JexOS is an educational project. Contributions to process management, driver optimization, or UX features are welcome!
 
 **Developed with ❤️ for the OS Dev community.**
