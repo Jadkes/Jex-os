@@ -1,29 +1,29 @@
 # 🪐 JexOS
 **The minimal 32-bit Operating System that actually lives.**
 
-JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.3.4**, JexOS has achieved its most fluid user experience yet, featuring dynamic navigation and a robust set of Unix-standard filesystem utilities.
+JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.3.8**, JexOS introduces a significantly more powerful development environment with the all-new Vix 3.0 IDE.
 
 ---
 
-## 🚀 Version 0.3.4: The Navigation & Utilities Update
-The "Navigation" update transforms JexOS from a flat storage system into a hierarchical, interactive environment mirroring the feel of a classic Linux terminal.
+## 🚀 Version 0.3.8: The IDE Power-Up
+This release focuses on making the built-in development tools professional-grade, enabling the editing of large source files and providing deeper code insights.
 
-### 🗺️ Dynamic Linux-style Navigation
-- **Active Path Prompt**: The shell now displays your current working directory in real-time (e.g., `root@jexos:/home/jad> `).
-- **Interactive `cd`**: Full support for directory traversal, including `cd ..` to move up and `cd` to return to root.
-- **Path-Aware `ls`**: List contents of the current directory or specify a target path (e.g., `ls /bin`).
+### ✍️ Vix 3.0: A Real IDE Experience
+The Vix editor has been completely overhauled to support professional coding workflows:
+- **Infinite Vertical Scrolling**: Edit large C files that span multiple pages. The editor now tracks your cursor and scrolls the view automatically.
+- **Enhanced Syntax Highlighting**:
+  - **Keywords**: `int`, `void`, `struct`, `static`, etc. (**Cyan**)
+  - **Numbers**: Constant values and literals (**Yellow**)
+  - **Comments**: Full support for `// single-line comments` (**Gray**)
+  - **Standard Library**: Functions like `malloc`, `free`, `open`, `read` are now recognized (**Green**)
+  - **Braces & Symbols**: `{}`, `()`, `[]` and operators (**Orange**)
+- **State Awareness**: A new `[MODIFIED]` indicator in the status bar warns you of unsaved changes.
+- **Robustness**: Improved backspace logic for line merging and protection against accidental control character insertion.
 
-### 📂 Advanced JexFS Utilities
-We've expanded the JexFS (Minix-inspired) toolkit to support a full development workflow:
-- **`mkdir`**: Create nested directory structures.
-- **`cp`**: Copy files between directories with reliable multi-block streaming.
-- **`rm`**: Safely delete files and free up disk space via bitmap management.
-- **`mv`**: Rename files instantly with metadata-only updates.
-- **Clean Listings**: Automatic hiding of `.` and `..` system entries for a cleaner `ls` output.
-
-### 🛠️ Peak Compiler Upgrades
-- **Custom Output Names**: Use the `-o` flag with `cc` to name your binaries (e.g., `cc hello.c -o peak`).
-- **Stable Binary Execution**: Fixed filesystem seek and write bugs to ensure compiled ELF binaries execute flawlessly every time.
+### 🗺️ Navigation & Shell Improvements
+- **Refined Prompt**: A tighter, Linux-accurate prompt: `root@jexos:/path> `.
+- **Fixed Path Logic**: Solidified `cd ..` and `cd` behavior for reliable directory traversal.
+- **Large File Support**: Fixed JexFS write/read buffers to ensure large compiled binaries (like those produced by TCC) are stored without corruption.
 
 ---
 
@@ -33,9 +33,9 @@ We've expanded the JexFS (Minix-inspired) toolkit to support a full development 
 | :--- | :--- |
 | **Self-Hosting** | Compile C code natively using the integrated Tiny C Compiler (TCC). |
 | **User Mode** | Stable Ring 3 transition with professional System Call handling (`int 0x80`). |
-| **IDE (Vix 2.0)** | Syntax highlighting, line numbers, and integrated `Ctrl+B` build triggers. |
+| **IDE (Vix 3.0)** | Infinite scrolling, advanced highlighting, and integrated `Ctrl+B` build. |
 | **Persistence** | Real hardware communication via IDE PIO driver to `jexos.img`. |
-| **Unix Feel** | Command history, adaptive prompt, and standard utility suite. |
+| **Unix Feel** | Dynamic path-aware prompt, standard utilities (`cp`, `mv`, `rm`, `mkdir`). |
 
 ---
 
@@ -46,13 +46,12 @@ We've expanded the JexFS (Minix-inspired) toolkit to support a full development 
 3. **Navigate & Organize**:
    ```bash
    root@jexos:/> mkdir dev
-   root@jexos:/> mv hello.c dev/
    root@jexos:/> cd dev
    ```
-4. **Build & Run**: Use Vix 2.0 or the shell:
+4. **Edit & Build**: Open code in Vix 3.0, write your logic, and press `Ctrl+B`:
    ```bash
-   root@jexos:/dev> cc hello.c -o my_app
-   root@jexos:/dev> ./my_app
+   root@jexos:/dev> vix main.c
+   # Inside Vix: Press Ctrl+B to Save, Compile, and Run instantly!
    ```
 
 ---
