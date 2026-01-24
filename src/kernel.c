@@ -15,6 +15,7 @@
 #include "fat12.h"
 #include "timer.h"
 #include "fs.h"
+#include "task.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -165,8 +166,9 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     if (magic == 0x2BADB002) pmm_init(mboot_info);
     init_paging();
     init_kheap(0x1000000);
-    ide_init();
+    init_fat12();
     fs_init();
+    init_tasking();
     init_timer(100);
     
     // Initialize kernel stack top for user mode transitions

@@ -2,6 +2,7 @@
 #include "isr.h"
 #include "irq.h"
 #include "ports.h"
+#include "task.h"
 
 /* volatile is required so the compiler knows this value changes 
    outside of the normal program flow (in an interrupt) */
@@ -10,6 +11,7 @@ volatile uint32_t system_ticks = 0;
 void timer_callback(registers_t *regs)
 {
     system_ticks++;
+    task_switch();
     (void)regs;
 }
 

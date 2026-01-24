@@ -310,6 +310,27 @@ void execute_command() {
         extern int execve_file(const char* filename, char** argv, char** envp);
         execve_file(filename, argv, NULL);
     }
+    else if (strcmp(shell_buffer, "fork") == 0) {
+        int pid = fork();
+        if (pid == 0) {
+            // Child
+            for(int i=0; i<5; i++) {
+                terminal_writestring(" [CHILD] Hello! PID: 2\n");
+                // Manual busy wait to see multitasking
+                for(volatile int j=0; j<10000000; j++);
+            }
+            terminal_writestring(" [CHILD] Work done. Exiting.\n");
+            while(1); // For now no exit()
+        } else {
+            terminal_writestring(" [PARENT] Spawned child PID: ");
+            char buf[10]; int_to_string(pid, buf);
+            terminal_writestring(buf);
+            terminal_writestring("\n");
+        }
+    }
+    else if (strcmp(shell_buffer, "ps") == 0) {
+        task_list();
+    }
     else if (strcmp(shell_buffer, "free") == 0) {
         char buf[32];
         terminal_writestring("Memory Status:\n  Total: "); int_to_string(pmm_get_total_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");

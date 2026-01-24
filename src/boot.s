@@ -39,4 +39,9 @@ _start:
 1:	hlt
 	jmp 1b
 
+.global read_eip
+read_eip:
+    pop %eax
+    jmp *%eax
+
 .size _start, . - _start
