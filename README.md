@@ -1,27 +1,27 @@
 # 🪐 JexOS
 **The minimal 32-bit Operating System that actually lives.**
 
-JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.4.1**, JexOS has entered the **Multitasking Era**, supporting concurrent processes and a real-time scheduler.
+JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.4.8**, JexOS introduces the "Lazy Peak" workflow, seamlessly connecting your host development environment with the guest OS.
 
 ---
 
-## 🚀 Version 0.4.1: The Multitasking Release
-This milestone transforms JexOS from a single-tasking kernel into a true multitasking environment.
+## 🚀 Version 0.4.8: The Lazy Peak (Copy/Paste) Update
+This release focuses on developer productivity, making it easier than ever to bring external code into JexOS.
 
-### 👥 Process Management & Scheduling
-- **Round-Robin Scheduler**: A timer-driven (IRQ0) scheduler that automatically switches between processes every 10ms.
-- **Process Control Blocks (PCB)**: A professional `task_t` structure (inspired by Linux 0.11 `task_struct`) to manage CPU state, PIDs, and stacks.
-- **`fork()` Capability**: The OS can now clone the current process. Try it in the shell to see the parent and child running simultaneously!
-- **`ps` Utility**: A new system command to list all active processes and their current states (READY, RUNNING, ZOMBIE).
+### 📋 Host-to-Guest Copy/Paste
+- **High-Speed Serial Bridge**: JexOS now treats the serial port (COM1) as a second keyboard. 
+- **Instant Injection**: Simply paste code into your Linux terminal, and it will be "typed" into JexOS instantly. 
+- **Universal Input**: Works everywhere—pasting C functions into Vix 3.0 or complex commands into the shell.
+- **Optimized Rendering**: The Vix editor is now smart enough to handle high-speed text streams without lagging the CPU.
 
-### ✍️ Vix 3.0: The IDE Experience
-- **Infinite Vertical Scrolling**: Edit large source files with automatic view tracking.
-- **Advanced Syntax Highlighting**: Real-time coloring for C keywords, numbers, comments, and syscalls.
-- **Integrated Build**: Press `Ctrl+B` to save, compile, and run your code without leaving the editor.
+### 👥 Multitasking & Isolation (v0.4.x Foundations)
+- **Virtual Memory Isolation**: Every process now runs in its own private 4GB virtual address space.
+- **Deep Page Cloning**: `fork()` now creates full isolated copies of process memory, preventing cross-process crashes.
+- **Stable Scheduler**: A round-robin preemptive scheduler managing concurrent task states.
 
-### 📂 JexFS Persistence
-- **Hardware IDE Driver**: Communicates directly with the `jexos.img` via PIO.
-- **Unix-style Utilities**: `mkdir`, `cp`, `rm`, `mv`, and `cd` support for a full hierarchical filesystem.
+### 📂 Persistence & IDE
+- **JexFS**: Permanent storage on a 1.44MB HDD image.
+- **Vix 3.0**: A professional IDE with infinite scrolling, syntax highlighting, and integrated build tools.
 
 ---
 
@@ -29,20 +29,20 @@ This milestone transforms JexOS from a single-tasking kernel into a true multita
 
 | Feature | Description |
 | :--- | :--- |
-| **Multitasking** | Concurrent process execution with a preemptive scheduler. |
-| **Self-Hosting** | Compile C code natively using the integrated Tiny C Compiler (TCC). |
-| **User Mode** | Stable Ring 3 transition with professional System Call handling (`int 0x80`). |
-| **IDE (Vix 3.0)** | Professional code editing with scrolling and advanced highlighting. |
-| **Persistence** | Real hardware storage on a 1.44MB HDD image. |
+| **Copy/Paste** | Inject text from your host OS directly into JexOS applications. |
+| **Memory Isolation** | Private page directories for every process (v0.4.4+). |
+| **Self-Hosting** | Native C compilation using the integrated TCC. |
+| **IDE (Vix 3.0)** | Advanced code editor with real-time feedback and build triggers. |
+| **Persistence** | Persistent file storage surviving reboots. |
 
 ---
 
-## 🏔️ The Peak Development Workflow
+## 🏔️ The Lazy Peak Workflow
 
-1. **Create & Edit**: `vix hello.c`
-2. **Build & Run**: Press `Ctrl+B` inside the IDE.
-3. **Multitask**: Use `fork` in the shell to spawn background tasks.
-4. **Monitor**: Use `ps` to see your tasks in action.
+1. **Host-Side Copy**: Copy any C code block on your Linux machine.
+2. **Open Editor**: In JexOS, type `vix main.c`.
+3. **Paste**: Right-click/Paste into your Linux terminal. Watch your code appear instantly in JexOS!
+4. **Build & Run**: Press `Ctrl+B` inside Vix to execute your pasted code.
 
 ---
 
@@ -51,20 +51,13 @@ This milestone transforms JexOS from a single-tasking kernel into a true multita
 ```bash
 git clone https://github.com/inasj-cyber/Jex-os.git
 cd Jex-os
-make      # Builds kernel, tools, and persistent image
+make      # Builds kernel and persistent image
 make run  # Boots JexOS in QEMU
 ```
 
 ---
 
-## 🗺️ Roadmap to v0.5
-- [ ] **Virtual Memory Isolation**: Individual address spaces for every process.
-- [ ] **Pipes & Redirection**: Standard IPC support for the shell.
-- [ ] **Signal Handling**: Implementing `signal.h` for process control.
-
----
-
 ## 🤝 Contributing
-JexOS is an educational project. Contributions to the kernel, scheduler optimization, or driver features are welcome!
+JexOS is an educational project. Contributions to process management, IPC, or driver optimization are welcome!
 
 **Developed with ❤️ for the OS Dev community.**

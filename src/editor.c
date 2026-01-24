@@ -45,34 +45,28 @@ int is_digit(char c) {
 }
 
 uint8_t get_char_color(int pos) {
-    // Check for comments first
-    if (pos > 0 && edit_buffer[pos-1] == '/' && edit_buffer[pos] == '/') return 0x08; // Gray for comments
-    // Very basic comment scan (backwards to find if we are in a // comment)
+    // Check for comments
     int line_start = pos;
     while (line_start > 0 && edit_buffer[line_start-1] != '\n') {
-        if (edit_buffer[line_start-1] == '/' && edit_buffer[line_start] == '/') {
-            return 0x08;
-        }
+        if (edit_buffer[line_start-1] == '/' && edit_buffer[line_start] == '/') return 0x08;
         line_start--;
     }
 
-    // Check if inside a string
+    // Strings
     int in_string = 0;
     for (int i = 0; i <= pos; i++) {
         if (edit_buffer[i] == '"' && (i == 0 || edit_buffer[i-1] != '\\')) {
             if (i < pos) in_string = !in_string;
         }
     }
-    if (in_string || edit_buffer[pos] == '"') return 0x06; // Orange
+    if (in_string || edit_buffer[pos] == '"') return 0x06;
 
     // Numbers
-    if (is_digit(edit_buffer[pos]) && (pos == 0 || !is_alpha_num(edit_buffer[pos-1]))) {
-        return 0x0E; // Yellow for numbers
-    }
+    if (is_digit(edit_buffer[pos]) && (pos == 0 || !is_alpha_num(edit_buffer[pos-1]))) return 0x0E;
 
-    // Parens/Braces
+    // Symbols
     char cc = edit_buffer[pos];
-    if (cc == '(' || cc == ')' || cc == '{' || cc == '}' || cc == '[' || cc == ']') return 0x06; // Orange
+    if (cc == '(' || cc == ')' || cc == '{' || cc == '}' || cc == '[' || cc == ']') return 0x06;
 
     if (!is_alpha_num(cc)) return 0x07;
     
@@ -85,25 +79,18 @@ uint8_t get_char_color(int pos) {
         }
         word[len] = '\0';
         
-        for (int i = 0; syscalls[i]; i++) {
-            if (strcmp(word, syscalls[i]) == 0) return 0x0A; // Green
-        }
+        for (int i = 0; syscalls[i]; i++) { if (strcmp(word, syscalls[i]) == 0) return 0x0A; }
 
         int check_pos = pos + len;
         while (check_pos < edit_len && edit_buffer[check_pos] == ' ') check_pos++;
-        if (check_pos < edit_len && edit_buffer[check_pos] == '(') {
-            return 0x0E; // Yellow for functions
-        }
+        if (check_pos < edit_len && edit_buffer[check_pos] == '(') return 0x0E;
 
-        for (int i = 0; keywords[i]; i++) {
-            if (strcmp(word, keywords[i]) == 0) return 0x0B; // Cyan
-        }
+        for (int i = 0; keywords[i]; i++) { if (strcmp(word, keywords[i]) == 0) return 0x0B; }
     } else {
         int start = pos;
         while (start > 0 && is_alpha_num(edit_buffer[start-1])) start--;
         return get_char_color(start);
     }
-    
     return 0x07;
 }
 
@@ -163,16 +150,13 @@ void render_text() {
     char ln_buf[5];
 
     for (int i = 0; i < edit_len; i++) {
-        // Only render if within the current scroll window
         if (line_num > edit_scroll_y && y < VISIBLE_HEIGHT) {
-            // Draw line number if at start of line
             if (x == x_offset) {
                 int_to_string(line_num, ln_buf);
                 for(int k=0; k<3; k++) terminal_putentryat(' ', 0x03, k, y);
                 for(int k=0; ln_buf[k]; k++) terminal_putentryat(ln_buf[k], 0x03, k, y);
                 terminal_putentryat('|', 0x03, 3, y);
             }
-
             char c = edit_buffer[i];
             if (c != '\n') {
                 uint8_t color = get_char_color(i);
@@ -181,10 +165,8 @@ void render_text() {
                 if (x >= EDITOR_WIDTH) { x = x_offset; y++; }
             }
         }
-
         if (edit_buffer[i] == '\n') {
             if (line_num > edit_scroll_y) {
-                // Semicolon check on previous line
                 if (i > 0 && edit_buffer[i-1] != ';' && edit_buffer[i-1] != '{' && edit_buffer[i-1] != '}' && edit_buffer[i-1] != '\n') {
                     if (y < VISIBLE_HEIGHT) terminal_putentryat('/', 0x4F, x, y); 
                 }
@@ -262,9 +244,15 @@ void editor_input(char key) {
         if (edit_len < MAX_FILE_SIZE - 1) {
             int pos = get_buffer_pos(edit_cursor_x, edit_cursor_y);
             for (int i = edit_len; i > pos; i--) edit_buffer[i] = edit_buffer[i-1];
-            edit_buffer[pos] = key; edit_len++; edit_buffer[edit_len] = 0; is_dirty = 1;
+            edit_buffer[pos] = key;
+            edit_len++;
+            edit_buffer[edit_len] = 0;
+            is_dirty = 1;
             if (key == '\n') { edit_cursor_x = 0; edit_cursor_y++; } 
-            else { edit_cursor_x++; if (edit_cursor_x >= (EDITOR_WIDTH - 4)) { edit_cursor_x = 0; edit_cursor_y++; } }
+            else { 
+                edit_cursor_x++; 
+                if (edit_cursor_x >= (EDITOR_WIDTH - 4)) { edit_cursor_x = 0; edit_cursor_y++; }
+            }
         }
     }
     // Update scroll
@@ -272,7 +260,10 @@ void editor_input(char key) {
     if (edit_cursor_y >= edit_scroll_y + VISIBLE_HEIGHT) edit_scroll_y = edit_cursor_y - VISIBLE_HEIGHT + 1;
 
     if (key != 0x13 && key != 0x02) save_status = 0;
-    render_text();
+    
+    // Only render if serial port is empty (to speed up pasting)
+    extern int is_serial_received();
+    if (!is_serial_received()) render_text();
 }
 
 void start_editor(const char* filename) {

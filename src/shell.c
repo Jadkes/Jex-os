@@ -359,7 +359,19 @@ void shell_loop() {
 
 void shell_main() {
     shell_init();
-    while(1) __asm__ volatile("hlt");
+    
+    extern int is_serial_received();
+    extern char read_serial();
+
+    while(1) {
+        // Drain the serial buffer as fast as possible
+        while (is_serial_received()) {
+            char c = read_serial();
+            if (c == '\r') c = '\n';
+            shell_input(c);
+        }
+        __asm__ volatile("hlt");
+    }
 }
 
 void shell_input(char key) {

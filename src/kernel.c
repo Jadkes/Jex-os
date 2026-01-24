@@ -35,6 +35,16 @@ void write_serial(char a) {
    while (is_transmit_empty() == 0);
    outb(PORT, a);
 }
+
+int is_serial_received() {
+   return inb(PORT + 5) & 1;
+}
+
+char read_serial() {
+   while (is_serial_received() == 0);
+   return inb(PORT);
+}
+
 void log_serial(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) write_serial(str[i]);
 }

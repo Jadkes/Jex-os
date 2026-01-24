@@ -97,6 +97,7 @@ void keyboard_callback(registers_t *regs) {
             if (c == 's' || c == 'S') c = 0x13; // Ctrl+S (Save)
             else if (c == 'q' || c == 'Q') c = 0x11; // Ctrl+Q (Quit)
             else if (c == 'b' || c == 'B') c = 0x02; // Ctrl+B (Build)
+            else if (c == 'v' || c == 'V') c = 0x16; // Ctrl+V (Paste)
         }
 
         if (c != 0) {
