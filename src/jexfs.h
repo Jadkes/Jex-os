@@ -30,12 +30,18 @@ struct jex_dir_entry {
     char name[14];      
 } __attribute__((packed));
 
+extern uint32_t cwd_inode;
+
 void jexfs_init();
+void jexfs_read_inode(uint32_t idx, struct jex_inode* inode);
 int jexfs_open(const char* name);
 int jexfs_create(const char* name);
+int jexfs_mkdir(const char* name);
 int jexfs_read(int inode_idx, void* buffer, uint32_t size, uint32_t offset);
 int jexfs_write(int inode_idx, const void* buffer, uint32_t size, uint32_t offset);
+int jexfs_remove(const char* name);
+int jexfs_rename(const char* old_name, const char* new_name);
 int jexfs_get_size(int inode_idx);
-void jexfs_list_dir();
+void jexfs_list_dir(uint32_t inode_idx);
 
 #endif

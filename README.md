@@ -1,28 +1,29 @@
 # 🪐 JexOS
 **The minimal 32-bit Operating System that actually lives.**
 
-JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.3 Persistence**, JexOS has achieved its most significant milestone: a self-contained development environment where code is written, compiled, and stored permanently on disk.
+JexOS is a from-scratch, x86 hobby operating system designed to bridge the gap between "toy" kernels and functional Unix-like systems. With the release of **v0.3.4**, JexOS has achieved its most fluid user experience yet, featuring dynamic navigation and a robust set of Unix-standard filesystem utilities.
 
 ---
 
-## 🚀 Version 0.3: The Persistence Release
-The "Persistence" update transforms JexOS from a transient RAM-based system into a real OS with a permanent memory.
+## 🚀 Version 0.3.4: The Navigation & Utilities Update
+The "Navigation" update transforms JexOS from a flat storage system into a hierarchical, interactive environment mirroring the feel of a classic Linux terminal.
 
-### 💾 Hardware-Level Storage (IDE PIO)
-JexOS now features a native **ATA IDE Driver** using Programmed I/O (PIO). It communicates directly with the virtual hard drive, allowing the kernel to read and write sectors to a persistent `jexos.img`.
+### 🗺️ Dynamic Linux-style Navigation
+- **Active Path Prompt**: The shell now displays your current working directory in real-time (e.g., `root@jexos:/home/jad> `).
+- **Interactive `cd`**: Full support for directory traversal, including `cd ..` to move up and `cd` to return to root.
+- **Path-Aware `ls`**: List contents of the current directory or specify a target path (e.g., `ls /bin`).
 
-### 📂 JexFS: Minix-Inspired Filesystem
-Inspired by the elegance of Linux 0.11 and Minix, we implemented **JexFS**. 
-- **Inodes & Superblocks**: Professional metadata management for files and directories.
-- **Bitmaps**: Efficient tracking of free blocks and inodes.
-- **Persistence**: Every file you create in the shell or edit in Vix survives a reboot.
-- **RootFS Packing**: A dedicated host-side tool (`mkjexfs`) allows you to pre-load files into the OS during the build process via the `rootfs/` directory.
+### 📂 Advanced JexFS Utilities
+We've expanded the JexFS (Minix-inspired) toolkit to support a full development workflow:
+- **`mkdir`**: Create nested directory structures.
+- **`cp`**: Copy files between directories with reliable multi-block streaming.
+- **`rm`**: Safely delete files and free up disk space via bitmap management.
+- **`mv`**: Rename files instantly with metadata-only updates.
+- **Clean Listings**: Automatic hiding of `.` and `..` system entries for a cleaner `ls` output.
 
-### 🛠️ Vix 2.0: The IDE Experience
-The built-in text editor is no longer just a notepad; it's a functional IDE:
-- **Syntax Highlighting**: Real-time coloring for C keywords, syscalls, functions, and strings.
-- **Integrated Build (Ctrl+B)**: One keystroke to save, compile with TCC, and execute.
-- **Visual Debugging**: Red indicators for missing semicolons and a detailed register dump on kernel panics.
+### 🛠️ Peak Compiler Upgrades
+- **Custom Output Names**: Use the `-o` flag with `cc` to name your binaries (e.g., `cc hello.c -o peak`).
+- **Stable Binary Execution**: Fixed filesystem seek and write bugs to ensure compiled ELF binaries execute flawlessly every time.
 
 ---
 
@@ -32,56 +33,49 @@ The built-in text editor is no longer just a notepad; it's a functional IDE:
 | :--- | :--- |
 | **Self-Hosting** | Compile C code natively using the integrated Tiny C Compiler (TCC). |
 | **User Mode** | Stable Ring 3 transition with professional System Call handling (`int 0x80`). |
-| **Memory** | Bitmap-based PMM and Identity Mapping Paging (512MB). |
-| **VGA Interface** | Custom terminal with hardware cursor, scrolling, and ASCII branding. |
-| **Shell** | Unix-style prompt with Command History, inline editing, and binary execution. |
-| **Persistence** | Files stored on a 1.44MB HDD image (`jexos.img`). |
+| **IDE (Vix 2.0)** | Syntax highlighting, line numbers, and integrated `Ctrl+B` build triggers. |
+| **Persistence** | Real hardware communication via IDE PIO driver to `jexos.img`. |
+| **Unix Feel** | Command history, adaptive prompt, and standard utility suite. |
 
 ---
 
 ## 🏔️ The Peak Development Workflow
 
-Experience the ultimate JexOS developer loop:
-
-1. **Host-Side Pre-load**: Drop `.c` files into the `rootfs/` folder on your Linux machine.
-2. **Build**: Run `make` to compile the kernel and pack the disk image.
-3. **Edit**: Open your code in JexOS: `vix mycode.c`.
-4. **Compile & Run**: Press `Ctrl+B` or use the shell:
+1. **Host-Side Pre-load**: Drop files into `rootfs/` on your host machine.
+2. **Build & Pack**: Run `make` to generate the persistent `jexos.img`.
+3. **Navigate & Organize**:
    ```bash
-   root@jexos:/> cc mycode.c -o my_app
-   root@jexos:/> ./my_app
+   root@jexos:/> mkdir dev
+   root@jexos:/> mv hello.c dev/
+   root@jexos:/> cd dev
    ```
-5. **Persistence**: Your binaries and source files are saved to the disk instantly.
+4. **Build & Run**: Use Vix 2.0 or the shell:
+   ```bash
+   root@jexos:/dev> cc hello.c -o my_app
+   root@jexos:/dev> ./my_app
+   ```
 
 ---
 
 ## 🛠️ Installation & Building
 
-### 1. Prerequisites
-Ensure you have the standard x86 build tools and QEMU installed:
-```bash
-sudo apt update && sudo apt install -y build-essential qemu-system-x86 git
-```
-
-### 2. Quick Start
 ```bash
 git clone https://github.com/inasj-cyber/Jex-os.git
 cd Jex-os
-make      # Builds the kernel, tools, and jexos.img
+make      # Builds kernel and persistent image
 make run  # Boots JexOS in QEMU
 ```
 
 ---
 
 ## 🗺️ Roadmap to v0.4
-- [ ] **Multitasking**: Introduction of a scheduler and process forking.
-- [ ] **Virtual Memory**: Moving beyond identity mapping to proper process isolation.
-- [ ] **Standard C Library Expansion**: Implementing more of `stdlib.h` and `unistd.h`.
-- [ ] **Dynamic VFS**: Support for multiple concurrent filesystems.
+- [ ] **Multitasking**: Scheduler and process management.
+- [ ] **Virtual Memory**: Process isolation and paging.
+- [ ] **Pipes & Redirection**: Standard IPC support.
 
 ---
 
 ## 🤝 Contributing
-JexOS is an educational project. Whether you're fixing a bug in the IDE driver or improving the syntax highlighter, your PRs are welcome!
+JexOS is an educational project. Contributions to the kernel, driver optimization, or filesystem features are welcome!
 
 **Developed with ❤️ for the OS Dev community.**

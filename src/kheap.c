@@ -50,6 +50,13 @@ char* strcpy(char* dest, const char* src) {
     return dest;
 }
 
+char* strcat(char* dest, const char* src) {
+    char* d = dest;
+    while (*d) d++;
+    while ((*d++ = *src++));
+    return dest;
+}
+
 char* strstr(const char* haystack, const char* needle) {
     if (!*needle) return (char*)haystack;
     
@@ -73,6 +80,14 @@ char* strchr(const char* s, int c) {
         if (*s == (char)c) return (char*)s;
     }
     return NULL;
+}
+
+char* strrchr(const char* s, int c) {
+    char* last = NULL;
+    for (; *s; s++) {
+        if (*s == (char)c) last = (char*)s;
+    }
+    return last;
 }
 
 char* strncpy(char* dest, const char* src, size_t n) {
