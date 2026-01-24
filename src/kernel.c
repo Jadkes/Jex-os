@@ -165,7 +165,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     if (magic == 0x2BADB002) pmm_init(mboot_info);
     init_paging();
     init_kheap(0x1000000);
-    init_fat12();
+    ide_init();
     fs_init();
     init_timer(100);
     

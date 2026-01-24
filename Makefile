@@ -12,7 +12,7 @@ ASFLAGS = --32
 LDFLAGS = -m elf_i386 -T linker.ld -nostdlib
 
 # Source files
-SOURCES_C = src/kernel.c src/gdt.c src/isr.c src/idt.c src/irq.c src/keyboard.c src/shell.c src/rtc.c src/pmm.c src/paging.c src/kheap.c src/fat12.c src/power.c src/syscall.c src/timer.c src/speaker.c src/elf.c src/fs.c src/editor.c src/sbrk.c src/tcc.c src/exec.c
+SOURCES_C = src/kernel.c src/gdt.c src/isr.c src/idt.c src/irq.c src/keyboard.c src/shell.c src/rtc.c src/pmm.c src/paging.c src/kheap.c src/fat12.c src/power.c src/syscall.c src/timer.c src/speaker.c src/elf.c src/fs.c src/editor.c src/sbrk.c src/tcc.c src/exec.c src/ide.c src/jexfs.c
 SOURCES_S = src/boot.s src/gdt_flush.s src/interrupts.s src/usermode.s
 
 # Object files
@@ -20,11 +20,16 @@ OBJECTS = $(SOURCES_C:.c=.o) $(SOURCES_S:.s=.o)
 
 # Output kernel binary
 KERNEL = jexos.bin
+IMG = jexos.img
 
-all: $(KERNEL)
+all: $(KERNEL) $(IMG)
 
 $(KERNEL): $(OBJECTS)
 	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+
+$(IMG): tools/mkjexfs.c
+	gcc tools/mkjexfs.c -o tools/mkjexfs
+	./tools/mkjexfs $(IMG)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -32,10 +37,10 @@ $(KERNEL): $(OBJECTS)
 %.o: %.s
 	$(AS) $(ASFLAGS) $< -o $@
 
-run: $(KERNEL)
-	qemu-system-i386 -kernel $(KERNEL) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0
+run: $(KERNEL) $(IMG)
+	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0
 
 clean:
-	rm -f $(OBJECTS) $(KERNEL)
+	rm -f $(OBJECTS) $(KERNEL) $(IMG) tools/mkjexfs
 
 .PHONY: all run clean

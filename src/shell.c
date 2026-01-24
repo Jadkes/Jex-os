@@ -7,6 +7,7 @@
 #include "tcc.h"
 #include "exec.h"
 #include "syscall.h"
+#include "jexfs.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -31,10 +32,8 @@ extern size_t terminal_row;
 extern void editor_input(char key);
 extern int editor_running;
 
-// Include headers for proper declarations
 #include "kheap.h"
 #include "pmm.h"
-#include "hello_elf.h"
 
 // Missing function declarations
 extern void beep(int freq, int duration);
@@ -43,8 +42,6 @@ extern void sleep(int seconds);
 extern void reboot(void);
 extern void shutdown(void);
 extern void set_kernel_stack(uint32_t stack);
-extern unsigned char user_hello_elf[];
-extern unsigned int user_hello_elf_len;
 
 #define SHELL_BUFFER_SIZE 256
 #define MAX_HISTORY 5
@@ -127,28 +124,17 @@ void print_logo() {
 void help_command() {
     terminal_writestring("Available commands:\n");
     terminal_writestring("  help      - Show this help message\n");
-    terminal_writestring("  ls        - List files\n");
+    terminal_writestring("  ls        - List files (JexFS)\n");
     terminal_writestring("  touch <f> - Create file\n");
     terminal_writestring("  vix <f>   - Open Text Editor\n");
-    terminal_writestring("  echo <f><t>- Write to file\n");
     terminal_writestring("  cat <f>   - Read file\n");
-    terminal_writestring("  rm <f>    - Delete file\n");
-    terminal_writestring("  sleep <m>- Sleep for ms\n");
-    terminal_writestring("  beep <f><m>- Beep\n");
-    terminal_writestring("  music     - Play JexOS fanfare\n");
-    terminal_writestring("  time/date - Show current time/date\n");
+    terminal_writestring("  mkcode    - Create persistent hello.c\n");
+    terminal_writestring("  tcc <f>   - Compile and run C file\n");
+    terminal_writestring("  cc <f>    - Compile C file to ELF\n");
+    terminal_writestring("  ./<f>     - Execute file\n");
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
-    terminal_writestring("  exec <f>  - Load and run ELF file\n");
-    terminal_writestring("  tcc <f>   - Compile and run C file\n");
-    terminal_writestring("  cc <f>    - Compile C file to ELF\n");
-    terminal_writestring("  ./<f>     - Execute file (ELF/C with shebang)\n");
-    terminal_writestring("  loadhello - Load the LibC Hello App\n");
-    terminal_writestring("  mktest    - Create fixed TEST.ELF\n");
-    terminal_writestring("  usermode  - Enter Ring 3 test\n");
-    terminal_writestring("  teto      - Hidden message\n");
-    terminal_writestring("  panic     - Trigger a kernel panic\n");
 }
 
 void execute_command() {
@@ -169,338 +155,116 @@ void execute_command() {
 
     if (strcmp(shell_buffer, "help") == 0) help_command();
     else if (strcmp(shell_buffer, "clear") == 0) { terminal_initialize(); print_logo(); }
-    else if (strcmp(shell_buffer, "logo") == 0) print_logo();
-    else if (strcmp(shell_buffer, "ls") == 0) fat12_ls();
-    else if (strcmp(shell_buffer, "teto") == 0) {
-        terminal_setcolor(0x04);
-        terminal_writestring("MESSAGE FROM THE OS DEV: I will tell you a secret, I love Teto! hhh\n");
-        terminal_setcolor(0x07);
+    else if (strcmp(shell_buffer, "ls") == 0) jexfs_list_dir();
+    else if (strncmp(shell_buffer, "touch ", 6) == 0) fs_create(shell_buffer + 6);
+    else if (strncmp(shell_buffer, "cat ", 4) == 0) {
+        int fd = fs_open(shell_buffer + 4, 0);
+        if (fd != -1) {
+            char buf[1024];
+            int bytes = fs_read(fd, buf, 1023);
+            if (bytes > 0) {
+                buf[bytes] = '\0';
+                terminal_writestring(buf);
+                terminal_writestring("\n");
+            }
+            fs_close(fd);
+        } else {
+            terminal_writestring("File not found.\n");
+        }
     }
-    else if (strncmp(shell_buffer, "touch ", 6) == 0) fat12_touch(shell_buffer + 6);
     else if (strncmp(shell_buffer, "vix ", 4) == 0) start_editor(shell_buffer + 4);
-    else if (strncmp(shell_buffer, "cat ", 4) == 0) fat12_cat(shell_buffer + 4);
-    else if (strncmp(shell_buffer, "rm ", 3) == 0) fat12_rm(shell_buffer + 3);
-    else if (strncmp(shell_buffer, "sleep ", 6) == 0) sleep(atoi(shell_buffer + 6));
-    else if (strncmp(shell_buffer, "beep ", 5) == 0) {
-        char* f = shell_buffer + 5; char* m = NULL;
-        for (int i = 0; f[i] != '\0'; i++) { if (f[i] == ' ') { f[i] = '\0'; m = f + i + 1; break; } }
-        if (m) beep(atoi(f), atoi(m));
-    }
     else if (strcmp(shell_buffer, "music") == 0) play_tune();
-    else if (strncmp(shell_buffer, "echo ", 5) == 0) {
-        char* f = shell_buffer + 5; char* t = NULL;
-        for (int i = 0; f[i] != '\0'; i++) { if (f[i] == ' ') { f[i] = '\0'; t = f + i + 1; break; } }
-        if (t) fat12_echo(f, t);
-    }
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
-    else if (strcmp(shell_buffer, "loadhello") == 0) {
-        terminal_writestring("Loading HELLO.ELF (Compiled with LibC)...\n");
-        fat12_touch("HELLO.ELF");
-        fat12_write_raw("HELLO.ELF", user_hello_elf, user_hello_elf_len);
-        terminal_writestring("Done.\n");
-    }
-    else if (strcmp(shell_buffer, "mktest") == 0) {
-        terminal_writestring("Creating fixed TEST.ELF at 16MB...\n");
-        uint8_t elf_blob[] = {
-            0x7f, 0x45, 0x4c, 0x46, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x02, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0x00, 0x20, 0x00, 0x01, 0x00, 0x28, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-            0x00, 0x00, 0x00, 0x01, 0x73, 0x00, 0x00, 0x00, 0x73, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
-            0x00, 0x10, 0x00, 0x00, 0xb8, 0x00, 0x00, 0x00, 0x00, 0xbb, 0x67, 0x00, 0x00, 0x01, 0xcd, 0x80,
-            0xb8, 0x01, 0x00, 0x00, 0x00, 0xcd, 0x80, 'H', 'e', 'l', 'l', 'o', ' ', 'E', 'L', 'F', '!', '\n', 0x00
-        };
-        fat12_touch("TEST.ELF");
-        fat12_write_raw("TEST.ELF", elf_blob, sizeof(elf_blob));
-        terminal_writestring("Created.\n");
-    }
     else if (strcmp(shell_buffer, "mkcode") == 0) {
-        terminal_writestring("Creating hello.c...\n");
-        const char* code = 
-            "int main() {\n"
-            "  print(\"Hello from JexOS!\\n\");\n"
-            "  return 0;\n"
-            "}\n";
-        fat12_touch("hello.c");
-        fat12_write_raw("hello.c", (uint8_t*)code, strlen(code));
-        terminal_writestring("Created hello.c. Type 'tcc hello.c' to compile and run it.\n");
-    }
-    else if (strcmp(shell_buffer, "mkmalloc") == 0) {
-        terminal_writestring("Creating test_malloc.c...\n");
-        const char* code = 
-            "int main() {\n"
-            "  char* ptr1 = malloc(100);\n"
-            "  char* ptr2 = malloc(200);\n"
-            "  if (ptr1 && ptr2) {\n"
-            "    print(\"Malloc successful!\\n\");\n"
-            "    free(ptr1);\n"
-            "    free(ptr2);\n"
-            "    print(\"Free successful!\\n\");\n"
-            "  } else {\n"
-            "    print(\"Malloc failed!\\n\");\n"
-            "  }\n"
-            "  return 0;\n"
-            "}\n";
-        fat12_touch("test_m.c");
-        fat12_write_raw("test_m.c", (uint8_t*)code, strlen(code));
-        terminal_writestring("Created test_m.c.\n");
-    }
-    else if (strcmp(shell_buffer, "usermode") == 0) {
-        log_serial("Transitioning to Usermode\n");
-        uint32_t esp; asm volatile("mov %%esp, %0" : "=r"(esp));
-        set_kernel_stack(esp);
-        extern void* kmalloc(size_t size);
-        uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
-        jump_to_user_mode((uint32_t)default_user_start, user_stack);
+        terminal_writestring("Creating hello.c on Persistent Disk...\n");
+        const char* code = "int main() {\n  printf(\"Hello from JexFS Persistence!\\n\");\n  return 0;\n}";
+        fs_create("hello.c");
+        int fd = fs_open("hello.c", 0);
+        fs_write(fd, code, strlen(code));
+        fs_close(fd);
+        terminal_writestring("Done. Use 'ls' to see it.\n");
     }
     else if (strncmp(shell_buffer, "tcc ", 4) == 0) {
         char* filename = shell_buffer + 4;
-        while (*filename == ' ') filename++; // Skip spaces
-        
-        if (strlen(filename) == 0) {
-            terminal_writestring("Usage: tcc <filename.c>\n");
+        while (*filename == ' ') filename++;
+        int fd = fs_open(filename, 0);
+        if (fd < 0) {
+            terminal_writestring("Failed to open C source file\n");
         } else {
-            terminal_writestring("Compiling ");
-            terminal_writestring(filename);
-            terminal_writestring("...\n");
-            
-            // Read C source file
-            int fd = fs_open(filename, O_RDONLY);
-            if (fd < 0) {
-                terminal_writestring("Failed to open C source file\n");
-                return;
-            }
-            
-            uint32_t file_size = fs_seek(fd, 0, 2);
-            fs_seek(fd, 0, 0);
-            
-            char* source = (char*)kmalloc(file_size + 1);
-            if (!source) {
-                terminal_writestring("Failed to allocate memory\n");
-                fs_close(fd);
-                return;
-            }
-            
-            int bytes_read = fs_read(fd, source, file_size);
-            source[bytes_read] = '\0';
+            char* source = (char*)kmalloc(4096);
+            int bytes = fs_read(fd, source, 4095);
+            source[bytes] = '\0';
             fs_close(fd);
-            
-            // Compile and execute
             char* argv[] = {filename, NULL};
             extern int exec_c_code(const char* c_source, char** argv);
-            if (exec_c_code(source, argv) < 0) {
-                terminal_writestring("Compilation or execution failed\n");
-            }
-            
+            exec_c_code(source, argv);
             kfree(source);
         }
     }
     else if (strncmp(shell_buffer, "cc ", 3) == 0) {
-        // Simple C compilation to ELF file
+        char filename[64];
+        char output_file[64] = "a.out";
         char* params = shell_buffer + 3;
         while (*params == ' ') params++;
         
-        char source_file[64];
-        char output_file[64] = "a.out";
-        
-        // Parse source and output files
-        char* space = strchr(params, ' ');
-        if (space) {
-            int len = space - params;
-            if (len < sizeof(source_file)) {
-                strncpy(source_file, params, len);
-                source_file[len] = '\0';
-                
-                // Check for -o flag
-                char* next = space + 1;
-                while (*next == ' ') next++;
-                if (strncmp(next, "-o", 2) == 0) {
-                    next += 2;
-                    while (*next == ' ') next++;
-                    if (*next) {
-                        strcpy(output_file, next);
-                    }
-                }
-            }
-        } else {
-            strcpy(source_file, params);
+        int i = 0;
+        while (params[i] && params[i] != ' ' && i < 63) {
+            filename[i] = params[i];
+            i++;
         }
-        
-        terminal_writestring("Compiling ");
-        terminal_writestring(source_file);
-        terminal_writestring(" to ");
-        terminal_writestring(output_file);
-        terminal_writestring("...\n");
-        
-        // Read source file
-        int fd = fs_open(source_file, O_RDONLY);
+        filename[i] = '\0';
+
+        // Check for -o flag
+        char* next = params + i;
+        while (*next == ' ') next++;
+        if (strncmp(next, "-o", 2) == 0) {
+            next += 2;
+            while (*next == ' ') next++;
+            int j = 0;
+            while (next[j] && next[j] != ' ' && j < 63) {
+                output_file[j] = next[j];
+                j++;
+            }
+            output_file[j] = '\0';
+        }
+
+        int fd = fs_open(filename, 0);
         if (fd < 0) {
-            terminal_writestring("Failed to open source file\n");
-            return;
-        }
-        
-        uint32_t file_size = fs_seek(fd, 0, 2);
-        fs_seek(fd, 0, 0);
-        
-        char* source = (char*)kmalloc(file_size + 1);
-        if (!source) {
-            terminal_writestring("Failed to allocate memory\n");
-            fs_close(fd);
-            return;
-        }
-        
-        int bytes_read = fs_read(fd, source, file_size);
-        source[bytes_read] = '\0';
-        fs_close(fd);
-        
-        // Compile
-        extern tcc_state_t* tcc_new(void);
-        extern void tcc_delete(tcc_state_t* s);
-        extern int tcc_compile_string(tcc_state_t* s, const char* str);
-        extern int tcc_output_file(tcc_state_t* s, const char* filename);
-        
-        tcc_state_t* tcc = tcc_new();
-        if (tcc && tcc_compile_string(tcc, source) == 0) {
-            // Write output file
-            uint8_t* elf_data;
-            uint32_t elf_size;
-            extern int tcc_output_memory(tcc_state_t* s, uint8_t** output, uint32_t* size);
-            
-            if (tcc_output_memory(tcc, &elf_data, &elf_size) == 0) {
-                fat12_touch(output_file);
-                fat12_write_raw(output_file, elf_data, elf_size);
-                terminal_writestring("Compilation successful\n");
-            }
+            terminal_writestring("Failed to open source file: ");
+            terminal_writestring(filename);
+            terminal_writestring("\n");
         } else {
-            terminal_writestring("Compilation failed\n");
+            char* source = (char*)kmalloc(4096);
+            int bytes = fs_read(fd, source, 4095);
+            source[bytes] = '\0';
+            fs_close(fd);
+            tcc_state_t* tcc = tcc_new();
+            if (tcc && tcc_compile_string(tcc, source) == 0) {
+                uint8_t* elf_data; uint32_t elf_size;
+                if (tcc_output_memory(tcc, &elf_data, &elf_size) == 0) {
+                    // Create/Overwrite output file
+                    int out_fd = fs_open(output_file, 0);
+                    if (out_fd < 0) {
+                        fs_create(output_file);
+                        out_fd = fs_open(output_file, 0);
+                    }
+                    fs_write(out_fd, elf_data, elf_size);
+                    fs_close(out_fd);
+                    terminal_writestring("Compilation successful: ");
+                    terminal_writestring(output_file);
+                    terminal_writestring(" created\n");
+                }
+            } else { terminal_writestring("Compilation failed\n"); }
+            if (tcc) tcc_delete(tcc);
+            kfree(source);
         }
-        
-        if (tcc) tcc_delete(tcc);
-        kfree(source);
     }
     else if (strncmp(shell_buffer, "./", 2) == 0) {
-        // Support for ./executable syntax
         char* filename = shell_buffer + 2;
-        
-        // Parse arguments after filename
-        char* argv[16];
-        int argc = 0;
-        
-        argv[argc++] = filename;
-        
-        char* space = strchr(filename, ' ');
-        if (space) {
-            *space = '\0'; // Terminate filename
-            char* arg_start = space + 1;
-            
-            while (*arg_start && argc < 15) {
-                while (*arg_start == ' ') arg_start++;
-                if (!*arg_start) break;
-                
-                argv[argc++] = arg_start;
-                
-                while (*arg_start && *arg_start != ' ') arg_start++;
-                if (*arg_start) {
-                    *arg_start = '\0';
-                    arg_start++;
-                }
-            }
-        }
-        argv[argc] = NULL;
-        
-        // Execute using execve
+        char* argv[] = {filename, NULL};
         extern int execve_file(const char* filename, char** argv, char** envp);
         execve_file(filename, argv, NULL);
-    }
-    else if (strncmp(shell_buffer, "exec ", 5) == 0) {
-        char* cmd_line = shell_buffer + 5;
-        
-        // Parse command line to separate filename and arguments
-        char filename[64];
-        char* argv[16];
-        int argc = 0;
-        
-        // Skip leading spaces
-        while (*cmd_line == ' ') cmd_line++;
-        
-        // Extract filename
-        char* space = strchr(cmd_line, ' ');
-        if (space) {
-            int len = space - cmd_line;
-            if (len < sizeof(filename)) {
-                strncpy(filename, cmd_line, len);
-                filename[len] = '\0';
-                cmd_line = space + 1;
-            }
-        } else {
-            strcpy(filename, cmd_line);
-            cmd_line += strlen(filename);
-        }
-        
-        // Parse arguments
-        while (*cmd_line && argc < 15) {
-            // Skip spaces
-            while (*cmd_line == ' ') cmd_line++;
-            if (!*cmd_line) break;
-            
-            argv[argc++] = cmd_line;
-            
-            // Find next space
-            while (*cmd_line && *cmd_line != ' ') cmd_line++;
-            if (*cmd_line) {
-                *cmd_line = '\0';  // Null terminate argument
-                cmd_line++;
-            }
-        }
-        argv[argc] = NULL;
-        
-        // Load and execute ELF
-        extern void* kmalloc(size_t size);
-        uint8_t* elf_buf = (uint8_t*)kmalloc(1024 * 64);
-        int size = fat12_read_file(filename, elf_buf);
-        if (size > 0) {
-            uint32_t entry = elf_load(elf_buf); // For now use old version, can upgrade later
-            if (entry != 0) {
-                uint32_t esp; asm volatile("mov %%esp, %0" : "=r"(esp));
-                set_kernel_stack(esp);
-                uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
-                
-                // Setup stack with argc/argv
-                uint32_t new_esp;
-                setup_user_stack(user_stack, argc, argv, &new_esp);
-                
-                terminal_writestring("Executing ELF with ");
-                char buf[10];
-                int_to_string(argc, buf);
-                terminal_writestring(buf);
-                terminal_writestring(" arguments...\n");
-                
-                log_serial("Executing ELF at: "); log_hex_serial(entry);
-                log_serial(" with ESP: "); log_hex_serial(new_esp);
-                
-                jump_to_user_mode(entry, new_esp);
-            }
-        } else {
-            terminal_writestring("File not found or empty.\n");
-        }
-    }
-    else if (strcmp(shell_buffer, "time") == 0) {
-        rtc_time_t t = read_rtc(); char buf[10];
-        int_to_string(t.hours, buf); if (t.hours < 10) terminal_putchar('0');
-        terminal_writestring(buf); terminal_putchar(':');
-        int_to_string(t.minutes, buf); if (t.minutes < 10) terminal_putchar('0');
-        terminal_writestring(buf); terminal_putchar(':');
-        int_to_string(t.seconds, buf); if (t.seconds < 10) terminal_putchar('0');
-        terminal_writestring(buf); terminal_writestring(" UTC\n");
-    }
-    else if (strcmp(shell_buffer, "date") == 0) {
-        rtc_time_t t = read_rtc(); char buf[10];
-        int_to_string(t.day, buf); if (t.day < 10) terminal_putchar('0');
-        terminal_writestring(buf); terminal_putchar('/');
-        int_to_string(t.month, buf); if (t.month < 10) terminal_putchar('0');
-        terminal_writestring(buf); terminal_putchar('/');
-        int_to_string(t.year, buf); terminal_writestring(buf); terminal_writestring("\n");
     }
     else if (strcmp(shell_buffer, "free") == 0) {
         char buf[32];
@@ -508,7 +272,6 @@ void execute_command() {
         terminal_writestring("  Used:  "); int_to_string(pmm_get_used_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
         terminal_writestring("  Free:  "); int_to_string(pmm_get_free_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
     }
-    else if (strcmp(shell_buffer, "panic") == 0) { int a = 1, b = 0; int c = a / b; terminal_putchar(c); }
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown command: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
@@ -521,7 +284,7 @@ void execute_command() {
 
 void shell_init() {
     print_logo();
-    terminal_writestring("\nWelcome to JexOS v0.1 Final!\nType 'help' for a list of commands.\n\n");
+    terminal_writestring("\nWelcome to JexOS v0.3 Persistence Release!\nType 'help' for a list of commands.\n\n");
     print_prompt();
 }
 
@@ -536,82 +299,36 @@ void shell_main() {
 }
 
 void shell_input(char key) {
-    if (editor_running) {
-        editor_input(key);
-        return;
-    }
-
-    if (key == '\n') {
-        execute_command();
-        return;
-    }
-    
-    if ((unsigned char)key == 0x82) { // Left
-        if (cursor_pos > 0) cursor_pos--;
-        shell_refresh_line();
-        return;
-    }
-    if ((unsigned char)key == 0x83) { // Right
-        if (cursor_pos < buffer_len) cursor_pos++;
-        shell_refresh_line();
-        return;
-    }
-    if ((unsigned char)key == 0x80) { // Up
+    if (editor_running) { editor_input(key); return; }
+    if (key == '\n') { execute_command(); return; }
+    if ((unsigned char)key == 0x82) { if (cursor_pos > 0) cursor_pos--; shell_refresh_line(); return; }
+    if ((unsigned char)key == 0x83) { if (cursor_pos < buffer_len) cursor_pos++; shell_refresh_line(); return; }
+    if ((unsigned char)key == 0x80) {
         if (history_count > 0) {
             if (history_index > 0) history_index--;
             int i = 0;
-            while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) {
-                shell_buffer[i] = history[history_index][i];
-                i++;
-            }
-            shell_buffer[i] = 0;
-            buffer_len = i;
-            cursor_pos = i;
-            shell_refresh_line();
+            while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) { shell_buffer[i] = history[history_index][i]; i++; }
+            shell_buffer[i] = 0; buffer_len = i; cursor_pos = i; shell_refresh_line();
         }
         return;
     }
-    if ((unsigned char)key == 0x81) { // Down
+    if ((unsigned char)key == 0x81) {
         if (history_count > 0 && history_index < history_count) {
             history_index++;
-            if (history_index == history_count) {
-                shell_buffer[0] = 0;
-                buffer_len = 0;
-                cursor_pos = 0;
-            } else {
-                int i = 0;
-                while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) {
-                    shell_buffer[i] = history[history_index][i];
-                    i++;
-                }
-                shell_buffer[i] = 0;
-                buffer_len = i;
-                cursor_pos = i;
-            }
+            if (history_index == history_count) { shell_buffer[0] = 0; buffer_len = 0; cursor_pos = 0; }
+            else { int i = 0; while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) { shell_buffer[i] = history[history_index][i]; i++; }
+                shell_buffer[i] = 0; buffer_len = i; cursor_pos = i; }
             shell_refresh_line();
         }
         return;
     }
-
     if (key == '\b') {
         if (cursor_pos > 0) {
-            for (int i = cursor_pos - 1; i < buffer_len; i++) {
-                shell_buffer[i] = shell_buffer[i+1];
-            }
-            buffer_len--;
-            cursor_pos--;
-            shell_refresh_line();
+            for (int i = cursor_pos - 1; i < buffer_len; i++) shell_buffer[i] = shell_buffer[i+1];
+            buffer_len--; cursor_pos--; shell_refresh_line();
         }
     } else if (buffer_len < SHELL_BUFFER_SIZE - 1) {
-        if (cursor_pos < buffer_len) {
-            for (int i = buffer_len; i > cursor_pos; i--) {
-                shell_buffer[i] = shell_buffer[i-1];
-            }
-        }
-        shell_buffer[cursor_pos] = key;
-        buffer_len++;
-        cursor_pos++;
-        shell_buffer[buffer_len] = 0;
-        shell_refresh_line();
+        if (cursor_pos < buffer_len) { for (int i = buffer_len; i > cursor_pos; i--) shell_buffer[i] = shell_buffer[i-1]; }
+        shell_buffer[cursor_pos] = key; buffer_len++; cursor_pos++; shell_buffer[buffer_len] = 0; shell_refresh_line();
     }
 }

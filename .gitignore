@@ -1,7 +1,19 @@
+# Build artifacts
 *.o
 *.bin
+*.a
+tools/mkjexfs
+
+# Disk images
+*.img
 *.iso
-linux 0.11/
-*.bin
-*.o
+
+# Host-side files
 a.out
+rootfs/
+
+# References and temp files
+linux 0.11/
+Linux-0.11/
+.swp
+*~

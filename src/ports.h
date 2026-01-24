@@ -25,6 +25,16 @@ static inline void outw(uint16_t port, uint16_t val)
     asm volatile ( "outw %0, %1" : : "a"(val), "Nd"(port) );
 }
 
+static inline void insw(uint16_t port, void* addr, uint32_t count)
+{
+    asm volatile ("cld; rep insw" : "+D"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
+static inline void outsw(uint16_t port, const void* addr, uint32_t count)
+{
+    asm volatile ("cld; rep outsw" : "+S"(addr), "+c"(count) : "d"(port));
+}
+
 /* Wait a very small amount of time */
 static inline void io_wait(void)
 {
