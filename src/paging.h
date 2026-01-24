@@ -45,6 +45,7 @@ typedef struct page_directory {
 } __attribute__((aligned(4096))) page_directory_t;
 
 void init_paging();
+void map_page(void* physaddr, void* virtualaddr, unsigned int flags);
 void page_fault_handler(registers_t regs);
 
 #endif

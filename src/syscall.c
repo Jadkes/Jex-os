@@ -18,13 +18,11 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == 1) /* exit */
     {
         /* ... existing exit logic ... */
-        log_serial("Process exited via syscall. Resetting stack.\n");
-        terminal_writestring("\n[Program exited]\n");
         outb(0x20, 0x20); 
         asm volatile (
             "mov $0x10000, %%esp \n"
             "sti                 \n"
-            "jmp shell_main      \n"
+            "jmp shell_loop      \n"
             : : : "memory"
         );
     }
@@ -48,6 +46,28 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == 6) /* seek */
     {
         regs->eax = fs_seek(regs->ebx, regs->ecx, regs->edx);
+    }
+    else if (regs->eax == 7) /* sbrk */
+    {
+        extern void* sbrk(intptr_t increment);
+        regs->eax = (uint32_t)sbrk(regs->ebx);
+    }
+    else if (regs->eax == SYS_EXECVE) /* execve */
+    {
+        const char* filename = (const char*)regs->ebx;
+        char** argv = (char**)regs->ecx;
+        char** envp = (char**)regs->edx;
+        
+        extern int execve_file(const char* filename, char** argv, char** envp);
+        regs->eax = execve_file(filename, argv, envp);
+    }
+    else if (regs->eax == SYS_FORK) /* fork */
+    {
+        regs->eax = -1; // Not implemented yet
+    }
+    else if (regs->eax == SYS_WAITPID) /* waitpid */
+    {
+        regs->eax = -1; // Not implemented yet
     }
 }
 

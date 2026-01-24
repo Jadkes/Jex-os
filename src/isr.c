@@ -53,6 +53,38 @@ void isr_install()
     idt_set_gate(128, (uint32_t)isr128, 0x08, 0xEE);
 }
 
+// Helper for hex printing
+static void print_hex(uint32_t n) {
+    char *digits = "0123456789ABCDEF";
+    terminal_writestring("0x");
+    for (int i = 28; i >= 0; i -= 4) {
+        terminal_putchar(digits[(n >> i) & 0xF]);
+    }
+}
+
+void print_registers(registers_t *regs) {
+    terminal_writestring("\nRegisters:\n");
+    terminal_writestring("EAX: "); print_hex(regs->eax); terminal_writestring("  ");
+    terminal_writestring("EBX: "); print_hex(regs->ebx); terminal_writestring("  ");
+    terminal_writestring("ECX: "); print_hex(regs->ecx); terminal_writestring("  ");
+    terminal_writestring("EDX: "); print_hex(regs->edx); terminal_writestring("\n");
+    
+    terminal_writestring("ESI: "); print_hex(regs->esi); terminal_writestring("  ");
+    terminal_writestring("EDI: "); print_hex(regs->edi); terminal_writestring("  ");
+    terminal_writestring("EBP: "); print_hex(regs->ebp); terminal_writestring("  ");
+    terminal_writestring("ESP: "); print_hex(regs->esp); terminal_writestring("\n");
+    
+    terminal_writestring("EIP: "); print_hex(regs->eip); terminal_writestring("  ");
+    terminal_writestring("CS:  "); print_hex(regs->cs);  terminal_writestring("  ");
+    terminal_writestring("EFLAGS: "); print_hex(regs->eflags); terminal_writestring("\n");
+    
+    terminal_writestring("Int: "); print_hex(regs->int_no); terminal_writestring("  ");
+    terminal_writestring("Err: "); print_hex(regs->err_code); terminal_writestring("\n");
+    
+    terminal_writestring("UserESP: "); print_hex(regs->useresp); terminal_writestring("  ");
+    terminal_writestring("SS: "); print_hex(regs->ss); terminal_writestring("\n");
+}
+
 void isr_handler(registers_t regs)
 {
     if (regs.int_no == 128) {
@@ -75,6 +107,8 @@ void isr_handler(registers_t regs)
     if (regs.int_no < 32) {
         terminal_writestring("Exception: ");
         terminal_writestring(exception_messages[regs.int_no]);
+        terminal_writestring("\n");
+        print_registers(&regs);
         terminal_writestring("\nSystem Halted.\n");
         for(;;) asm volatile ("hlt");
     }

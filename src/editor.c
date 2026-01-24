@@ -2,6 +2,9 @@
 #include "fs.h"
 #include "shell.h"
 #include "kheap.h"
+#include "string.h"
+#include "tcc.h"
+#include "exec.h"
 #include <stddef.h>
 
 extern void terminal_initialize();
@@ -10,7 +13,8 @@ extern void terminal_putchar(char c);
 extern void terminal_setcolor(uint8_t color);
 extern void terminal_putentryat(char c, uint8_t color, size_t x, size_t y);
 extern void update_cursor(int x, int y);
-extern void shell_init(); // To return to shell
+extern void shell_init();
+extern void int_to_string(int n, char* str);
 
 #define EDITOR_WIDTH 80
 #define EDITOR_HEIGHT 25
@@ -23,128 +27,287 @@ int edit_len = 0;
 char current_filename[32];
 int editor_running = 0;
 
+// States for UI
+int save_status = 0; // 0: normal, 1: ok, 2: error
+int quit_confirm = 0; // 0: normal, 1: asking
+int is_dirty = 0;
+
+static const char* keywords[] = {"int", "void", "return", "if", "else", "for", "while", "char", NULL};
+static const char* syscalls[] = {"print", "printf", NULL};
+
+int is_alpha_num(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+uint8_t get_char_color(int pos) {
+    // Check if inside a string
+    int in_string = 0;
+    for (int i = 0; i <= pos; i++) {
+        if (edit_buffer[i] == '"' && (i == 0 || edit_buffer[i-1] != '\\')) {
+            if (i < pos) in_string = !in_string;
+        }
+    }
+    if (in_string) return 0x06; // Orange for string content
+    if (edit_buffer[pos] == '"') return 0x06; // Orange for quotes
+
+    // Parens
+    if (edit_buffer[pos] == '(' || edit_buffer[pos] == ')') return 0x06; // Orange for parens
+
+    if (!is_alpha_num(edit_buffer[pos])) return 0x07;
+    
+    if (pos == 0 || !is_alpha_num(edit_buffer[pos-1])) {
+        char word[32];
+        int len = 0;
+        while (pos + len < edit_len && is_alpha_num(edit_buffer[pos + len]) && len < 31) {
+            word[len] = edit_buffer[pos + len];
+            len++;
+        }
+        word[len] = '\0';
+        
+        // Priority 1: Syscalls
+        for (int i = 0; syscalls[i]; i++) {
+            if (strcmp(word, syscalls[i]) == 0) return 0x0A; // Green for syscalls
+        }
+
+        // Priority 2: Functions (word followed by '(')
+        int check_pos = pos + len;
+        while (check_pos < edit_len && edit_buffer[check_pos] == ' ') check_pos++;
+        if (check_pos < edit_len && edit_buffer[check_pos] == '(') {
+            return 0x0E; // Yellow for functions
+        }
+
+        // Priority 3: Keywords
+        for (int i = 0; keywords[i]; i++) {
+            if (strcmp(word, keywords[i]) == 0) return 0x0B; // Cyan for keywords
+        }
+    } else {
+        // Find start of this word to determine its context
+        int start = pos;
+        while (start > 0 && is_alpha_num(edit_buffer[start-1])) start--;
+        return get_char_color(start);
+    }
+    
+    return 0x07;
+}
+
 void draw_status_bar() {
     for(int x=0; x<EDITOR_WIDTH; x++) terminal_putentryat(' ', 0x70, x, EDITOR_HEIGHT-1);
     
-    char* title = " JexOS Editor v0.1 ";
-    for(int i=0; title[i]; i++) terminal_putentryat(title[i], 0x70, i, EDITOR_HEIGHT-1);
+    int pos = 0;
+    char* prefix = " FILE: ";
+    for(int i=0; prefix[i]; i++) terminal_putentryat(prefix[i], 0x70, pos++, EDITOR_HEIGHT-1);
+    for(int i=0; current_filename[i]; i++) terminal_putentryat(current_filename[i], 0x70, pos++, EDITOR_HEIGHT-1);
+    
+    char l_str[10], c_str[10];
+    int_to_string(edit_cursor_y + 1, l_str);
+    int_to_string(edit_cursor_x + 1, c_str);
+    
+    char* mid = " | L: ";
+    for(int i=0; mid[i]; i++) terminal_putentryat(mid[i], 0x70, pos++, EDITOR_HEIGHT-1);
+    for(int i=0; l_str[i]; i++) terminal_putentryat(l_str[i], 0x70, pos++, EDITOR_HEIGHT-1);
+    
+    char* c_mid = " C: ";
+    for(int i=0; c_mid[i]; i++) terminal_putentryat(c_mid[i], 0x70, pos++, EDITOR_HEIGHT-1);
+    for(int i=0; c_str[i]; i++) terminal_putentryat(c_str[i], 0x70, pos++, EDITOR_HEIGHT-1);
+    
+    if (save_status == 1) {
+        char* msg = " [SAVE OK] ";
+        for(int i=0; msg[i]; i++) terminal_putentryat(msg[i], 0x2F, pos++, EDITOR_HEIGHT-1);
+    } else if (save_status == 2) {
+        char* msg = " [SAVE FAIL] ";
+        for(int i=0; msg[i]; i++) terminal_putentryat(msg[i], 0x4F, pos++, EDITOR_HEIGHT-1);
+    }
 
-    char* help = " Ctrl+S: Save | Ctrl+Q: Quit ";
-    int help_len = 0; while(help[help_len]) help_len++;
+    char* help = " | ^S:Save ^B:Build ^Q:Quit ";
+    int help_len = strlen(help);
     for(int i=0; help[i]; i++) terminal_putentryat(help[i], 0x70, EDITOR_WIDTH - help_len + i, EDITOR_HEIGHT-1);
 }
 
 void render_text() {
-    terminal_initialize(); // Clear screen
+    terminal_initialize(); 
     draw_status_bar();
     
-    int x = 0, y = 0;
+    if (quit_confirm) {
+        int box_w = 40, box_h = 5;
+        int bx = (EDITOR_WIDTH - box_w) / 2;
+        int by = (EDITOR_HEIGHT - box_h) / 2;
+        for (int y = by; y < by + box_h; y++) {
+            for (int x = bx; x < bx + box_w; x++) {
+                terminal_putentryat(' ', 0x1F, x, y);
+            }
+        }
+        char* msg = "Save modified buffer? (y/n)";
+        int msg_len = strlen(msg);
+        for(int i=0; msg[i]; i++) terminal_putentryat(msg[i], 0x1F, bx + (box_w - msg_len)/2 + i, by + 2);
+        update_cursor(bx + (box_w - msg_len)/2 + msg_len + 1, by + 2);
+        return;
+    }
+
+    int x_offset = 4;
+    int x = x_offset, y = 0;
+    int line_num = 1;
+
+    char ln_buf[5];
+    int_to_string(line_num, ln_buf);
+    for(int i=0; ln_buf[i]; i++) terminal_putentryat(ln_buf[i], 0x03, i, y);
+    terminal_putentryat('|', 0x03, 3, y);
+
     for (int i = 0; i < edit_len; i++) {
         char c = edit_buffer[i];
         if (c == '\n') {
+            if (i > 0 && edit_buffer[i-1] != ';' && edit_buffer[i-1] != '{' && edit_buffer[i-1] != '}' && edit_buffer[i-1] != '\n') {
+                terminal_putentryat('/', 0x4F, x, y); 
+            }
+            x = x_offset;
+            y++;
+            line_num++;
+            if (y >= EDITOR_HEIGHT - 1) break;
+            int_to_string(line_num, ln_buf);
+            for(int k=0; k<3; k++) terminal_putentryat(' ', 0x03, k, y);
+            for(int k=0; ln_buf[k]; k++) terminal_putentryat(ln_buf[k], 0x03, k, y);
+            terminal_putentryat('|', 0x03, 3, y);
+        } else {
+            uint8_t color = get_char_color(i);
+            terminal_putentryat(c, color, x, y);
+            x++;
+            if (x >= EDITOR_WIDTH) { x = x_offset; y++; if (y >= EDITOR_HEIGHT - 1) break; }
+        }
+    }
+    update_cursor(edit_cursor_x + x_offset, edit_cursor_y);
+}
+
+int get_buffer_pos(int cursor_x, int cursor_y) {
+    int x = 0, y = 0, pos = 0;
+    while (pos < edit_len) {
+        if (y == cursor_y && x == cursor_x) return pos;
+        if (edit_buffer[pos] == '\n') {
             x = 0;
             y++;
         } else {
-            terminal_putentryat(c, 0x07, x, y);
             x++;
-            if (x >= EDITOR_WIDTH) { x = 0; y++; }
+            if (x >= (EDITOR_WIDTH - 4)) { x = 0; y++; }
         }
+        if (y > cursor_y) return pos;
+        pos++;
     }
-    update_cursor(edit_cursor_x, edit_cursor_y);
+    return pos;
 }
 
-void save_file() {
-    // 1. Check if file exists, if not touch it
-    // For now we assume touch was done or fs_open handles it?
-    // Our fs_open is simple. Let's just try to open.
-    
+int save_file_internal() {
     int fd = fs_open(current_filename, 0);
-    if (fd == -1) {
-        // Try creating it? Our fs doesn't have create yet.
-        // Assume user ran 'touch' first or use fat12_touch hack
-        // But we are in kernel mode so we can cheat.
-        // Let's just assume it exists for this V1.
-    }
-    
     if (fd != -1) {
-        fs_write(fd, edit_buffer, edit_len);
+        int written = fs_write(fd, edit_buffer, edit_len);
         fs_close(fd);
-        
-        // Flash status bar
-        for(int x=0; x<EDITOR_WIDTH; x++) terminal_putentryat(' ', 0x20, x, EDITOR_HEIGHT-1);
-        char* msg = " File Saved! ";
-        for(int i=0; msg[i]; i++) terminal_putentryat(msg[i], 0x20, i, EDITOR_HEIGHT-1);
+        if (written == (int)edit_len) {
+            save_status = 1;
+            is_dirty = 0;
+            return 0;
+        }
     }
+    save_status = 2;
+    return -1;
 }
 
 void editor_input(char key) {
     if (!editor_running) return;
 
+    if (quit_confirm) {
+        if (key == 'y' || key == 'Y') {
+            save_file_internal();
+            editor_running = 0;
+            terminal_initialize();
+            shell_init();
+        } else if (key == 'n' || key == 'N') {
+            editor_running = 0;
+            terminal_initialize();
+            shell_init();
+        }
+        quit_confirm = 0;
+        if (editor_running) render_text();
+        return;
+    }
+
     if (key == 0x11) { // Ctrl+Q
-        editor_running = 0;
-        terminal_initialize();
-        shell_init();
+        if (is_dirty) {
+            quit_confirm = 1;
+            render_text();
+        } else {
+            editor_running = 0;
+            terminal_initialize();
+            shell_init();
+        }
         return;
     }
     else if (key == 0x13) { // Ctrl+S
-        save_file();
+        save_file_internal();
+    }
+    else if (key == 0x02) { // Ctrl+B
+        save_file_internal();
+        terminal_initialize();
+        terminal_writestring("Compiling ");
+        terminal_writestring(current_filename);
+        terminal_writestring("\n");
+        exec_c_code(edit_buffer, NULL);
+        terminal_writestring("\nPress any key to return to editor.");
         return;
     }
-    // Arrows (0x80 - 0x83)
-    else if ((unsigned char)key == 0x80) { if (edit_cursor_y > 0) edit_cursor_y--; } // Up
-    else if ((unsigned char)key == 0x81) { edit_cursor_y++; } // Down
-    else if ((unsigned char)key == 0x82) { if (edit_cursor_x > 0) edit_cursor_x--; } // Left
-    else if ((unsigned char)key == 0x83) { if (edit_cursor_x < EDITOR_WIDTH-1) edit_cursor_x++; } // Right
+    else if ((unsigned char)key == 0x80) { if (edit_cursor_y > 0) edit_cursor_y--; } 
+    else if ((unsigned char)key == 0x81) { edit_cursor_y++; } 
+    else if ((unsigned char)key == 0x82) { if (edit_cursor_x > 0) edit_cursor_x--; } 
+    else if ((unsigned char)key == 0x83) { if (edit_cursor_x < (EDITOR_WIDTH-5)) edit_cursor_x++; } 
     else if (key == '\b') {
-        // Simple backspace (only at end of buffer for now to keep it simple)
-        if (edit_len > 0) {
+        int pos = get_buffer_pos(edit_cursor_x, edit_cursor_y);
+        if (pos > 0) {
+            for (int i = pos - 1; i < edit_len - 1; i++) edit_buffer[i] = edit_buffer[i+1];
             edit_len--;
             edit_buffer[edit_len] = 0;
-            // Need to update cursor logic to follow deletion
+            is_dirty = 1;
             if (edit_cursor_x > 0) edit_cursor_x--;
-        }
-    }
-    else {
-        // Insert char
-        if (edit_len < MAX_FILE_SIZE - 1) {
-            edit_buffer[edit_len++] = key;
-            edit_buffer[edit_len] = 0;
-            if (key == '\n') {
-                edit_cursor_x = 0;
-                edit_cursor_y++;
-            } else {
-                edit_cursor_x++;
-                if (edit_cursor_x >= EDITOR_WIDTH) {
-                    edit_cursor_x = 0;
-                    edit_cursor_y++;
-                }
+            else if (edit_cursor_y > 0) { 
+                edit_cursor_y--; 
+                int line_pos = 0, y = 0;
+                while (y < edit_cursor_y) { if(edit_buffer[line_pos++] == '\n') y++; }
+                int x = 0;
+                while(line_pos < edit_len && edit_buffer[line_pos] != '\n') { line_pos++; x++; }
+                edit_cursor_x = x;
             }
         }
     }
+    else {
+        if (key < 32 && key != '\n' && key != '\t') return;
+        if (edit_len < MAX_FILE_SIZE - 1) {
+            int pos = get_buffer_pos(edit_cursor_x, edit_cursor_y);
+            for (int i = edit_len; i > pos; i--) edit_buffer[i] = edit_buffer[i-1];
+            edit_buffer[pos] = key;
+            edit_len++;
+            edit_buffer[edit_len] = 0;
+            is_dirty = 1;
+            if (key == '\n') { edit_cursor_x = 0; edit_cursor_y++; } 
+            else { 
+                edit_cursor_x++; 
+                if (edit_cursor_x >= (EDITOR_WIDTH - 4)) { edit_cursor_x = 0; edit_cursor_y++; }
+            }
+        }
+    }
+    if (key != 0x13 && key != 0x02) save_status = 0;
     render_text();
 }
 
 void start_editor(const char* filename) {
-    // Copy filename
     for(int i=0; i<31 && filename[i]; i++) current_filename[i] = filename[i];
     current_filename[31] = 0;
-
-    // Alloc buffer
     if (!edit_buffer) edit_buffer = (char*)kmalloc(MAX_FILE_SIZE);
-    
-    // Read existing file
     int fd = fs_open(filename, 0);
     if (fd != -1) {
         edit_len = fs_read(fd, edit_buffer, MAX_FILE_SIZE);
         fs_close(fd);
-    } else {
-        edit_len = 0;
-    }
+    } else { edit_len = 0; }
     edit_buffer[edit_len] = 0;
-
     editor_running = 1;
     edit_cursor_x = 0;
     edit_cursor_y = 0;
-    
+    save_status = 0;
+    quit_confirm = 0;
+    is_dirty = 0;
     render_text();
 }

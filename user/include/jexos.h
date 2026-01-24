@@ -47,4 +47,10 @@ static inline int sys_seek(int fd, int offset, int whence) {
     return ret;
 }
 
+static inline void* sys_sbrk(intptr_t increment) {
+    void* ret;
+    asm volatile("int $0x80" : "=a"(ret) : "a"(7), "b"(increment));
+    return ret;
+}
+
 #endif

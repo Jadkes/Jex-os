@@ -26,6 +26,18 @@ page_table_t* get_table(int table_idx) {
     return new_table;
 }
 
+void map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
+    uint32_t pdindex = (uint32_t)virtualaddr >> 22;
+    uint32_t ptindex = ((uint32_t)virtualaddr >> 12) & 0x03FF;
+
+    page_table_t* table = get_table(pdindex);
+    
+    table->pages[ptindex].frame = (uint32_t)physaddr >> 12;
+    table->pages[ptindex].present = 1;
+    table->pages[ptindex].rw = 1;
+    table->pages[ptindex].user = 1;
+}
+
 void init_paging()
 {
     uint32_t* dir_ptr = (uint32_t*)&kernel_directory;

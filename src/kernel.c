@@ -16,6 +16,9 @@
 #include "timer.h"
 #include "fs.h"
 
+// Kernel stack for user mode transitions
+uint32_t kernel_stack_top;
+
 #define PORT 0x3f8
 void init_serial() {
    outb(PORT + 1, 0x00);
@@ -165,6 +168,16 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     init_fat12();
     fs_init();
     init_timer(100);
+    
+    // Initialize kernel stack top for user mode transitions
+    extern void* kmalloc(size_t size);
+    void* kernel_stack = kmalloc(8192);
+    kernel_stack_top = (uint32_t)kernel_stack + 8192;
+    
+    // Initialize syscalls
+    extern void init_syscalls();
+    init_syscalls();
+    
     __asm__ volatile("sti");
     
     shell_main();

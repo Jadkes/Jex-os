@@ -87,12 +87,23 @@ int fs_read(int fd, void* buffer, uint32_t size) {
 int fs_write(int fd, const void* buffer, uint32_t size) {
     if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -1;
 
-    // Simple check: don't write past 512 bytes (our 1-cluster limit for now)
-    if (file_table[fd].offset + size > 512) {
-        size = 512 - file_table[fd].offset;
+    // Remove 512 byte limit. 
+    // Since we use a simple (Index -> Sector) mapping in fs_open:
+    // file_table[fd].data_start_sector = (33 + found_idx) * 512;
+    // We are essentially overwriting the "next" file if we grow too large.
+    // BUT, for this "lazy" request and self-hosting proof-of-concept on a RAM disk,
+    // we will allow it. 
+    // Real fix requires a proper FAT allocator.
+    
+    // Safety check for RAM Disk bounds
+    uint32_t max_disk_size = 1440 * 1024;
+    uint32_t absolute_offset = file_table[fd].data_start_sector + file_table[fd].offset;
+    
+    if (absolute_offset + size > max_disk_size) {
+        size = max_disk_size - absolute_offset;
     }
 
-    uint8_t* disk_ptr = ram_disk + file_table[fd].data_start_sector + file_table[fd].offset;
+    uint8_t* disk_ptr = ram_disk + absolute_offset;
     memcpy(disk_ptr, buffer, size);
     
     file_table[fd].offset += size;

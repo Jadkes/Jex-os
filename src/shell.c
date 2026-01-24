@@ -1,16 +1,20 @@
 #include "shell.h"
+#include "keyboard.h"
 #include "rtc.h"
 #include "pmm.h"
-#include "fat12.h"
-#include "power.h"
-#include "timer.h"
-#include "speaker.h"
+#include "fs.h"
 #include "elf.h"
-#include "gdt.h"
-#include "editor.h"
-#include "hello_elf.h"
+#include "tcc.h"
+#include "exec.h"
+#include "syscall.h"
 #include <stddef.h>
 #include <stdint.h>
+
+// Forward declarations for string functions
+char* strchr(const char* s, int c);
+char* strncpy(char* dest, const char* src, size_t n);
+char* strcpy(char* dest, const char* src);
+size_t strlen(const char* s);
 
 extern void terminal_writestring(const char* data);
 extern void terminal_putchar(char c);
@@ -26,6 +30,21 @@ extern size_t terminal_row;
 
 extern void editor_input(char key);
 extern int editor_running;
+
+// Include headers for proper declarations
+#include "kheap.h"
+#include "pmm.h"
+#include "hello_elf.h"
+
+// Missing function declarations
+extern void beep(int freq, int duration);
+extern void start_editor(const char* filename);
+extern void sleep(int seconds);
+extern void reboot(void);
+extern void shutdown(void);
+extern void set_kernel_stack(uint32_t stack);
+extern unsigned char user_hello_elf[];
+extern unsigned int user_hello_elf_len;
 
 #define SHELL_BUFFER_SIZE 256
 #define MAX_HISTORY 5
@@ -122,6 +141,9 @@ void help_command() {
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  exec <f>  - Load and run ELF file\n");
+    terminal_writestring("  tcc <f>   - Compile and run C file\n");
+    terminal_writestring("  cc <f>    - Compile C file to ELF\n");
+    terminal_writestring("  ./<f>     - Execute file (ELF/C with shebang)\n");
     terminal_writestring("  loadhello - Load the LibC Hello App\n");
     terminal_writestring("  mktest    - Create fixed TEST.ELF\n");
     terminal_writestring("  usermode  - Enter Ring 3 test\n");
@@ -193,6 +215,37 @@ void execute_command() {
         fat12_write_raw("TEST.ELF", elf_blob, sizeof(elf_blob));
         terminal_writestring("Created.\n");
     }
+    else if (strcmp(shell_buffer, "mkcode") == 0) {
+        terminal_writestring("Creating hello.c...\n");
+        const char* code = 
+            "int main() {\n"
+            "  print(\"Hello from JexOS!\\n\");\n"
+            "  return 0;\n"
+            "}\n";
+        fat12_touch("hello.c");
+        fat12_write_raw("hello.c", (uint8_t*)code, strlen(code));
+        terminal_writestring("Created hello.c. Type 'tcc hello.c' to compile and run it.\n");
+    }
+    else if (strcmp(shell_buffer, "mkmalloc") == 0) {
+        terminal_writestring("Creating test_malloc.c...\n");
+        const char* code = 
+            "int main() {\n"
+            "  char* ptr1 = malloc(100);\n"
+            "  char* ptr2 = malloc(200);\n"
+            "  if (ptr1 && ptr2) {\n"
+            "    print(\"Malloc successful!\\n\");\n"
+            "    free(ptr1);\n"
+            "    free(ptr2);\n"
+            "    print(\"Free successful!\\n\");\n"
+            "  } else {\n"
+            "    print(\"Malloc failed!\\n\");\n"
+            "  }\n"
+            "  return 0;\n"
+            "}\n";
+        fat12_touch("test_m.c");
+        fat12_write_raw("test_m.c", (uint8_t*)code, strlen(code));
+        terminal_writestring("Created test_m.c.\n");
+    }
     else if (strcmp(shell_buffer, "usermode") == 0) {
         log_serial("Transitioning to Usermode\n");
         uint32_t esp; asm volatile("mov %%esp, %0" : "=r"(esp));
@@ -201,20 +254,232 @@ void execute_command() {
         uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
         jump_to_user_mode((uint32_t)default_user_start, user_stack);
     }
+    else if (strncmp(shell_buffer, "tcc ", 4) == 0) {
+        char* filename = shell_buffer + 4;
+        while (*filename == ' ') filename++; // Skip spaces
+        
+        if (strlen(filename) == 0) {
+            terminal_writestring("Usage: tcc <filename.c>\n");
+        } else {
+            terminal_writestring("Compiling ");
+            terminal_writestring(filename);
+            terminal_writestring("...\n");
+            
+            // Read C source file
+            int fd = fs_open(filename, O_RDONLY);
+            if (fd < 0) {
+                terminal_writestring("Failed to open C source file\n");
+                return;
+            }
+            
+            uint32_t file_size = fs_seek(fd, 0, 2);
+            fs_seek(fd, 0, 0);
+            
+            char* source = (char*)kmalloc(file_size + 1);
+            if (!source) {
+                terminal_writestring("Failed to allocate memory\n");
+                fs_close(fd);
+                return;
+            }
+            
+            int bytes_read = fs_read(fd, source, file_size);
+            source[bytes_read] = '\0';
+            fs_close(fd);
+            
+            // Compile and execute
+            char* argv[] = {filename, NULL};
+            extern int exec_c_code(const char* c_source, char** argv);
+            if (exec_c_code(source, argv) < 0) {
+                terminal_writestring("Compilation or execution failed\n");
+            }
+            
+            kfree(source);
+        }
+    }
+    else if (strncmp(shell_buffer, "cc ", 3) == 0) {
+        // Simple C compilation to ELF file
+        char* params = shell_buffer + 3;
+        while (*params == ' ') params++;
+        
+        char source_file[64];
+        char output_file[64] = "a.out";
+        
+        // Parse source and output files
+        char* space = strchr(params, ' ');
+        if (space) {
+            int len = space - params;
+            if (len < sizeof(source_file)) {
+                strncpy(source_file, params, len);
+                source_file[len] = '\0';
+                
+                // Check for -o flag
+                char* next = space + 1;
+                while (*next == ' ') next++;
+                if (strncmp(next, "-o", 2) == 0) {
+                    next += 2;
+                    while (*next == ' ') next++;
+                    if (*next) {
+                        strcpy(output_file, next);
+                    }
+                }
+            }
+        } else {
+            strcpy(source_file, params);
+        }
+        
+        terminal_writestring("Compiling ");
+        terminal_writestring(source_file);
+        terminal_writestring(" to ");
+        terminal_writestring(output_file);
+        terminal_writestring("...\n");
+        
+        // Read source file
+        int fd = fs_open(source_file, O_RDONLY);
+        if (fd < 0) {
+            terminal_writestring("Failed to open source file\n");
+            return;
+        }
+        
+        uint32_t file_size = fs_seek(fd, 0, 2);
+        fs_seek(fd, 0, 0);
+        
+        char* source = (char*)kmalloc(file_size + 1);
+        if (!source) {
+            terminal_writestring("Failed to allocate memory\n");
+            fs_close(fd);
+            return;
+        }
+        
+        int bytes_read = fs_read(fd, source, file_size);
+        source[bytes_read] = '\0';
+        fs_close(fd);
+        
+        // Compile
+        extern tcc_state_t* tcc_new(void);
+        extern void tcc_delete(tcc_state_t* s);
+        extern int tcc_compile_string(tcc_state_t* s, const char* str);
+        extern int tcc_output_file(tcc_state_t* s, const char* filename);
+        
+        tcc_state_t* tcc = tcc_new();
+        if (tcc && tcc_compile_string(tcc, source) == 0) {
+            // Write output file
+            uint8_t* elf_data;
+            uint32_t elf_size;
+            extern int tcc_output_memory(tcc_state_t* s, uint8_t** output, uint32_t* size);
+            
+            if (tcc_output_memory(tcc, &elf_data, &elf_size) == 0) {
+                fat12_touch(output_file);
+                fat12_write_raw(output_file, elf_data, elf_size);
+                terminal_writestring("Compilation successful\n");
+            }
+        } else {
+            terminal_writestring("Compilation failed\n");
+        }
+        
+        if (tcc) tcc_delete(tcc);
+        kfree(source);
+    }
+    else if (strncmp(shell_buffer, "./", 2) == 0) {
+        // Support for ./executable syntax
+        char* filename = shell_buffer + 2;
+        
+        // Parse arguments after filename
+        char* argv[16];
+        int argc = 0;
+        
+        argv[argc++] = filename;
+        
+        char* space = strchr(filename, ' ');
+        if (space) {
+            *space = '\0'; // Terminate filename
+            char* arg_start = space + 1;
+            
+            while (*arg_start && argc < 15) {
+                while (*arg_start == ' ') arg_start++;
+                if (!*arg_start) break;
+                
+                argv[argc++] = arg_start;
+                
+                while (*arg_start && *arg_start != ' ') arg_start++;
+                if (*arg_start) {
+                    *arg_start = '\0';
+                    arg_start++;
+                }
+            }
+        }
+        argv[argc] = NULL;
+        
+        // Execute using execve
+        extern int execve_file(const char* filename, char** argv, char** envp);
+        execve_file(filename, argv, NULL);
+    }
     else if (strncmp(shell_buffer, "exec ", 5) == 0) {
-        char* filename = shell_buffer + 5;
+        char* cmd_line = shell_buffer + 5;
+        
+        // Parse command line to separate filename and arguments
+        char filename[64];
+        char* argv[16];
+        int argc = 0;
+        
+        // Skip leading spaces
+        while (*cmd_line == ' ') cmd_line++;
+        
+        // Extract filename
+        char* space = strchr(cmd_line, ' ');
+        if (space) {
+            int len = space - cmd_line;
+            if (len < sizeof(filename)) {
+                strncpy(filename, cmd_line, len);
+                filename[len] = '\0';
+                cmd_line = space + 1;
+            }
+        } else {
+            strcpy(filename, cmd_line);
+            cmd_line += strlen(filename);
+        }
+        
+        // Parse arguments
+        while (*cmd_line && argc < 15) {
+            // Skip spaces
+            while (*cmd_line == ' ') cmd_line++;
+            if (!*cmd_line) break;
+            
+            argv[argc++] = cmd_line;
+            
+            // Find next space
+            while (*cmd_line && *cmd_line != ' ') cmd_line++;
+            if (*cmd_line) {
+                *cmd_line = '\0';  // Null terminate argument
+                cmd_line++;
+            }
+        }
+        argv[argc] = NULL;
+        
+        // Load and execute ELF
         extern void* kmalloc(size_t size);
         uint8_t* elf_buf = (uint8_t*)kmalloc(1024 * 64);
         int size = fat12_read_file(filename, elf_buf);
         if (size > 0) {
-            uint32_t entry = elf_load(elf_buf);
+            uint32_t entry = elf_load(elf_buf); // For now use old version, can upgrade later
             if (entry != 0) {
                 uint32_t esp; asm volatile("mov %%esp, %0" : "=r"(esp));
                 set_kernel_stack(esp);
                 uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
-                terminal_writestring("Executing ELF...\n");
+                
+                // Setup stack with argc/argv
+                uint32_t new_esp;
+                setup_user_stack(user_stack, argc, argv, &new_esp);
+                
+                terminal_writestring("Executing ELF with ");
+                char buf[10];
+                int_to_string(argc, buf);
+                terminal_writestring(buf);
+                terminal_writestring(" arguments...\n");
+                
                 log_serial("Executing ELF at: "); log_hex_serial(entry);
-                jump_to_user_mode(entry, user_stack);
+                log_serial(" with ESP: "); log_hex_serial(new_esp);
+                
+                jump_to_user_mode(entry, new_esp);
             }
         } else {
             terminal_writestring("File not found or empty.\n");
@@ -258,6 +523,11 @@ void shell_init() {
     print_logo();
     terminal_writestring("\nWelcome to JexOS v0.1 Final!\nType 'help' for a list of commands.\n\n");
     print_prompt();
+}
+
+void shell_loop() {
+    print_prompt();
+    while(1) __asm__ volatile("hlt");
 }
 
 void shell_main() {
