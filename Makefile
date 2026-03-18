@@ -3,7 +3,8 @@ AS = as
 LD = ld
 
 # Compiler flags for 32-bit C code, freestanding (no stdlib)
-CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie
+# Added -Isrc/include to find headers
+CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie -Isrc/include
 
 # Assembler flags for 32-bit
 ASFLAGS = --32
@@ -11,9 +12,16 @@ ASFLAGS = --32
 # Linker flags to simulate i386 ELF
 LDFLAGS = -m elf_i386 -T linker.ld -nostdlib
 
-# Source files
-SOURCES_C = src/kernel.c src/gdt.c src/isr.c src/idt.c src/irq.c src/keyboard.c src/shell.c src/rtc.c src/pmm.c src/paging.c src/kheap.c src/fat12.c src/power.c src/syscall.c src/timer.c src/speaker.c src/elf.c src/fs.c src/editor.c src/sbrk.c src/tcc.c src/exec.c src/ide.c src/jexfs.c src/task.c
-SOURCES_S = src/boot.s src/gdt_flush.s src/interrupts.s src/usermode.s
+# Source files (updated paths)
+# Using wildcards to automatically find files in the new structure
+SOURCES_C = $(wildcard src/kernel/*.c) \
+            $(wildcard src/arch/i386/*.c) \
+            $(wildcard src/drivers/*.c) \
+            $(wildcard src/mm/*.c) \
+            $(wildcard src/fs/*.c) \
+            $(wildcard src/bin/*.c)
+
+SOURCES_S = $(wildcard src/arch/i386/*.s)
 
 # Object files
 OBJECTS = $(SOURCES_C:.c=.o) $(SOURCES_S:.s=.o)
