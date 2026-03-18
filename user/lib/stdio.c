@@ -1,7 +1,15 @@
+/**
+ * @file stdio.c
+ * @brief Standard I/O library implementation for user-space.
+ */
+
 #include "stdio.h"
 #include "jexos.h"
 #include "string.h"
 
+/**
+ * @brief Internal utility to convert integer to string.
+ */
 static void itoa(int n, char* str, int base) {
     int i = 0;
     int is_neg = 0;
@@ -22,7 +30,7 @@ static void itoa(int n, char* str, int base) {
     if (is_neg) str[i++] = '-';
     str[i] = '\0';
     
-    // Reverse
+    /* Reverse the generated string */
     int start = 0;
     int end = i - 1;
     while(start < end) {
@@ -33,11 +41,14 @@ static void itoa(int n, char* str, int base) {
     }
 }
 
+/**
+ * @brief Print formatted string to console (subset of standard printf).
+ */
 void printf(const char* format, ...) {
     va_list args;
     va_start(args, format);
     
-    char buffer[1024]; // Temp buffer for formatting
+    char buffer[1024]; 
     int buf_idx = 0;
     
     for (const char* p = format; *p != '\0'; p++) {
@@ -46,7 +57,7 @@ void printf(const char* format, ...) {
             continue;
         }
         
-        p++; // skip %
+        p++;
         switch (*p) {
             case 's': {
                 char* s = va_arg(args, char*);
@@ -74,23 +85,35 @@ void printf(const char* format, ...) {
         }
     }
     buffer[buf_idx] = '\0';
-    sys_print(buffer);
+    sys_print(buffer); /* Dispatch to kernel */
     va_end(args);
 }
 
+/**
+ * @brief Open a file.
+ */
 int fopen(const char* filename, const char* mode) {
-    (void)mode; // Mode ignored for now (simple FAT12)
+    (void)mode;
     return sys_open(filename, 0);
 }
 
+/**
+ * @brief Close a file.
+ */
 void fclose(int fd) {
     sys_close(fd);
 }
 
+/**
+ * @brief Read data from a file descriptor.
+ */
 int fread(void* ptr, size_t size, size_t nmemb, int fd) {
     return sys_read(fd, ptr, size * nmemb);
 }
 
+/**
+ * @brief Write data to a file descriptor.
+ */
 int fwrite(const void* ptr, size_t size, size_t nmemb, int fd) {
     return sys_write(fd, ptr, size * nmemb);
 }

@@ -1,3 +1,8 @@
+/**
+ * @file string.c
+ * @brief User-space string and memory utility implementations.
+ */
+
 #include "string.h"
 
 void* memcpy(void* dest, const void* src, size_t n) {
