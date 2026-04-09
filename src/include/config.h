@@ -29,4 +29,13 @@
 /* System Limits */
 #define MAX_OPEN_FILES          32             // Maximum file descriptors per process
 
+/* Network Device IDs */
+#define PCI_VENDOR_REALTEK      0x10EC
+#define PCI_DEVICE_RTL8139      0x8139
+
+/* PCI Limits */
+#define PCI_MAX_BUS             256
+#define PCI_MAX_DEVICE          32
+#define PCI_MAX_FUNCTION        8
+
 #endif // CONFIG_H

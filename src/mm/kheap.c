@@ -44,6 +44,7 @@ void* memcpy(void* dest, const void* src, size_t n) {
 }
 
 void* __memcpy_chk(void* dest, const void* src, size_t len, size_t destlen) {
+    (void)destlen;
     return memcpy(dest, src, len);
 }
 
@@ -82,6 +83,7 @@ char* strcpy(char* dest, const char* src) {
 }
 
 char* __strcpy_chk(char* dest, const char* src, size_t destlen) {
+    (void)destlen;
     return strcpy(dest, src);
 }
 
@@ -93,6 +95,7 @@ char* strcat(char* dest, const char* src) {
 }
 
 char* __strcat_chk(char* dest, const char* src, size_t destlen) {
+    (void)destlen;
     return strcat(dest, src);
 }
 

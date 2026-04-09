@@ -37,6 +37,8 @@ extern void set_kernel_stack(uint32_t stack);
 #define SHELL_BUFFER_SIZE 256
 #define MAX_HISTORY 10
 #define HISTORY_FILE ".history"
+#define MAX_FILENAME_SIZE 63
+#define MAX_OUTPUT_SIZE 63
 
 /* Shell state variables */
 char shell_buffer[SHELL_BUFFER_SIZE];
@@ -329,14 +331,14 @@ void execute_command() {
         }
     }
     else if (strncmp(shell_buffer, "cc ", 3) == 0) {
-        char filename[64]; char output_file[64] = "a.out";
+        char filename[MAX_FILENAME_SIZE + 1]; char output_file[MAX_OUTPUT_SIZE + 1] = "a.out";
         char* params = shell_buffer + 3; while (*params == ' ') params++;
-        int i = 0; while (params[i] && params[i] != ' ' && i < 63) { filename[i] = params[i]; i++; }
+        int i = 0; while (params[i] && params[i] != ' ' && i < MAX_FILENAME_SIZE) { filename[i] = params[i]; i++; }
         filename[i] = '\0';
         char* next = params + i; while (*next == ' ') next++;
         if (strncmp(next, "-o", 2) == 0) {
             next += 2; while (*next == ' ') next++;
-            int j = 0; while (next[j] && next[j] != ' ' && j < 63) { output_file[j] = next[j]; j++; }
+            int j = 0; while (next[j] && next[j] != ' ' && j < MAX_OUTPUT_SIZE) { output_file[j] = next[j]; j++; }
             output_file[j] = '\0';
         }
         int fd = fs_open(filename, 0);

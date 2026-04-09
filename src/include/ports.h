@@ -31,6 +31,18 @@ static inline void outb(uint16_t port, uint8_t val)
 }
 
 /**
+ * @brief Read a 16-bit word from an I/O port.
+ */
+static inline uint16_t inw(uint16_t port)
+{
+    uint16_t ret;
+    asm volatile ( "inw %1, %0"
+                   : "=a"(ret)
+                   : "Nd"(port) );
+    return ret;
+}
+
+/**
  * @brief Write a 16-bit word to an I/O port.
  */
 static inline void outw(uint16_t port, uint16_t val)

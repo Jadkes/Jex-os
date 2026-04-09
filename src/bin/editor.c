@@ -37,6 +37,7 @@ int edit_cursor_y = 0;
 int edit_scroll_y = 0;
 int edit_len = 0;
 char current_filename[32];
+#define MAX_FILENAME_LEN 31
 int editor_running = 0;
 
 int save_status = 0;
@@ -328,8 +329,8 @@ void editor_input(char key) {
  * @brief Initialize and launch the editor for a specific file.
  */
 void start_editor(const char* filename) {
-    for(int i=0; i<31 && filename[i]; i++) current_filename[i] = filename[i];
-    current_filename[31] = 0;
+    for(int i=0; i<MAX_FILENAME_LEN && filename[i]; i++) current_filename[i] = filename[i];
+    current_filename[MAX_FILENAME_LEN] = 0;
     
     if (!edit_buffer) edit_buffer = (char*)kmalloc(MAX_FILE_SIZE);
     
