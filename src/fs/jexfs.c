@@ -89,7 +89,7 @@ int jexfs_open(const char* name) {
     read_block(dir_inode.blocks[0], buf);
     struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
 
-    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
         if (de[i].inode != 0 && strcmp(de[i].name, name) == 0) {
             return de[i].inode;
         }
@@ -131,6 +131,7 @@ int jexfs_read(int inode_idx, void* buffer, uint32_t size, uint32_t offset) {
 
 /**
  * @brief Find and allocate a free data block using the bitmap.
+ * @return The allocated block number, or (uint32_t)-1 on failure.
  */
 uint32_t jexfs_alloc_block() {
     uint8_t bitmap[BLOCK_SIZE];
@@ -142,7 +143,7 @@ uint32_t jexfs_alloc_block() {
             return i;
         }
     }
-    return 0;
+    return (uint32_t)-1;
 }
 
 /**
@@ -165,7 +166,7 @@ int jexfs_write(int inode_idx, const void* buffer, uint32_t size, uint32_t offse
         
         if (inode.blocks[block_idx] == 0) {
             uint32_t new_block = jexfs_alloc_block();
-            if (new_block == 0) return -1;
+            if (new_block == (uint32_t)-1) return -1;
             inode.blocks[block_idx] = (uint16_t)new_block;
             jexfs_write_inode(inode_idx, &inode);
         }
@@ -218,7 +219,7 @@ int jexfs_create(const char* name) {
     read_block(dir_inode.blocks[0], buf);
     struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
     
-    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
         if (de[i].inode == 0) {
             de[i].inode = (uint16_t)inode_idx; 
             strncpy(de[i].name, name, 14);
@@ -247,7 +248,7 @@ int jexfs_mkdir(const char* name) {
     write_block(sb.inode_bitmap_start, bitmap);
     
     uint32_t block = jexfs_alloc_block();
-    if (block == 0) return -1;
+    if (block == (uint32_t)-1) return -1;
     
     uint8_t buf[BLOCK_SIZE]; 
     memset(buf, 0, BLOCK_SIZE);
@@ -268,7 +269,7 @@ int jexfs_mkdir(const char* name) {
     read_block(dir_inode.blocks[0], buf);
     de = (struct jex_dir_entry*)buf;
     
-    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
         if (de[i].inode == 0) {
             de[i].inode = (uint16_t)inode_idx; 
             strncpy(de[i].name, name, 14);
@@ -291,7 +292,7 @@ void jexfs_list_dir(uint32_t inode_idx) {
     read_block(dir_inode.blocks[0], buf);
     struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
     
-    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
         if (de[i].inode != 0) {
             if (strcmp(de[i].name, ".") == 0 || strcmp(de[i].name, "..") == 0) continue;
             struct jex_inode entry_inode;
@@ -341,7 +342,7 @@ int jexfs_remove(const char* name) {
     read_block(dir_inode.blocks[0], buf);
     struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
     
-    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
         if (de[i].inode != 0 && strcmp(de[i].name, name) == 0) {
             int inode_idx = de[i].inode;
             struct jex_inode inode; 
@@ -374,7 +375,7 @@ int jexfs_rename(const char* old_name, const char* new_name) {
     read_block(dir_inode.blocks[0], buf);
     struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
     
-    for (int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
         if (de[i].inode != 0 && strcmp(de[i].name, old_name) == 0) {
             strncpy(de[i].name, new_name, 14);
             write_block(dir_inode.blocks[0], buf); 

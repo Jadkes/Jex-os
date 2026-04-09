@@ -12,11 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-// Global Configuration
 #include "config.h"
-
-// Kernel Subsystems
 #include "gdt.h"
 #include "idt.h"
 #include "isr.h"
@@ -35,6 +31,8 @@
 #include "fs.h"
 #include "task.h"
 #include "syscall.h"
+#include "pci.h"
+#include "rtl8139.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -48,67 +46,94 @@ uint32_t kernel_stack_top;
  * @param mboot_info Pointer to the Multiboot information structure.
  */
 void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
-	// Initialize the console output (VGA) first to display logs.
+	/* 1. Initialize the console output (VGA) first to display logs and errors. */
 	terminal_initialize();
 
-    // Initialize serial port for debugging output (COM1).
+    /* 2. Initialize serial port for debugging output (COM1).
+     * Useful for capturing kernel logs in QEMU via -serial stdio.
+     */
     init_serial();
     log_serial("JexOS Kernel Started\n");
 
-    // Initialize CPU descriptor tables and interrupt handling.
-    // GDT: Global Descriptor Table (memory segments)
-    // IDT: Interrupt Descriptor Table (interrupt handlers)
-    // ISR/IRQ: Interrupt Service Routines and Requests
+    /**
+     * @brief 3. CPU & Interrupt Setup.
+     * GDT: Defines memory segments (Kernel/User Code/Data).
+     * IDT: Points to handlers for exceptions and interrupts.
+     * ISR: Installs handlers for CPU exceptions (Page Fault, Divide by Zero, etc.).
+     * IRQ: Installs handlers for hardware interrupts (Timer, Keyboard, etc.).
+     */
     init_gdt();
     init_idt();
     isr_install();
     init_irq();
 
-    // Initialize Hardware Drivers.
+    /* 4. Basic Hardware Drivers */
     init_keyboard();
 
-    // Initialize Physical Memory Manager if bootloader magic is valid.
+    /* 5. Physical Memory Management.
+     * Uses the Multiboot memory map to identify available RAM blocks.
+     */
     if (magic == MULTIBOOT_MAGIC_VALID) {
         pmm_init(mboot_info);
     } else {
         terminal_writestring("Error: Invalid Multiboot Magic Number!\n");
-        // We might want to panic here, but let's continue cautiously.
     }
 
-    // Initialize Virtual Memory (Paging) and Kernel Heap.
+    /**
+     * @brief 6. Virtual Memory & Heap.
+     * Paging: Enables 4KB page mapping and memory protection.
+     * Heap: Enables dynamic memory allocation (kmalloc/kfree).
+     */
     init_paging();
     init_kheap(KERNEL_HEAP_START); // Start heap at 16MB mark
 
-    // Initialize Filesystem Subsystems.
-    // FAT12 is used for the boot disk compatibility (if applicable).
-    // JexFS is the native filesystem.
+    /**
+     * @brief 7. PCI & Networking.
+     * init_pci() scans the bus for hardware.
+     * init_rtl8139() configures the network card if found.
+     * These must be called AFTER kheap/pmm are ready.
+     */
+    init_pci();
+    init_rtl8139();
+
+    /* 8. Filesystem Subsystems.
+     * Initializes the VFS and registers filesystem drivers.
+     */
     init_fat12();
     fs_init();
     
-    // Initialize Tasking/Multitasking Subsystem.
+    /* 9. Multitasking Subsystem.
+     * Sets up the task structures and the initial kernel process.
+     */
     init_tasking();
 
-    // Start the System Timer (Preemptive Multitasking Tick).
-    // 100 Hz = 10ms timeslice.
+    /**
+     * @brief 10. System Timer.
+     * Configures IRQ0 to fire at 100Hz.
+     * This drives preemptive multitasking (context switching).
+     */
     init_timer(100);
     
-    // Allocate a separate stack for user-mode transitions.
-    // kmalloc is declared in kheap.h
+    /* 11. User-mode stack setup. */
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
     
-    // Initialize System Calls and Enable Interrupts.
+    /* 12. System Calls & Global Interrupt Enable. */
     init_syscalls();
     
-    __asm__ volatile("sti"); // Enable interrupts (Start The Interrupts)
+    /* Enable interrupts globally (STI instruction) */
+    __asm__ volatile("sti"); 
     
     log_serial("Initialization complete. Launching Shell.\n");
 
-    // Launch the interactive kernel shell.
-    // This function should not return during normal operation.
+    /* 13. Enter the Shell.
+     * This is the main user interface for the kernel.
+     */
     shell_main();
     
-    // If shell returns, halt the CPU loop.
+    /* 14. Shutdown/Halt.
+     * If the shell exits, we stop the CPU to prevent undefined behavior.
+     */
     terminal_writestring("Kernel Halted.\n");
     while(1) {
         __asm__ volatile("hlt");

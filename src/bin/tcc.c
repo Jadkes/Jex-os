@@ -17,21 +17,6 @@ extern void terminal_writestring(const char* data);
 extern void log_serial(const char* str);
 
 /**
- * @brief Convert integer to string.
- */
-static void int_to_string(int n, char* str) {
-    int i = 0; int is_neg = 0;
-    if (n == 0) { str[0] = '0'; str[1] = '\0'; return; }
-    if (n < 0) { is_neg = 1; n = -n; }
-    while (n > 0) { str[i++] = n % 10 + '0'; n /= 10; }
-    if (is_neg) str[i++] = '-';
-    str[i] = '\0';
-    for (int j = 0; j < i/2; j++) {
-        char temp = str[j]; str[j] = str[i-1-j]; str[i-1-j] = temp;
-    }
-}
-
-/**
  * @brief C Keywords lookup table.
  */
 static const struct {
@@ -236,7 +221,7 @@ static void emit_mov_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
 int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
     uint32_t pos = 0;
     int i = 0;
-    uint8_t string_table[1024];
+    uint8_t string_table[1024] = {0};
     uint32_t string_pos = 0;
     uint32_t base_addr = 0x08048080; /* Standard ELF load address */
     
