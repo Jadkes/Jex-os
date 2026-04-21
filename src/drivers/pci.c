@@ -9,8 +9,35 @@
 #include "pci.h"
 #include "ports.h"
 #include "terminal.h"
+#include "serial.h"
 #include "config.h"
 #include <stddef.h>
+
+/* Helper: Convert uint32_t to hex string - stub for debugging */
+#if 0
+static void int_to_hex(uint32_t val, char* buf) {
+    const char* hex = "0123456789ABCDEF";
+    buf[0] = '0'; buf[1] = 'x';
+    for (int i = 7; i >= 0; i--) {
+        buf[2 + (7 - i)] = hex[(val >> (i * 4)) & 0xF];
+    }
+    buf[10] = '\0';
+}
+
+/* Helper: Convert int to decimal string */
+static void int_to_string(int val, char* buf) {
+    if (val == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
+    int i = 0;
+    int neg = 0;
+    if (val < 0) { neg = 1; val = -val; }
+    char tmp[16];
+    while (val > 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
+    int j = 0;
+    if (neg) buf[j++] = '-';
+    while (i > 0) buf[j++] = tmp[--i];
+    buf[j] = '\0';
+}
+#endif
 
 /**
  * @brief Internal list of detected PCI devices.
@@ -152,12 +179,14 @@ static void pci_check_device(uint8_t bus, uint8_t device) {
  * Iterates through all possible bus/device combinations and populates an internal table.
  */
 void init_pci() {
+    terminal_writestring("PCI: Scanning bus...\n");
     /* Scan all buses and slots defined in config.h */
     for (uint16_t bus = 0; bus < PCI_MAX_BUS; bus++) {
         for (uint8_t device = 0; device < PCI_MAX_DEVICE; device++) {
             pci_check_device((uint8_t)bus, device);
         }
     }
+    terminal_writestring("PCI: Scan complete.\n");
 }
 
 /**

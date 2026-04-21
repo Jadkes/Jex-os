@@ -10,24 +10,40 @@
  */
 
 #include "rtl8139.h"
-#include "pci.h"
 #include "ports.h"
 #include "pmm.h"
 #include "irq.h"
 #include "terminal.h"
+#include "serial.h"
 #include "config.h"
 #include <string.h>
 
+#if 0
+/* Helper: Convert uint32_t to hex string */
+static void int_to_hex(uint32_t val, char* buf) {
+    const char* hex = "0123456789ABCDEF";
+    buf[0] = '0'; buf[1] = 'x';
+    for (int i = 7; i >= 0; i--) {
+        buf[2 + (7 - i)] = hex[(val >> (i * 4)) & 0xF];
+    }
+    buf[10] = '\0';
+}
+#endif
+
 /* I/O Base Address and IRQ assigned by the PCI bus */
 static uint32_t io_base;
+#if 0
 static uint8_t irq_num;
 
 /* MAC Address read from the card's EEPROM */
 static uint8_t mac_addr[6];
+#endif
 
+#if 0
 /* Receive Buffer: The card writes incoming packets here via DMA */
 #define RX_BUF_SIZE (32 * 1024)
 static uint8_t* rx_buffer;
+#endif
 
 /* Transmit Descriptors index (0 to 3)
  * The RTL8139 has 4 transmit descriptors that can be used concurrently.
@@ -80,75 +96,11 @@ void rtl8139_handler(registers_t* regs) {
  * 8. Enable RX/TX.
  */
 void init_rtl8139() {
-    pci_device_t dev;
-    /* Search for the card using IDs defined in config.h */
-    if (!pci_find_device(PCI_VENDOR_REALTEK, PCI_DEVICE_RTL8139, &dev)) {
-        terminal_writestring("RTL8139: Device not found!\n");
-        return;
-    }
-
-    terminal_writestring("RTL8139: Found Realtek 8139 at PCI\n");
-
-    /**
-     * @brief Enable PCI Bus Mastering.
-     * This is CRITICAL for DMA. Without this, the card cannot 
-     * write received packets into our RAM.
-     */
-    uint32_t command = pci_config_read_dword(dev.bus, dev.device, dev.function, 0x04);
-    command |= (1 << 2); // Set bit 2: Bus Master
-    pci_config_write_dword(dev.bus, dev.device, dev.function, 0x04, command);
-
-    /* BAR0 contains the I/O base address for the card's registers */
-    io_base = dev.bar0 & ~0x1;
-    irq_num = dev.irq_line;
-
-    /* 1. Power on: Send 0x00 to Config1 to wake up the card from sleep mode */
-    outb(io_base + RTL8139_REG_CONFIG1, 0x00);
-
-    /* 2. Software Reset: Set the RST bit and wait for it to clear */
-    outb(io_base + RTL8139_REG_CR, RTL8139_CR_RST);
-    while ((inb(io_base + RTL8139_REG_CR) & RTL8139_CR_RST) != 0);
-
-    /* 3. Read MAC Address: The first 6 bytes of I/O space are the ID registers */
-    for (int i = 0; i < 6; i++) {
-        mac_addr[i] = inb(io_base + RTL8139_REG_MAC0 + i);
-    }
-
-    /** 
-     * @brief 4. Setup Receive Buffer.
-     * We use a 32KB ring buffer. The card also needs 16 bytes of padding
-     * to handle packet wrap-around without software intervention.
-     * pmm_alloc_blocks(9) gives us 36KB (9 * 4KB).
-     */
-    rx_buffer = (uint8_t*)pmm_alloc_blocks(9);
-    memset(rx_buffer, 0, 9 * 4096);
-    /* Tell the card the physical address of our buffer */
-    outw(io_base + RTL8139_REG_RBSTART, (uint32_t)rx_buffer);
-
-    /* 5. Set Interrupt Mask: Enable ROK (Receive OK) and TOK (Transmit OK) interrupts */
-    outw(io_base + RTL8139_REG_IMR, RTL8139_ISR_ROK | RTL8139_ISR_TOK);
-
-    /**
-     * @brief 6. Configure Receive (RCR).
-     * AAP: Accept All Packets (Promiscuous)
-     * APM: Accept Physical Match (Our MAC)
-     * AM: Accept Multicast
-     * AB: Accept Broadcast
-     * WRAP: If bit 7 is set, the card will wrap packets that exceed the buffer end
-     *       using the extra 1.5KB of padding space.
-     * Buffer Size: 32KB is indicated by 10 in bits 11-12.
-     */
-    uint32_t rcr = RTL8139_RCR_AAP | RTL8139_RCR_APM | RTL8139_RCR_AM | 
-                   RTL8139_RCR_AB  | RTL8139_RCR_WRAP | (2 << 11);
-    outw(io_base + RTL8139_REG_RCR, rcr);
-
-    /* 7. Enable RX and TX: Set RE (Receive Enable) and TE (Transmit Enable) bits */
-    outb(io_base + RTL8139_REG_CR, RTL8139_CR_RE | RTL8139_CR_TE);
-
-    /* 8. Register the C handler for the assigned IRQ */
-    register_interrupt_handler(irq_num, rtl8139_handler);
-
-    terminal_writestring("RTL8139: Driver successfully initialized.\n");
+    /* Skip PCI-based detection for now - just announce RTL8139 is available */
+    terminal_writestring("RTL8139: Driver stub loaded (PCI detection needed)\n");
+    
+    /* TODO: Implement proper PCI-based detection using pci_find_device() 
+     * once the PCI bus scanning bug is fixed */
 }
 
 /**
