@@ -62,6 +62,7 @@ void jexfs_write_inode(uint32_t idx, struct jex_inode* inode) {
  * @brief Initialize JexFS by reading the superblock from the second block (Block 1).
  */
 void jexfs_init() {
+    log_serial("JexFS: Starting init...\n");
     uint8_t buf[BLOCK_SIZE];
     read_block(1, buf);
     memcpy(&sb, buf, sizeof(struct jex_superblock));

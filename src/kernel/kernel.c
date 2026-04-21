@@ -53,6 +53,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * Useful for capturing kernel logs in QEMU via -serial stdio.
      */
     init_serial();
+    terminal_writestring("JexOS Kernel Started\n");
     log_serial("JexOS Kernel Started\n");
 
     /**
@@ -62,21 +63,27 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * ISR: Installs handlers for CPU exceptions (Page Fault, Divide by Zero, etc.).
      * IRQ: Installs handlers for hardware interrupts (Timer, Keyboard, etc.).
      */
+    terminal_writestring("Init GDT...\n"); log_serial("Init GDT...\n");
     init_gdt();
+    terminal_writestring("Init IDT...\n"); log_serial("Init IDT...\n");
     init_idt();
+    terminal_writestring("Init ISR...\n"); log_serial("Init ISR...\n");
     isr_install();
+    terminal_writestring("Init IRQ...\n"); log_serial("Init IRQ...\n");
     init_irq();
 
     /* 4. Basic Hardware Drivers */
+    terminal_writestring("Init Keyboard...\n"); log_serial("Init Keyboard...\n");
     init_keyboard();
 
     /* 5. Physical Memory Management.
      * Uses the Multiboot memory map to identify available RAM blocks.
      */
+    terminal_writestring("Init PMM...\n"); log_serial("Init PMM...\n");
     if (magic == MULTIBOOT_MAGIC_VALID) {
         pmm_init(mboot_info);
     } else {
-        terminal_writestring("Error: Invalid Multiboot Magic Number!\n");
+        terminal_writestring("Error: Invalid Multiboot Magic!\n");
     }
 
     /**
@@ -84,58 +91,52 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * Paging: Enables 4KB page mapping and memory protection.
      * Heap: Enables dynamic memory allocation (kmalloc/kfree).
      */
+    terminal_writestring("Init Paging...\n"); log_serial("Init Paging...\n");
     init_paging();
-    init_kheap(KERNEL_HEAP_START); // Start heap at 16MB mark
+    terminal_writestring("Init Heap...\n"); log_serial("Init Heap...\n");
+    init_kheap(KERNEL_HEAP_START);
 
     /**
      * @brief 7. PCI & Networking.
-     * init_pci() scans the bus for hardware.
-     * init_rtl8139() configures the network card if found.
-     * These must be called AFTER kheap/pmm are ready.
+     * Disabled for now - focus on basic kernel boot
      */
+    terminal_writestring("Init PCI...\n"); log_serial("Init PCI...\n");
     init_pci();
+    terminal_writestring("Init RTL8139...\n"); log_serial("Init RTL8139...\n");
     init_rtl8139();
 
-    /* 8. Filesystem Subsystems.
-     * Initializes the VFS and registers filesystem drivers.
-     */
+    /* 8. Filesystem Subsystems. */
+    terminal_writestring("Init FAT12...\n"); log_serial("Init FAT12...\n");
     init_fat12();
+    terminal_writestring("Init VFS...\n"); log_serial("Init VFS...\n");
     fs_init();
     
-    /* 9. Multitasking Subsystem.
-     * Sets up the task structures and the initial kernel process.
-     */
+    /* 9. Multitasking Subsystem. */
+    terminal_writestring("Init Tasking...\n"); log_serial("Init Tasking...\n");
     init_tasking();
 
-    /**
-     * @brief 10. System Timer.
-     * Configures IRQ0 to fire at 100Hz.
-     * This drives preemptive multitasking (context switching).
-     */
+    /* 10. System Timer. */
+    terminal_writestring("Init Timer...\n"); log_serial("Init Timer...\n");
     init_timer(100);
     
     /* 11. User-mode stack setup. */
+    terminal_writestring("Setup Stack...\n"); log_serial("Setup Stack...\n");
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
     
     /* 12. System Calls & Global Interrupt Enable. */
+    terminal_writestring("Init Syscalls...\n"); log_serial("Init Syscalls...\n");
     init_syscalls();
     
     /* Enable interrupts globally (STI instruction) */
     __asm__ volatile("sti"); 
     
-    log_serial("Initialization complete. Launching Shell.\n");
+    terminal_writestring("Starting Shell...\n"); log_serial("Starting Shell...\n");
 
-    /* 13. Enter the Shell.
-     * This is the main user interface for the kernel.
-     */
+    /* 13. Enter the Shell. */
     shell_main();
     
-    /* 14. Shutdown/Halt.
-     * If the shell exits, we stop the CPU to prevent undefined behavior.
-     */
+    /* 14. Shutdown/Halt. */
     terminal_writestring("Kernel Halted.\n");
-    while(1) {
-        __asm__ volatile("hlt");
-    }
+    while(1) { __asm__ volatile("hlt"); }
 }
