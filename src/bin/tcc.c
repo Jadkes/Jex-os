@@ -309,6 +309,13 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
         else i++;
     }
     
+    emit_mov_eax_imm(output, &pos, 1);
+    output[pos++] = 0xBB;
+    *(uint32_t*)(output + pos) = 0;
+    pos += 4;
+    output[pos++] = 0xCD;
+    output[pos++] = 0x80;
+
     /* Append string table to the end of the code segment */
     uint32_t code_end_offset = pos;
     memcpy(output + pos, string_table, string_pos);

@@ -128,6 +128,13 @@ uint32_t elf_load_with_args(uint8_t* elf_data, int argc, char** argv) {
         }
     }
 
+    /* Skip relocations for ET_EXEC (directly linked executables)
+     * TCC-generated ELF binaries are ET_EXEC with no relocations needed */
+    if (header->e_type == ET_EXEC) {
+        (void)argc; (void)argv;
+        return header->e_entry;
+    }
+
     /* Handle relocations if this is a relocatable object */
     if (header->e_type == ET_REL || (header->e_flags & EF_RELOC)) {
         handle_relocations(elf_data, header);
