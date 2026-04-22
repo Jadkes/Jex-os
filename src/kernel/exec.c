@@ -11,6 +11,8 @@
 #include "elf.h"
 #include "tcc.h"
 #include "kheap.h"
+#include "pmm.h"
+#include "paging.h"
 #include "string.h"
 #include "syscall.h"
 #include "terminal.h"
@@ -91,10 +93,20 @@ int exec_c_code(const char* c_source, char** argv) {
         return -1;
     }
     
-    /* Setup user-mode stack */
+    /* Setup user-mode stack - MUST map with user-accessible flags */
     uint32_t user_stack = 0x800000;
     uint32_t new_esp;
     setup_user_stack(user_stack, argc, actual_argv, &new_esp);
+    
+    /* Map user stack pages with user-mode access (flags = 7 = Present + RW + User) */
+    for (uint32_t stack_page = user_stack - 0x1000; stack_page >= 0x700000; stack_page -= 0x1000) {
+        void* frame = pmm_alloc_block();
+        if (!frame) {
+            terminal_writestring("exec: Failed to allocate stack frame\n");
+            return -1;
+        }
+        map_page(frame, (void*)stack_page, 7); /* User + RW + Present */
+    }
     
     /* Ensure the TSS is updated with the kernel stack for syscalls */
     extern uint32_t kernel_stack_top;
@@ -194,6 +206,16 @@ int execve_file(const char* filename, char** argv, char** envp) {
         uint32_t user_stack = 0x800000;
         uint32_t new_esp;
         setup_user_stack(user_stack, argc, actual_argv, &new_esp);
+
+        for (uint32_t stack_page = user_stack - 0x1000; stack_page >= 0x700000; stack_page -= 0x1000) {
+            void* frame = pmm_alloc_block();
+            if (!frame) {
+                terminal_writestring("exec: Failed to allocate stack frame\n");
+                kfree(file_data);
+                return -1;
+            }
+            map_page(frame, (void*)stack_page, 7);
+        }
 
         extern uint32_t kernel_stack_top;
         set_kernel_stack(kernel_stack_top);

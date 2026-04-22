@@ -29,7 +29,12 @@ page_directory_t kernel_directory;
  */
 static page_table_t* get_table(uint32_t table_idx, uint32_t flags) {
     if (kernel_directory.tables[table_idx].present) {
-        return (page_table_t*)(kernel_directory.tables[table_idx].table_frame << 12);
+        page_table_t* table = (page_table_t*)(kernel_directory.tables[table_idx].table_frame << 12);
+        if ((flags & 0x4) && !kernel_directory.tables[table_idx].user) {
+            kernel_directory.tables[table_idx].user = 1;
+            kernel_directory.tables[table_idx].rw = (flags & 0x2) ? 1 : 0;
+        }
+        return table;
     }
 
     /* Allocate a new page table if not present */
