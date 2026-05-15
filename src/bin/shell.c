@@ -217,6 +217,7 @@ void help_command() {
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
+    terminal_writestring("  music     - Start Jexos Tune\n");
 }
 
 /**
@@ -314,6 +315,7 @@ void execute_command() {
     else if (strcmp(shell_buffer, "music") == 0) play_tune();
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
+     else if (strcmp(shell_buffer, "poweroff") == 0) shutdown();
     else if (strcmp(shell_buffer, "mkcode") == 0) {
         const char* code = "int main() {\n  printf(\"Hello from JexFS Persistence!\\n\");\n  return 0;\n}";
         fs_create("hello.c"); int fd = fs_open("hello.c", 0); fs_write(fd, code, strlen(code)); fs_close(fd);
