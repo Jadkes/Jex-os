@@ -751,6 +751,249 @@ int net_get_ping_responses(void)
 }
 
 /* ----------------------------------------------------------------- */
+/*  DNS                                                              */
+/* ----------------------------------------------------------------- */
+
+/*
+ * DNS query uses a transaction ID to match responses.  We keep a single
+ * pending-query slot (serialised by the single-core design).
+ */
+static int      dns_pending   = 0;
+static uint16_t dns_xid       = 0;
+static uint8_t  dns_reply[512];
+static uint16_t dns_reply_len = 0;
+
+/* Ephemeral source port for DNS queries */
+#define DNS_CLIENT_PORT 54321
+
+/*
+ * dns_handler - UDP callback for DNS responses.
+ *
+ * Called from handle_udp (IRQ context).  Just stashes the raw response
+ * and signals the waiter.
+ */
+static void dns_handler(uint32_t src_ip, uint16_t src_port,
+                         const uint8_t* data, uint32_t len, void* userdata)
+{
+    (void)src_ip;
+    (void)src_port;
+    (void)userdata;
+
+    if (len > sizeof(dns_reply))
+        len = sizeof(dns_reply);
+    memcpy(dns_reply, data, len);
+    dns_reply_len = len;
+    dns_pending    = 1;
+}
+
+/*
+ * dns_encode_name - Encode a hostname into DNS label format.
+ *
+ * "www.google.com" → "\x03www\x06google\x03com\x00"
+ *
+ * @param hostname  Null-terminated input hostname.
+ * @param out       Output buffer for the encoded name.
+ * @param out_len   Size of the output buffer.
+ * @return          Number of bytes written, or -1 if buffer too small.
+ */
+static int dns_encode_name(const char* hostname, uint8_t* out, uint32_t out_len)
+{
+    uint32_t pos = 0;
+    while (*hostname) {
+        const char* dot = hostname;
+        while (*dot && *dot != '.')
+            dot++;
+        uint32_t label_len = (uint32_t)(dot - hostname);
+        if (label_len > 63)
+            return -1;          /* Label too long for DNS */
+        if (pos + label_len + 2 > out_len)
+            return -1;          /* Buffer too small */
+        out[pos++] = (uint8_t)label_len;
+        for (uint32_t i = 0; i < label_len; i++)
+            out[pos++] = (uint8_t)hostname[i];
+        hostname = *dot ? dot + 1 : dot;
+    }
+    if (pos + 1 > out_len)
+        return -1;
+    out[pos++] = 0;             /* Root label */
+    return (int)pos;
+}
+
+/*
+ * dns_skip_name - Skip over a DNS name (handles compressed pointers).
+ *
+ * DNS names in responses may use pointer compression (0xC0 + offset).
+ * This reads label bytes or pointer bytes and returns the offset just
+ * past the name (or -1 on malformed data).
+ */
+static int dns_skip_name(const uint8_t* msg, uint32_t msg_len, uint32_t offset)
+{
+    while (offset < msg_len) {
+        uint8_t label = msg[offset];
+        if (label == 0)
+            return (int)(offset + 1);           /* End of name */
+        if ((label & 0xC0) == 0xC0)             /* Pointer (2 bytes) */
+            return (int)(offset + 2);
+        offset += 1 + label;                     /* Skip label + its bytes */
+    }
+    return -1;
+}
+
+/*
+ * dns_parse_response - Extract the first A-record IP from a DNS response.
+ *
+ * Skips the header, question section, then walks answer records looking
+ * for a type-A, class-IN record with a 4-byte RDATA.
+ *
+ * @param msg  Raw DNS response (UDP payload).
+ * @param len  Length of the response.
+ * @return     IP in network byte order, or 0 on failure.
+ */
+static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
+{
+    /* Must at least fit the 12-byte header */
+    if (len < 12)
+        return 0;
+
+    const uint16_t* hdr   = (const uint16_t*)msg;
+    uint16_t flags         = ntohs(hdr[1]);
+    uint16_t qdcount       = ntohs(hdr[2]);
+    uint16_t ancount       = ntohs(hdr[3]);
+
+    /* Check for NXDOMAIN or other error (last 4 bits = rcode) */
+    if ((flags & 0x000F) != 0)
+        return 0;
+
+    uint32_t offset = 12;
+
+    /* Skip question section */
+    for (uint16_t q = 0; q < qdcount; q++) {
+        int ret = dns_skip_name(msg, len, offset);
+        if (ret < 0) return 0;
+        offset = (uint32_t)ret + 4;     /* Skip qtype + qclass */
+        if (offset > len) return 0;
+    }
+
+    /* Walk answer records */
+    for (uint16_t a = 0; a < ancount; a++) {
+        int ret = dns_skip_name(msg, len, offset);
+        if (ret < 0) return 0;
+        offset = (uint32_t)ret;
+
+        /* type(2) + class(2) + ttl(4) + rdlength(2) = 10 bytes fixed */
+        if (offset + 10 > len) return 0;
+
+        uint16_t type    = ntohs(*(const uint16_t*)(msg + offset));
+        uint16_t cls     = ntohs(*(const uint16_t*)(msg + offset + 2));
+        uint16_t rdlength = ntohs(*(const uint16_t*)(msg + offset + 8));
+        offset += 10;
+
+        if (offset + rdlength > len) return 0;
+
+        /* Found an A record: type=1, class=1, rdlength=4 */
+        if (type == 1 && cls == 1 && rdlength == 4) {
+            uint32_t ip;
+            memcpy(&ip, msg + offset, 4);
+            return ip;      /* Already network byte order */
+        }
+
+        offset += rdlength;
+    }
+
+    return 0;   /* No A record found */
+}
+
+/*
+ * net_dns_resolve - Resolve a hostname to an IP address via DNS.
+ *
+ * Sends a standard DNS query (type A, class IN) to the configured
+ * DNS server and busy-waits for a response.
+ *
+ * @param hostname  Null-terminated hostname.
+ * @return          IP in network byte order, or 0 on failure.
+ */
+uint32_t net_dns_resolve(const char* hostname)
+{
+    /* ---- Build the DNS query ---- */
+    uint8_t query[512];
+    uint32_t qlen = 0;
+
+    /* Header (12 bytes) */
+    dns_xid++;
+    uint16_t* hdr   = (uint16_t*)query;
+    hdr[0] = htons(dns_xid);            /* ID */
+    hdr[1] = htons(0x0100);             /* Flags: recursion desired */
+    hdr[2] = htons(1);                  /* Questions: 1 */
+    hdr[3] = 0;                         /* Answer RRs */
+    hdr[4] = 0;                         /* Authority RRs */
+    hdr[5] = 0;                         /* Additional RRs */
+    qlen = 12;
+
+    /* Question: encoded name */
+    int name_len = dns_encode_name(hostname, query + qlen, sizeof(query) - qlen - 4);
+    if (name_len < 0)
+        return 0;
+    qlen += (uint32_t)name_len;
+
+    /* QTYPE = A (1), QCLASS = IN (1) */
+    *(uint16_t*)(query + qlen)     = htons(1);
+    *(uint16_t*)(query + qlen + 2) = htons(1);
+    qlen += 4;
+
+    /* ---- Send via UDP ---- */
+    dns_pending = 0;
+    dns_reply_len = 0;
+
+    net_udp_register(DNS_CLIENT_PORT, dns_handler, NULL);
+    int ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
+
+    if (ret < 0) {
+        /* ARP not resolved for DNS server; send ARP request first */
+        uint8_t our_mac[6];
+        rtl8139_get_mac(our_mac);
+        uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+        uint8_t* buf = send_buf;
+        uint8_t* p   = buf;
+
+        p = build_ether_header(p, broadcast, our_mac, ETHERTYPE_ARP);
+
+        arp_packet_t* ap = (arp_packet_t*)p;
+        ap->htype = htons(ARP_HTYPE_ETHER);
+        ap->ptype = htons(ARP_PROTO_IP);
+        ap->hlen  = ETH_ALEN;
+        ap->plen  = 4;
+        ap->oper  = htons(ARP_OP_REQUEST);
+        memcpy(ap->sha, our_mac, ETH_ALEN);
+        ap->spa   = OUR_IP;
+        memset(ap->tha, 0, ETH_ALEN);
+        ap->tpa   = DNS_SERVER;
+
+        net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
+
+        /* Retry the UDP send now that ARP should resolve */
+        dns_pending = 0;
+        ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
+    }
+
+    if (ret < 0) {
+        net_udp_unregister(DNS_CLIENT_PORT);
+        return 0;
+    }
+
+    /* ---- Busy-wait for response ---- */
+    uint32_t result = 0;
+    for (int i = 0; i < 2000000; i++) {
+        if (dns_pending) {
+            result = dns_parse_response(dns_reply, dns_reply_len);
+            break;
+        }
+    }
+
+    net_udp_unregister(DNS_CLIENT_PORT);
+    return result;
+}
+
+/* ----------------------------------------------------------------- */
 /*  Initialization                                                   */
 /* ----------------------------------------------------------------- */
 
@@ -765,6 +1008,9 @@ void net_init(void)
 
     for (int i = 0; i < UDP_MAX_HANDLERS; i++)
         udp_handlers[i].active = 0;
+
+    dns_pending = 0;
+    dns_xid = 0;
 
     log_serial("NET: Stack initialized\n");
 }

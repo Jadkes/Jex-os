@@ -58,7 +58,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "net", "ping", "reboot", "shutdown", "clear", "music", "hardbass", NULL
+    "mkcode", "tcc", "cc", "free", "net", "ping", "dns", "reboot", "shutdown", "clear", "music", "hardbass", NULL
 };
 
 /**
@@ -322,16 +322,33 @@ static uint32_t parse_ip(const char* str) {
 }
 
 /**
- * @brief Ping an IP address.
+ * @brief Resolve or parse an address — IP string or hostname.
+ *
+ * Tries dotted-decimal first; if that fails, attempts DNS resolution.
+ * Returns 0 if both fail.
+ */
+static uint32_t resolve_or_parse(const char* str) {
+    uint32_t ip = parse_ip(str);
+    if (ip != 0)
+        return ip;
+    terminal_writestring("  Resolving hostname...\n");
+    ip = net_dns_resolve(str);
+    if (ip == 0)
+        terminal_writestring("  DNS resolution failed\n");
+    return ip;
+}
+
+/**
+ * @brief Ping an IP address or hostname.
  */
 void ping_command(const char* arg) {
     if (!rtl8139_is_initialized()) {
         terminal_writestring("Network not initialized\n");
         return;
     }
-    uint32_t ip = parse_ip(arg);
+    uint32_t ip = resolve_or_parse(arg);
     if (ip == 0) {
-        terminal_writestring("Usage: ping <ip>   e.g. ping 10.0.2.2\n");
+        terminal_writestring("Usage: ping <ip|hostname>   e.g. ping 10.0.2.2\n");
         return;
     }
 
@@ -355,6 +372,32 @@ void ping_command(const char* arg) {
     }
 
     terminal_writestring("  No reply received (timeout)\n");
+}
+
+/**
+ * @brief Resolve a hostname and print its IP.
+ */
+void dns_command(const char* arg) {
+    if (!rtl8139_is_initialized()) {
+        terminal_writestring("Network not initialized\n");
+        return;
+    }
+    uint32_t ip = net_dns_resolve(arg);
+    if (ip == 0) {
+        terminal_writestring("  Not found\n");
+        return;
+    }
+    terminal_writestring("  ");
+    terminal_writestring(arg);
+    terminal_writestring(" -> ");
+    /* Print dotted-decimal */
+    uint8_t* bytes = (uint8_t*)&ip;
+    char buf[4];
+    int_to_string(bytes[0], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(bytes[1], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(bytes[2], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(bytes[3], buf); terminal_writestring(buf);
+    terminal_writestring("\n");
 }
 
 /**
@@ -429,7 +472,8 @@ void help_command() {
     terminal_writestring("  ./<f>     - Execute file\n");
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  net       - Show network status\n");
-    terminal_writestring("  ping <ip> - Ping an IP address\n");
+    terminal_writestring("  ping <ip> - Ping an IP address or hostname\n");
+    terminal_writestring("  dns <host>- Resolve a hostname to IP\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
@@ -590,6 +634,7 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "net") == 0) net_command();
     else if (strncmp(shell_buffer, "ping ", 5) == 0) ping_command(shell_buffer + 5);
+    else if (strncmp(shell_buffer, "dns ", 4) == 0) dns_command(shell_buffer + 4);
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }

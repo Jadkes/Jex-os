@@ -150,6 +150,10 @@ typedef struct {
 /* Our IP address on the wire (network byte order). */
 #define OUR_IP IP4(10, 0, 2, 15)
 
+/* Default DNS server (QEMU user-mode gateway provides a DNS proxy). */
+#define DNS_SERVER   IP4(10, 0, 2, 3)
+#define DNS_PORT     53
+
 /* ----------------------------------------------------------------- */
 /*  Protocol Helpers — shared by net.c and future protocols          */
 /* ----------------------------------------------------------------- */
@@ -219,6 +223,24 @@ void net_init(void);
 void net_process_packet(uint8_t* data, uint32_t len);
 int  net_ping(uint32_t dest_ip);
 int  net_get_ping_responses(void);
+
+/* ----------------------------------------------------------------- */
+/*  DNS API                                                          */
+/* ----------------------------------------------------------------- */
+
+/*
+ * net_dns_resolve - Resolve a hostname to an IP address via DNS.
+ *
+ * Sends a DNS A-record query to the configured DNS server (UDP port 53),
+ * busy-waits for a response, and returns the first A record found.
+ *
+ * The hostname must be a null-terminated string (e.g. "google.com").
+ * Returns 0 on failure (timeout, NXDOMAIN, malformed response).
+ *
+ * @param hostname  Null-terminated hostname to resolve.
+ * @return          IP address in network byte order, or 0 on failure.
+ */
+uint32_t net_dns_resolve(const char* hostname);
 
 /* ----------------------------------------------------------------- */
 /*  UDP API                                                          */
