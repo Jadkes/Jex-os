@@ -8,6 +8,7 @@
  */
 
 #include "tcc.h"
+#include "symtab.h"
 #include "kheap.h"
 #include "string.h"
 #include "elf.h"
@@ -224,15 +225,44 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
     uint8_t string_table[1024] = {0};
     uint32_t string_pos = 0;
     uint32_t base_addr = 0x08048080; /* Standard ELF load address */
-    
+    int total_local_size = 0;
+    uint32_t sub_esp_pos = 0;
+    symtab_t symtab;
+    int next_offset = -4;  /* First local variable at [ebp-4] */
+    int exit_code = 0;
+
+    symtab_init(&symtab);
+
+    /* Function prologue */
+    output[pos++] = 0x55;  /* push ebp */
+    output[pos++] = 0x89; output[pos++] = 0xE5;  /* mov ebp, esp */
+    output[pos++] = 0x81; output[pos++] = 0xEC;  /* sub esp, N */
+    sub_esp_pos = pos;  /* Remember where N goes */
+    pos += 4;  /* Leave space for N (patch later) */
+
     while (tokens[i].type != TOK_EOF && pos < (*size - 200)) {
-        /* Handle print("...") / printf("...") */
+        /* Handle function declarations: int main() {, void func(int a) {, char* main(), etc. */
+        if ((tokens[i].type == TOK_INT || tokens[i].type == TOK_CHAR || tokens[i].type == TOK_VOID)) {
+            int offset = 1;
+            if (tokens[i+offset].type == TOK_STAR) {
+                offset++;
+            }
+            if (tokens[i+offset].type == TOK_IDENT && tokens[i+offset+1].type == TOK_LPAREN) {
+                i += offset + 2; /* skip type, optional star, name, and '(' */
+                while (tokens[i].type != TOK_RPAREN && tokens[i].type != TOK_EOF) {
+                    i++;
+                }
+                if (tokens[i].type == TOK_RPAREN) i++; /* skip ')' */
+                if (tokens[i].type == TOK_LBRACE) i++;  /* skip '{' */
+                continue;
+            }
+        }
+
+        /* Handle print("...") / printf("...", ...) */
         if (tokens[i].type == TOK_IDENT && 
             (strcmp(tokens[i].str, "print") == 0 || strcmp(tokens[i].str, "printf") == 0) &&
             tokens[i+1].type == TOK_LPAREN &&
-            tokens[i+2].type == TOK_STRING &&
-            tokens[i+3].type == TOK_RPAREN &&
-            tokens[i+4].type == TOK_SEMICOLON) {
+            tokens[i+2].type == TOK_STRING) {
             
             uint32_t str_offset = string_pos;
             int len = strlen(tokens[i+2].str) + 1;
@@ -252,7 +282,12 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             output[pos++] = 0xCD;
             output[pos++] = 0x80;
             
-            i += 5;
+            /* Skip all tokens until the closing RPAREN and SEMICOLON */
+            i += 3; /* Skip print, LPAREN, STRING */
+            while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) {
+                i++;
+            }
+            if (tokens[i].type == TOK_SEMICOLON) i++;
         }
         /* Handle malloc(size) */
         else if (tokens[i].type == TOK_IDENT && strcmp(tokens[i].str, "malloc") == 0 &&
@@ -275,24 +310,13 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             
             i += 4;
         }
-        /* Handle return number; */
-        else if (tokens[i].type == TOK_RETURN && 
-            tokens[i+1].type == TOK_NUMBER && 
-            tokens[i+2].type == TOK_SEMICOLON) {
-            
-            /* mov ebx, number */
-            output[pos++] = 0xBB;
-            *(uint32_t*)(output + pos) = tokens[i+1].int_val;
-            pos += 4;
-            
-            /* mov eax, 1 (SYS_EXIT) */
-            emit_mov_eax_imm(output, &pos, 1);
-            
-            /* int 0x80 */
-            output[pos++] = 0xCD;
-            output[pos++] = 0x80;
-            
-            i += 3;
+        else if (tokens[i].type == TOK_RETURN) {
+            if (tokens[i+1].type == TOK_NUMBER) {
+                exit_code = tokens[i+1].int_val;
+                i += 3;
+            } else {
+                i += 2;
+            }
         }
         /* Handle inline assembly: asm("...") */
         else if (tokens[i].type == TOK_IDENT && strcmp(tokens[i].str, "asm") == 0) {
@@ -306,12 +330,45 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
             if (tokens[i].type == TOK_SEMICOLON) i++;
         }
+        else if ((tokens[i].type == TOK_INT || tokens[i].type == TOK_CHAR) &&
+                 tokens[i+1].type == TOK_IDENT) {
+            sym_type_t var_type = (tokens[i].type == TOK_INT) ? SYM_INT : SYM_CHAR;
+            int var_size = sym_type_size(var_type);
+
+            int j = i + 1;
+            while (tokens[j].type != TOK_SEMICOLON && tokens[j].type != TOK_EOF) {
+                if (tokens[j].type == TOK_IDENT) {
+                    /* Add to symbol table with negative EBP-relative offset */
+                    symtab_add(&symtab, tokens[j].str, var_type, next_offset, 1);
+                    total_local_size += var_size;
+                    next_offset -= var_size;
+                }
+                j++;
+                if (tokens[j].type == TOK_COMMA) j++;
+            }
+
+            while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
+            if (tokens[i].type == TOK_SEMICOLON) i++;
+        }
+        else if (tokens[i].type == TOK_RBRACE) {
+            i++;
+        }
         else i++;
     }
-    
+
+    /* Back-patch sub esp, N */
+    if (sub_esp_pos > 0) {
+        uint32_t N = (total_local_size + 15) & ~15;  /* 16-byte align */
+        *(uint32_t*)(output + sub_esp_pos) = N;
+    }
+
+    /* Function epilogue */
+    output[pos++] = 0x89; output[pos++] = 0xE5;  /* mov esp, ebp */
+    output[pos++] = 0x5D;  /* pop ebp */
+
     emit_mov_eax_imm(output, &pos, 1);
     output[pos++] = 0xBB;
-    *(uint32_t*)(output + pos) = 0;
+    *(uint32_t*)(output + pos) = exit_code;
     pos += 4;
     output[pos++] = 0xCD;
     output[pos++] = 0x80;
@@ -355,7 +412,7 @@ int generate_elf32(uint8_t* code, uint32_t code_size, uint8_t** elf_output, uint
     *(uint16_t*)(buf + pos) = 2; pos += 2; /* ET_EXEC */
     *(uint16_t*)(buf + pos) = 3; pos += 2; /* EM_386 */
     *(uint32_t*)(buf + pos) = 1; pos += 4; /* EV_CURRENT */
-    *(uint32_t*)(buf + pos) = 0x08048080; pos += 4; /* Entry point */
+    *(uint32_t*)(buf + pos) = 0x08048089; pos += 4; /* Entry point (prologue start) */
     *(uint32_t*)(buf + pos) = 52; pos += 4; /* Program header offset */
     *(uint32_t*)(buf + pos) = 0; pos += 4;  /* Section header offset */
     *(uint32_t*)(buf + pos) = 0; pos += 4;  /* Flags */
@@ -426,4 +483,80 @@ int tcc_output_file(tcc_state_t* s, const char* filename) {
 
 void tcc_set_error_func(tcc_state_t* s, void* error_opaque, void (*error_func)(void*, const char*)) {
     (void)s; (void)error_opaque; (void)error_func;
+}
+
+/**
+ * @brief Function table for tracking defined/external functions.
+ */
+static func_entry_t func_table[MAX_FUNCS];
+static int func_count =0;
+
+/**
+ * @brief Relocation entry for external symbol references.
+ */
+typedef struct {
+    uint32_t offset;    /**< Offset in code where relocation applies */
+    uint32_t type;       /**< Relocation type (R_386_PC32 = 2) */
+    uint32_t sym_index;   /**< Symbol table index */
+} reloc_entry_t;
+
+#define MAX_RELOCS 64
+static reloc_entry_t reloc_table[MAX_RELOCS];
+int reloc_count =0;
+
+/**
+ * @brief Register an external symbol and return its index.
+ * @param name External function name.
+ * @return Symbol index (1-based),0 on error.
+ */
+uint32_t register_external_symbol(const char* name) {
+    if (!name || reloc_count >= MAX_RELOCS) return 0;
+    
+    /* Check if already registered */
+    for (int i = 0; i < reloc_count; i++) {
+        if (strcmp(func_table[i].name, name) == 0) {
+            return i + 1; /* 1-based index */
+        }
+    }
+    
+    /* Register new external symbol */
+    strncpy(func_table[reloc_count].name, name, 31);
+    func_table[reloc_count].name[31] = '\0';
+    func_table[reloc_count].offset = 0; /* External = offset 0 */
+    reloc_count++;
+    
+    return reloc_count; /* 1-based index */
+}
+
+/**
+ * @brief Add a relocation entry.
+ * @param offset Offset in code section.
+ * @param type Relocation type.
+ * @param sym_index Symbol table index.
+ */
+void add_relocation(uint32_t offset, uint32_t type, uint32_t sym_index) {
+    if (reloc_count >= MAX_RELOCS) return;
+    
+    reloc_table[reloc_count].offset = offset;
+    reloc_table[reloc_count].type = type;
+    reloc_table[reloc_count].sym_index = sym_index;
+    reloc_count++;
+}
+
+/**
+ * @brief Look up a function by name.
+ * @param name Function name to look up.
+ * @return Offset if found (non-zero),0 if external/not found.
+ */
+uint32_t lookup_function(const char* name) {
+    if (!name) return 0;
+    
+    for (int i = 0; i < func_count; i++) {
+        if (strcmp(func_table[i].name, name) == 0) {
+            return func_table[i].offset;
+        }
+    }
+    
+    /* Not found - assume external function */
+    return 0;
 }

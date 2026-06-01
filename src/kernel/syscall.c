@@ -92,6 +92,38 @@ void syscall_handler(registers_t *regs)
     {
         regs->eax = -1; /* Not fully implemented */
     }
+    else if (regs->eax == SYS_PRINT_INT)
+    {
+        int val = (int)regs->ebx;
+        char buf[32];
+        int i = 0;
+        int is_neg = 0;
+        if (val == 0) {
+            terminal_writestring("0");
+        } else {
+            if (val < 0) {
+                is_neg = 1;
+                val = -val;
+            }
+            while (val > 0) {
+                buf[i++] = (val % 10) + '0';
+                val /= 10;
+            }
+            if (is_neg) buf[i++] = '-';
+            char rev[32];
+            for (int j = 0; j < i; j++) {
+                rev[j] = buf[i - 1 - j];
+            }
+            rev[i] = '\0';
+            terminal_writestring(rev);
+        }
+    }
+    else if (regs->eax == SYS_PRINT_CHAR)
+    {
+        char c = (char)regs->ebx;
+        char str[2] = {c, '\0'};
+        terminal_writestring(str);
+    }
 }
 
 /**

@@ -8,6 +8,7 @@
 
 #include "shell.h"
 #include "keyboard.h"
+#include "serial.h"
 #include "rtc.h"
 #include "pmm.h"
 #include "fs.h"
@@ -18,6 +19,7 @@
 #include "jexfs.h"
 #include "kheap.h"
 #include "string.h"
+#include "rtl8139.h"
 #include "terminal.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -29,10 +31,11 @@ extern int editor_running;
 extern void read_block(uint32_t block, uint8_t* buffer);
 extern void beep(int freq, int duration);
 extern void start_editor(const char* filename);
-extern void sleep(int seconds);
+extern void sleep(uint32_t ms);
 extern void reboot(void);
 extern void shutdown(void);
 extern void set_kernel_stack(uint32_t stack);
+void print_logo(void);
 
 #define SHELL_BUFFER_SIZE 256
 #define MAX_HISTORY 10
@@ -54,7 +57,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "reboot", "shutdown", "clear", "music", NULL
+    "mkcode", "tcc", "cc", "free", "net", "reboot", "shutdown", "clear", "music", "hardbass", NULL
 };
 
 /**
@@ -158,6 +161,103 @@ void play_tune() {
 }
 
 /**
+ * @brief Draw a single frame of the hardbass Gopnik dance animation.
+ */
+void draw_dance_frame(int frame) {
+    terminal_initialize();
+    if (frame == 0) {
+        terminal_setcolor(0x0E); // Yellow
+        terminal_writestring("   ||========================================================||\n");
+        terminal_writestring("   ||              JEXOS HARDBASS SECRET PARTY               ||\n");
+        terminal_writestring("   ||========================================================||\n\n");
+        terminal_setcolor(0x0A); // Light Green
+        terminal_writestring("          \\('v')/          \\('v')/          \\('v')/\n");
+        terminal_writestring("            | |              | |              | |\n");
+        terminal_writestring("           /   \\            /   \\            /   \\\n");
+        terminal_writestring("          _\\\\_//_          _\\\\_//_          _\\\\_//_\n\n");
+    } else {
+        terminal_setcolor(0x0B); // Light Cyan
+        terminal_writestring("   ||========================================================||\n");
+        terminal_writestring("   ||              JEXOS HARDBASS SECRET PARTY               ||\n");
+        terminal_writestring("   ||========================================================||\n\n");
+        terminal_setcolor(0x0C); // Light Red
+        terminal_writestring("          /('v')\\          /('v')\\          /('v')\\\n");
+        terminal_writestring("            | |              | |              | |\n");
+        terminal_writestring("           /   \\            /   \\            /   \\\n");
+        terminal_writestring("          _//_\\\\_          _//_\\\\_          _//_\\\\_\n\n");
+    }
+    terminal_setcolor(0x0D); // Light Magenta
+    terminal_writestring("               === CHEEKI BREEKI IV DAMKE !!! ===\n");
+}
+
+/**
+ * @brief Play a Russian Hardbass tune with dancing gopniks.
+ */
+void play_hardbass() {
+    for (int bar = 0; bar < 4; bar++) {
+        // Beat 1
+        draw_dance_frame(0);
+        beep(120, 80); // Bass Kick (F2ish)
+        sleep(20);
+        beep(587, 80); // Donk (D5)
+        sleep(20);
+        
+        // Beat 2
+        draw_dance_frame(1);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(587, 80); // Donk (D5)
+        sleep(20);
+        
+        // Beat 3
+        draw_dance_frame(0);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(659, 80); // Donk (E5)
+        sleep(20);
+        
+        // Beat 4
+        draw_dance_frame(1);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(698, 80); // Donk (F5)
+        sleep(20);
+        
+        // Beat 5
+        draw_dance_frame(0);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(698, 80); // Donk (F5)
+        sleep(20);
+        
+        // Beat 6
+        draw_dance_frame(1);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(659, 80); // Donk (E5)
+        sleep(20);
+        
+        // Beat 7
+        draw_dance_frame(0);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(587, 80); // Donk (D5)
+        sleep(20);
+        
+        // Beat 8
+        draw_dance_frame(1);
+        beep(120, 80); // Bass Kick
+        sleep(20);
+        beep(523, 80); // Donk (C5)
+        sleep(20);
+    }
+    
+    // Cleanup and return to normal shell
+    terminal_initialize();
+    print_logo();
+}
+
+/**
  * @brief Convert an integer to a string.
  */
 void int_to_string(int n, char* str) {
@@ -195,6 +295,59 @@ void print_logo() {
     terminal_setcolor(0x07);
 }
 
+
+
+/**
+ * @brief Display network status (MAC, I/O base, IRQ, packet counters).
+ */
+void net_command() {
+    if (!rtl8139_is_initialized()) {
+        terminal_writestring("Network: Not initialized\n");
+        return;
+    }
+    uint8_t mac[6];
+    rtl8139_get_mac(mac);
+    terminal_writestring("RTL8139 Network\n");
+    terminal_writestring("  MAC: ");
+    for (int i = 0; i < 6; i++) {
+        const char* hex = "0123456789ABCDEF";
+        terminal_putchar(hex[mac[i] >> 4]);
+        terminal_putchar(hex[mac[i] & 0xF]);
+        if (i < 5) terminal_putchar(':');
+    }
+    terminal_writestring("\n");
+    terminal_writestring("  IO:  0x");
+    uint32_t io = rtl8139_get_io_base();
+    const char* hex = "0123456789ABCDEF";
+    terminal_putchar(hex[(io >> 12) & 0xF]);
+    terminal_putchar(hex[(io >> 8) & 0xF]);
+    terminal_putchar(hex[(io >> 4) & 0xF]);
+    terminal_putchar(hex[io & 0xF]);
+    terminal_writestring("\n");
+
+    terminal_writestring("  IRQ: ");
+    char buf[8];
+    int irq = rtl8139_get_irq();
+    int i = 0;
+    if (irq == 0) { buf[i++] = '0'; }
+    else { int n = irq; char tmp[8]; int j = 0;
+        while (n > 0) { tmp[j++] = '0' + (n % 10); n /= 10; }
+        while (j > 0) buf[i++] = tmp[--j]; }
+    buf[i] = '\0';
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+
+    terminal_writestring("  RX:   ");
+    int_to_string(rtl8139_get_rx_count(), buf);
+    terminal_writestring(buf);
+    terminal_writestring(" packets\n");
+
+    terminal_writestring("  TX:   ");
+    int_to_string(rtl8139_get_tx_count(), buf);
+    terminal_writestring(buf);
+    terminal_writestring(" packets\n");
+}
+
 /**
  * @brief Display help text.
  */
@@ -215,6 +368,7 @@ void help_command() {
     terminal_writestring("  cc <f>    - Compile C file to ELF\n");
     terminal_writestring("  ./<f>     - Execute file\n");
     terminal_writestring("  free      - Show memory usage\n");
+    terminal_writestring("  net       - Show network status\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
@@ -313,6 +467,7 @@ void execute_command() {
     }
     else if (strncmp(shell_buffer, "vix ", 4) == 0) start_editor(shell_buffer + 4);
     else if (strcmp(shell_buffer, "music") == 0) play_tune();
+    else if (strcmp(shell_buffer, "hardbass") == 0) play_hardbass();
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
      else if (strcmp(shell_buffer, "poweroff") == 0) shutdown();
@@ -372,6 +527,7 @@ void execute_command() {
         terminal_writestring("  Used:  "); int_to_string(pmm_get_used_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
         terminal_writestring("  Free:  "); int_to_string(pmm_get_free_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
     }
+    else if (strcmp(shell_buffer, "net") == 0) net_command();
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
@@ -390,6 +546,9 @@ void shell_init() {
     print_logo();
     terminal_writestring("\nWelcome to JexOS v0.5 Peak UX Release!\nType 'help' for a list of commands.\n\n");
     print_prompt();
+    log_serial("Btw, if you read this, this an staging version!\n");
+    log_serial("And cuz no one can try the staging unless your a dev\n");
+    log_serial("You're a pretty cute dev, *pat, pat*");
 }
 
 /**
