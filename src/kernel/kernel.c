@@ -33,6 +33,7 @@
 #include "syscall.h"
 #include "pci.h"
 #include "rtl8139.h"
+#include "net.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -104,6 +105,8 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     init_pci();
     terminal_writestring("Init RTL8139...\n"); log_serial("Init RTL8139...\n");
     init_rtl8139();
+    terminal_writestring("Init Net Stack...\n"); log_serial("Init Net Stack...\n");
+    net_init();
 
     /* 8. Filesystem Subsystems. */
     terminal_writestring("Init FAT12...\n"); log_serial("Init FAT12...\n");

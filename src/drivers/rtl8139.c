@@ -16,6 +16,7 @@
 #include "terminal.h"
 #include "serial.h"
 #include "config.h"
+#include "net.h"
 #include <string.h>
 
 /* I/O Base Address and IRQ assigned by PCI */
@@ -31,6 +32,9 @@ static uint8_t* rx_buffer;
 
 /* Current transmit descriptor (0-3, round-robin) */
 static uint32_t current_tx_desc = 0;
+
+/* Our read offset in the RX ring buffer (we don't trust CAPR readback) */
+static uint16_t rx_offset = 0;
 
 /* Driver state */
 static int driver_initialized = 0;
@@ -61,7 +65,7 @@ void rtl8139_handler(registers_t* regs)
     outw(io_base + RTL8139_REG_ISR, status);
 
     if (status & RTL8139_ISR_ROK) {
-        uint16_t offset = inw(io_base + RTL8139_REG_CAPR);
+        uint16_t offset = rx_offset;
 
         while (1) {
             rx_packet_count++;
@@ -77,9 +81,9 @@ void rtl8139_handler(registers_t* regs)
             if (rx_len > RX_BUF_SIZE || rx_len < 4)
                 break;
 
-            log_serial("RTL8139: RX pkt len=");
-            log_hex_serial(rx_len);
-            log_serial("\n");
+            /* The Ethernet frame starts after the 4-byte header */
+            uint8_t* frame = rx_buffer + offset + 4;
+            net_process_packet(frame, rx_len);
 
             /* Advance past 4-byte header + payload, aligned to 4 bytes */
             offset += rx_len + 4;
@@ -90,6 +94,9 @@ void rtl8139_handler(registers_t* regs)
             /* Tell the card how far we've read */
             outw(io_base + RTL8139_REG_CAPR, offset);
         }
+
+        /* Update our tracking of where we are in the ring */
+        rx_offset = offset;
     }
 
     if (status & RTL8139_ISR_TOK) {
@@ -180,6 +187,7 @@ void init_rtl8139()
 
     /* 10. Reset CAPR (Current Address of Packet Read) */
     outw(io_base + RTL8139_REG_CAPR, 0);
+    rx_offset = 0;
 
     /* 11. Set interrupt mask: enable ROK and TOK */
     outw(io_base + RTL8139_REG_IMR, RTL8139_ISR_ROK | RTL8139_ISR_TOK);
@@ -195,8 +203,8 @@ void init_rtl8139()
          RTL8139_RCR_APM | RTL8139_RCR_AB |
          RTL8139_RCR_AM  | RTL8139_RCR_WRAP);
 
-    /* 13. Register interrupt handler (PIC offset: IRQ0+0x20, so IRQn -> 0x20+n) */
-    register_interrupt_handler(irq_num + 0x20, rtl8139_handler);
+    /* 13. Register interrupt handler. PIC maps IRQ0→0x20, so our irq_num is correct. */
+    register_interrupt_handler(irq_num, rtl8139_handler);
 
     /* 14. Enable transmitter and receiver */
     outb(io_base + RTL8139_REG_CR, RTL8139_CR_TE | RTL8139_CR_RE);
