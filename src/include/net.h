@@ -115,7 +115,7 @@ typedef struct {
 } __attribute__((packed)) icmp_header_t;
 
 /* ----------------------------------------------------------------- */
-/*  UDP (placeholder — full header added when UDP is implemented)    */
+/*  UDP                                                              */
 /* ----------------------------------------------------------------- */
 
 typedef struct {
@@ -124,6 +124,18 @@ typedef struct {
     uint16_t length;            /* Header + data length */
     uint16_t checksum;          /* Pseudo-header + data (0 = no checksum) */
 } __attribute__((packed)) udp_header_t;
+
+/*
+ * UDP pseudo-header prepended to UDP datagrams for checksum calculation.
+ * Not a real on-wire structure — exists only for checksum() input.
+ */
+typedef struct {
+    uint32_t src_ip;
+    uint32_t dest_ip;
+    uint8_t  zero;
+    uint8_t  protocol;          /* IP_PROTO_UDP */
+    uint16_t udp_len;
+} __attribute__((packed)) udp_pseudo_t;
 
 /* ----------------------------------------------------------------- */
 /*  Buffer & Configuration                                           */
@@ -207,5 +219,59 @@ void net_init(void);
 void net_process_packet(uint8_t* data, uint32_t len);
 int  net_ping(uint32_t dest_ip);
 int  net_get_ping_responses(void);
+
+/* ----------------------------------------------------------------- */
+/*  UDP API                                                          */
+/* ----------------------------------------------------------------- */
+
+/*
+ * Callback invoked when a UDP datagram arrives for a registered port.
+ *
+ * @param src_ip   Source IP (network byte order).
+ * @param src_port Source port (network byte order).
+ * @param data     Pointer to the UDP payload (after UDP header).
+ * @param len      Length of the payload in bytes.
+ * @param userdata Opaque pointer supplied at registration time.
+ */
+typedef void (*udp_callback_t)(uint32_t src_ip, uint16_t src_port,
+                                const uint8_t* data, uint32_t len,
+                                void* userdata);
+
+/*
+ * net_udp_register - Register a handler for an incoming UDP port.
+ *
+ * Multiple registrations to the same port overwrite the previous one.
+ *
+ * @param port     Port in host byte order.
+ * @param handler  Callback to invoke on datagram arrival (IRQ context!).
+ * @param userdata Opaque pointer passed back to the callback.
+ * @return         0 on success, -1 if the handler table is full.
+ */
+int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata);
+
+/*
+ * net_udp_unregister - Remove a UDP handler for a port.
+ *
+ * @param port  Port in host byte order.
+ */
+void net_udp_unregister(uint16_t port);
+
+/*
+ * net_send_udp - Send a UDP datagram.
+ *
+ * Resolves the destination via ARP cache.  If the IP is not cached,
+ * returns -1 (caller should retry after ARP resolution).
+ *
+ * Computes the UDP checksum with the pseudo-header (RFC 768).
+ *
+ * @param dest_ip  Destination IP (network byte order).
+ * @param dest_port Destination port (host byte order).
+ * @param src_port  Source port (host byte order).
+ * @param data     Payload data.
+ * @param len      Payload length in bytes.
+ * @return         0 on success, -1 if ARP not resolved.
+ */
+int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
+                 const uint8_t* data, uint32_t len);
 
 #endif /* NET_H */
