@@ -20,6 +20,7 @@
 #include "kheap.h"
 #include "string.h"
 #include "rtl8139.h"
+#include "net.h"
 #include "terminal.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -57,7 +58,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "net", "reboot", "shutdown", "clear", "music", "hardbass", NULL
+    "mkcode", "tcc", "cc", "free", "net", "ping", "reboot", "shutdown", "clear", "music", "hardbass", NULL
 };
 
 /**
@@ -298,6 +299,65 @@ void print_logo() {
 
 
 /**
+ * @brief Parse dotted-decimal IP string (e.g. "10.0.2.2") into uint32_t (net order).
+ */
+static uint32_t parse_ip(const char* str) {
+    uint32_t ip = 0;
+    int val = 0;
+    int shift = 24;
+    while (*str) {
+        if (*str == '.') {
+            ip |= (val & 0xFF) << shift;
+            val = 0;
+            shift -= 8;
+        } else if (*str >= '0' && *str <= '9') {
+            val = val * 10 + (*str - '0');
+        } else {
+            return 0;
+        }
+        str++;
+    }
+    ip |= (val & 0xFF) << shift;
+    return htonl(ip);
+}
+
+/**
+ * @brief Ping an IP address.
+ */
+void ping_command(const char* arg) {
+    if (!rtl8139_is_initialized()) {
+        terminal_writestring("Network not initialized\n");
+        return;
+    }
+    uint32_t ip = parse_ip(arg);
+    if (ip == 0) {
+        terminal_writestring("Usage: ping <ip>   e.g. ping 10.0.2.2\n");
+        return;
+    }
+
+    int before = net_get_ping_responses();
+    int ret = net_ping(ip);
+
+    if (ret < 0) {
+        terminal_writestring("  ARP request sent (waiting for address resolution).\n");
+        terminal_writestring("  Try again in a moment.\n");
+        return;
+    }
+
+    /* Busy-wait for a reply (interrupt handler will set ping_responses) */
+    for (int i = 0; i < 500000; i++) {
+        if (net_get_ping_responses() > before) {
+            terminal_writestring("  64 bytes from ");
+            terminal_writestring(arg);
+            terminal_writestring(": icmp_seq=1\n");
+            return;
+        }
+    }
+
+    terminal_writestring("  No reply received (timeout)\n");
+}
+
+/**
  * @brief Display network status (MAC, I/O base, IRQ, packet counters).
  */
 void net_command() {
@@ -369,6 +429,7 @@ void help_command() {
     terminal_writestring("  ./<f>     - Execute file\n");
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  net       - Show network status\n");
+    terminal_writestring("  ping <ip> - Ping an IP address\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
@@ -528,6 +589,7 @@ void execute_command() {
         terminal_writestring("  Free:  "); int_to_string(pmm_get_free_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
     }
     else if (strcmp(shell_buffer, "net") == 0) net_command();
+    else if (strncmp(shell_buffer, "ping ", 5) == 0) ping_command(shell_buffer + 5);
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
