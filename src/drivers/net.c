@@ -279,25 +279,222 @@ static void handle_arp(uint8_t* data, uint32_t len)
 }
 
 /* ----------------------------------------------------------------- */
-/*  UDP Handler (stub — filled when UDP is implemented)              */
+/*  UDP Handler Table                                                 */
 /* ----------------------------------------------------------------- */
+
+#define UDP_MAX_HANDLERS 8
+
+typedef struct {
+    uint16_t        port;           /* Host byte order               */
+    udp_callback_t  handler;
+    void*           userdata;
+    int             active;
+} udp_handler_entry_t;
+
+static udp_handler_entry_t udp_handlers[UDP_MAX_HANDLERS];
+
+/*
+ * udp_checksum - Compute UDP checksum with the pseudo-header.
+ *
+ * WHY: RFC 768 requires a 12-byte pseudo-header (src IP, dest IP,
+ *      protocol, UDP length) to be prepended to the UDP datagram
+ *      for checksum calculation.  We build it on the stack, compute
+ *      the combined checksum, and discard the pseudo-header.
+ *
+ * @param src_ip    Source IP (network order).
+ * @param dest_ip   Destination IP (network order).
+ * @param udp_hdr   Pointer to the UDP header.
+ * @param udp_len   Length of UDP header + data.
+ * @return          The 16-bit checksum (0 if result is 0 → send as 0xFFFF).
+ */
+static uint16_t udp_checksum(uint32_t src_ip, uint32_t dest_ip,
+                              const uint16_t* udp_hdr, uint32_t udp_len)
+{
+    udp_pseudo_t pseudo;
+    pseudo.src_ip   = src_ip;
+    pseudo.dest_ip  = dest_ip;
+    pseudo.zero     = 0;
+    pseudo.protocol = IP_PROTO_UDP;
+    pseudo.udp_len  = htons(udp_len);
+
+    /*
+     * We need to checksum pseudo-header + UDP datagram as one contiguous
+     * block.  Build a temporary buffer on the stack (up to 1500 bytes).
+     */
+    uint8_t buf[sizeof(udp_pseudo_t) + 1500];
+    uint32_t total = sizeof(udp_pseudo_t) + udp_len;
+    if (total > sizeof(buf))
+        return 0;       /* Too large — skip checksum */
+
+    memcpy(buf, &pseudo, sizeof(udp_pseudo_t));
+    memcpy(buf + sizeof(udp_pseudo_t), udp_hdr, udp_len);
+
+    uint16_t sum = checksum((uint16_t*)buf, total);
+    /* RFC 768: 0 means "no checksum" — if we computed 0, send 0xFFFF */
+    return sum ? sum : 0xFFFF;
+}
 
 /*
  * handle_udp - Process an incoming UDP datagram.
  *
- * TODO: Parse the UDP header, validate length/checksum, look up the
- *       destination port in a registered-handler table, and dispatch.
+ * Validates length, optionally verifies the checksum, looks up the
+ * destination port in the registered-handler table, and dispatches.
  *
- * @param data    Pointer past Ethernet header (IP header starts here).
- * @param len     Remaining packet length from IP header onward.
- * @param ip_hdr  Length of the IP header (for locating UDP header).
+ * @param data    Pointer to the IP header (whole datagram).
+ * @param len     Total length from IP header onward.
+ * @param ip_hdr  Length of the IP header in bytes.
  */
 static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
 {
-    (void)data;
-    (void)len;
-    (void)ip_hdr;
-    /* No-op until UDP handlers are registered */
+    uint32_t ip_tot = ntohs(((ip_header_t*)data)->total_len);
+
+    /* Must at least fit the UDP header (after IP header) */
+    if (len < ip_hdr + sizeof(udp_header_t))
+        return;
+    if (ip_tot < ip_hdr + sizeof(udp_header_t))
+        return;
+
+    udp_header_t* udp  = (udp_header_t*)(data + ip_hdr);
+    uint16_t udp_len   = ntohs(udp->length);
+    uint32_t remaining = ip_tot - ip_hdr;
+
+    /* UDP length must match (or exceed; RFC 768 says discard if less) */
+    if (udp_len < sizeof(udp_header_t) || udp_len > remaining)
+        return;
+
+    /* Verify checksum if non-zero (zero means sender omitted it) */
+    if (udp->checksum != 0) {
+        uint16_t expected = udp_checksum(
+            ((ip_header_t*)data)->src_ip,
+            ((ip_header_t*)data)->dest_ip,
+            (const uint16_t*)udp, udp_len);
+        if (udp->checksum != expected)
+            return;
+    }
+
+    uint16_t dest_port = ntohs(udp->dest_port);
+
+    /* Look up handler by destination port */
+    for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
+        if (udp_handlers[i].active && udp_handlers[i].port == dest_port) {
+            udp_handlers[i].handler(
+                ((ip_header_t*)data)->src_ip,
+                udp->src_port,
+                (uint8_t*)(udp + 1),        /* Payload starts after UDP hdr */
+                udp_len - sizeof(udp_header_t),
+                udp_handlers[i].userdata);
+            return;
+        }
+    }
+}
+
+/*
+ * net_udp_register - Register a handler for an incoming UDP port.
+ *
+ * @param port     Port in host byte order.
+ * @param handler  Callback (called from IRQ context — keep it short).
+ * @param userdata Opaque pointer for the callback.
+ * @return         0 on success, -1 if table full.
+ */
+int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
+{
+    /* Overwrite existing entry if the port is already registered */
+    for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
+        if (udp_handlers[i].active && udp_handlers[i].port == port) {
+            udp_handlers[i].handler  = handler;
+            udp_handlers[i].userdata = userdata;
+            return 0;
+        }
+    }
+
+    /* Find a free slot */
+    for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
+        if (!udp_handlers[i].active) {
+            udp_handlers[i].port     = port;
+            udp_handlers[i].handler  = handler;
+            udp_handlers[i].userdata = userdata;
+            udp_handlers[i].active   = 1;
+            return 0;
+        }
+    }
+    return -1;      /* Table full */
+}
+
+/*
+ * net_udp_unregister - Remove a UDP handler.
+ *
+ * @param port  Port in host byte order.
+ */
+void net_udp_unregister(uint16_t port)
+{
+    for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
+        if (udp_handlers[i].active && udp_handlers[i].port == port) {
+            udp_handlers[i].active = 0;
+            return;
+        }
+    }
+}
+
+/* ----------------------------------------------------------------- */
+/*  net_send_udp - Send a UDP datagram.                              */
+/* ----------------------------------------------------------------- */
+
+/*
+ * net_send_udp - Build and send a UDP datagram.
+ *
+ * Resolves the destination via ARP.  If the IP is not cached, returns
+ * -1 (caller should trigger ARP resolution and retry).
+ *
+ * Computes the UDP checksum with the RFC 768 pseudo-header.
+ *
+ * @param dest_ip   Destination IP (network byte order).
+ * @param dest_port Destination port (host byte order).
+ * @param src_port  Source port (host byte order).
+ * @param data      Payload data.
+ * @param len       Payload length in bytes.
+ * @return          0 on success, -1 if ARP not resolved.
+ */
+int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
+                 const uint8_t* data, uint32_t len)
+{
+    uint8_t our_mac[6];
+    rtl8139_get_mac(our_mac);
+
+    /* Must have the destination MAC cached */
+    int arp_idx = arp_find(dest_ip);
+    if (arp_idx < 0)
+        return -1;
+
+    uint32_t udp_len     = sizeof(udp_header_t) + len;
+    uint32_t ip_data_len = udp_len;     /* What IP considers "payload" */
+
+    /* Build the packet in send_buf */
+    uint8_t* buf = send_buf;
+    uint8_t* p   = buf;
+
+    p = build_ether_header(p, arp_cache[arp_idx].mac, our_mac, ETHERTYPE_IP);
+
+    /* IP header (UDP is the payload) */
+    p = build_ip_header(p, IP_PROTO_UDP, OUR_IP, dest_ip, ip_data_len);
+
+    /* UDP header */
+    udp_header_t* udp = (udp_header_t*)p;
+    udp->src_port  = htons(src_port);
+    udp->dest_port = htons(dest_port);
+    udp->length    = htons(udp_len);
+    udp->checksum  = 0;                         /* Temp: zero before calc */
+    p += sizeof(udp_header_t);
+
+    /* Payload */
+    memcpy(p, data, len);
+    p += len;
+
+    /* UDP checksum with pseudo-header */
+    udp->checksum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
+
+    uint32_t total = sizeof(eth_header_t) + IP_HEADER_LEN + ip_data_len;
+    net_send_ether(buf, total);
+    return 0;
 }
 
 /* ----------------------------------------------------------------- */
@@ -565,6 +762,9 @@ void net_init(void)
 
     for (int i = 0; i < ARP_CACHE_SIZE; i++)
         arp_cache[i].valid = 0;
+
+    for (int i = 0; i < UDP_MAX_HANDLERS; i++)
+        udp_handlers[i].active = 0;
 
     log_serial("NET: Stack initialized\n");
 }
