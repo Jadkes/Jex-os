@@ -949,6 +949,7 @@ uint32_t net_dns_resolve(const char* hostname)
 
     if (ret < 0) {
         /* ARP not resolved for DNS server; send ARP request first */
+        log_serial("DNS: ARP not cached, sending request\n");
         uint8_t our_mac[6];
         rtl8139_get_mac(our_mac);
         uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
@@ -970,24 +971,45 @@ uint32_t net_dns_resolve(const char* hostname)
 
         net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
 
-        /* Retry the UDP send now that ARP should resolve */
+        /* Wait for ARP reply to arrive (interrupt handler populates cache) */
+        for (int i = 0; i < 1000000; i++) {
+            if (arp_find(DNS_SERVER) >= 0)
+                break;
+        }
+
+        if (arp_find(DNS_SERVER) < 0) {
+            log_serial("DNS: ARP resolution timed out\n");
+            net_udp_unregister(DNS_CLIENT_PORT);
+            return 0;
+        }
+
+        log_serial("DNS: ARP resolved, retrying UDP\n");
+
+        /* Retry the UDP send */
         dns_pending = 0;
         ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
     }
 
     if (ret < 0) {
+        log_serial("DNS: UDP send failed\n");
         net_udp_unregister(DNS_CLIENT_PORT);
         return 0;
     }
 
-    /* ---- Busy-wait for response ---- */
+    log_serial("DNS: query sent, waiting for response\n");
+
+    /* ---- Busy-wait for response (longer timeout for real DNS) ---- */
     uint32_t result = 0;
-    for (int i = 0; i < 2000000; i++) {
+    for (int i = 0; i < 50000000; i++) {
         if (dns_pending) {
+            log_serial("DNS: response received\n");
             result = dns_parse_response(dns_reply, dns_reply_len);
             break;
         }
     }
+
+    if (!dns_pending)
+        log_serial("DNS: response timed out\n");
 
     net_udp_unregister(DNS_CLIENT_PORT);
     return result;
