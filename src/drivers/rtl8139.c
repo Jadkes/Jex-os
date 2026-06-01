@@ -1,12 +1,12 @@
 /**
  * @file rtl8139.c
  * @brief RTL8139 Network Card Driver Implementation.
- * 
- * This driver provides basic initialization, packet transmission,
- * and interrupt-driven packet reception for the Realtek 8139.
- * 
- * The RTL8139 uses DMA (Direct Memory Access) to transfer packets
- * between system RAM and its internal FIFO buffers.
+ *
+ * Full initialization, interrupt-driven packet reception,
+ * and DMA-based packet transmission for the Realtek 8139 NIC.
+ *
+ * The RTL8139 uses a 32KB ring buffer for reception via bus-mastering DMA.
+ * Transmit uses 4 separate descriptor slots (round-robin).
  */
 
 #include "rtl8139.h"
@@ -18,114 +18,250 @@
 #include "config.h"
 #include <string.h>
 
-#if 0
-/* Helper: Convert uint32_t to hex string */
-static void int_to_hex(uint32_t val, char* buf) {
-    const char* hex = "0123456789ABCDEF";
-    buf[0] = '0'; buf[1] = 'x';
-    for (int i = 7; i >= 0; i--) {
-        buf[2 + (7 - i)] = hex[(val >> (i * 4)) & 0xF];
-    }
-    buf[10] = '\0';
-}
-#endif
-
-/* I/O Base Address and IRQ assigned by the PCI bus */
+/* I/O Base Address and IRQ assigned by PCI */
 static uint32_t io_base;
-#if 0
 static uint8_t irq_num;
 
 /* MAC Address read from the card's EEPROM */
 static uint8_t mac_addr[6];
-#endif
 
-#if 0
-/* Receive Buffer: The card writes incoming packets here via DMA */
+/* Receive Buffer: 32KB physically-contiguous ring buffer for DMA */
 #define RX_BUF_SIZE (32 * 1024)
 static uint8_t* rx_buffer;
-#endif
 
-/* Transmit Descriptors index (0 to 3)
- * The RTL8139 has 4 transmit descriptors that can be used concurrently.
- */
+/* Current transmit descriptor (0-3, round-robin) */
 static uint32_t current_tx_desc = 0;
 
+/* Driver state */
+static int driver_initialized = 0;
+static uint32_t rx_packet_count = 0;
+static uint32_t tx_packet_count = 0;
+
 /**
- * @brief RTL8139 Interrupt Handler.
- * Called by the CPU when the card asserts its IRQ line.
- * 
- * @param regs Pointer to CPU registers structure.
+ * Print a hex byte to the terminal.
  */
-void rtl8139_handler(registers_t* regs) {
-    /* Read the Interrupt Status Register (ISR) to see what happened */
+static void print_hex_byte(uint8_t val)
+{
+    const char* hex = "0123456789ABCDEF";
+    terminal_putchar(hex[(val >> 4) & 0xF]);
+    terminal_putchar(hex[val & 0xF]);
+}
+
+/**
+ * RTL8139 Interrupt Handler.
+ *
+ * Handles Receive OK (ROK) — reads packets from the ring buffer,
+ * and Transmit OK (TOK) — confirms packet was sent.
+ */
+void rtl8139_handler(registers_t* regs)
+{
     uint16_t status = inw(io_base + RTL8139_REG_ISR);
-    
-    /* Acknowledge the interrupts by writing the status back to the ISR.
-     * In RTL8139, writing a '1' to a bit clears it. 
-     */
+
+    /* Acknowledge by writing status back (writing 1 clears) */
     outw(io_base + RTL8139_REG_ISR, status);
 
-    /* ROK: Receive OK */
     if (status & RTL8139_ISR_ROK) {
-        terminal_writestring("RTL8139: Packet Received!\n");
-        /**
-         * FUTURE: To process packets, read from rx_buffer at the current CAPR offset.
-         * Each packet has a header (Status + Length) followed by the Ethernet frame.
-         */
+        uint16_t offset = inw(io_base + RTL8139_REG_CAPR);
+
+        while (1) {
+            rx_packet_count++;
+            uint16_t* header = (uint16_t*)(rx_buffer + offset);
+            uint16_t rx_status = header[0];
+            uint16_t rx_len = header[1];
+
+            /* ROK bit (0x0001) in packet status means valid packet */
+            if (!(rx_status & 0x0001))
+                break;
+
+            /* Sanity-check the length */
+            if (rx_len > RX_BUF_SIZE || rx_len < 4)
+                break;
+
+            log_serial("RTL8139: RX pkt len=");
+            log_hex_serial(rx_len);
+            log_serial("\n");
+
+            /* Advance past 4-byte header + payload, aligned to 4 bytes */
+            offset += rx_len + 4;
+            offset = (offset + 3) & ~3;
+            if (offset >= RX_BUF_SIZE)
+                offset -= RX_BUF_SIZE;
+
+            /* Tell the card how far we've read */
+            outw(io_base + RTL8139_REG_CAPR, offset);
+        }
     }
 
-    /* TOK: Transmit OK */
     if (status & RTL8139_ISR_TOK) {
-        terminal_writestring("RTL8139: Packet Transmitted!\n");
+        log_serial("RTL8139: TX OK\n");
     }
 
     (void)regs;
 }
 
 /**
- * @brief Initialize the RTL8139 network card.
- * 
- * Initialization Sequence:
- * 1. Find device on PCI bus and enable Bus Mastering.
- * 2. Power on the card.
- * 3. Software Reset.
- * 4. Read MAC address.
- * 5. Setup DMA Receive Buffer.
- * 6. Set Interrupt Mask.
- * 7. Configure Receive modes.
- * 8. Enable RX/TX.
+ * Initialize the RTL8139 network card.
+ *
+ * Sequence:
+ *   PCI find → bus mastering → power-on → software reset →
+ *   read MAC → allocate DMA RX buffer → configure RCR/IMR →
+ *   register IRQ → enable RX/TX.
  */
-void init_rtl8139() {
-    /* Skip PCI-based detection for now - just announce RTL8139 is available */
-    terminal_writestring("RTL8139: Driver stub loaded (PCI detection needed)\n");
-    
-    /* TODO: Implement proper PCI-based detection using pci_find_device() 
-     * once the PCI bus scanning bug is fixed */
+void init_rtl8139()
+{
+    pci_device_t dev;
+    int i;
+
+    /* 1. Find the RTL8139 on the PCI bus */
+    if (!pci_find_device(PCI_VENDOR_REALTEK, PCI_DEVICE_RTL8139, &dev)) {
+        terminal_writestring("RTL8139: PCI device not found\n");
+        log_serial("RTL8139: PCI device not found\n");
+        return;
+    }
+
+    terminal_writestring("RTL8139: Found at ");
+    print_hex_byte(dev.bus);
+    terminal_putchar(':');
+    print_hex_byte(dev.device);
+    terminal_putchar('.');
+    print_hex_byte(dev.function);
+    terminal_writestring("\n");
+
+    /* 2. Extract I/O base from BAR0 (mask off I/O indicator bits) */
+    io_base = dev.bar0 & ~0x3;
+
+    /* 3. Extract IRQ line */
+    irq_num = dev.irq_line;
+
+    log_serial("RTL8139: IO=");
+    log_hex_serial(io_base);
+    log_serial(" IRQ=");
+    log_hex_serial(irq_num);
+    log_serial("\n");
+
+    /* 4. Enable PCI Bus Mastering (bit 2) and I/O Space (bit 0) */
+    uint32_t pci_cmd = pci_config_read_dword(dev.bus, dev.device,
+                                             dev.function, 0x04);
+    pci_cmd |= (1 << 2) | (1 << 0);
+    pci_config_write_dword(dev.bus, dev.device, dev.function, 0x04, pci_cmd);
+
+    /* 5. Power on the chip via CONFIG1 (clear bit 0 = PMEn) */
+    uint8_t config1 = inb(io_base + RTL8139_REG_CONFIG1);
+    config1 &= ~(1 << 0);
+    outb(io_base + RTL8139_REG_CONFIG1, config1);
+
+    /* 6. Software reset (set CR_RST, poll until it clears) */
+    outb(io_base + RTL8139_REG_CR, RTL8139_CR_RST);
+    while (inb(io_base + RTL8139_REG_CR) & RTL8139_CR_RST)
+        ;
+
+    /* 7. Read MAC address from registers 0x00-0x05 */
+    for (i = 0; i < 6; i++)
+        mac_addr[i] = inb(io_base + RTL8139_REG_MAC0 + i);
+
+    terminal_writestring("RTL8139: MAC ");
+    for (i = 0; i < 6; i++) {
+        print_hex_byte(mac_addr[i]);
+        if (i < 5)
+            terminal_putchar(':');
+    }
+    terminal_writestring("\n");
+
+    /* 8. Allocate 32KB physically-contiguous RX DMA buffer */
+    rx_buffer = (uint8_t*)pmm_alloc_blocks(RX_BUF_SIZE / PMM_BLOCK_SIZE);
+    if (!rx_buffer) {
+        terminal_writestring("RTL8139: RX buffer alloc failed\n");
+        return;
+    }
+    memset(rx_buffer, 0, RX_BUF_SIZE);
+
+    /* 9. Tell the card the RX buffer address */
+    outl(io_base + RTL8139_REG_RBSTART, (uint32_t)rx_buffer);
+
+    /* 10. Reset CAPR (Current Address of Packet Read) */
+    outw(io_base + RTL8139_REG_CAPR, 0);
+
+    /* 11. Set interrupt mask: enable ROK and TOK */
+    outw(io_base + RTL8139_REG_IMR, RTL8139_ISR_ROK | RTL8139_ISR_TOK);
+
+    /*
+     * 12. Configure receive mode:
+     *     APM - Accept Physical Match (our MAC)
+     *     AB  - Accept Broadcast
+     *     AM  - Accept Multicast
+     *     WRAP - Ring buffer wraps at end
+     */
+    outl(io_base + RTL8139_REG_RCR,
+         RTL8139_RCR_APM | RTL8139_RCR_AB |
+         RTL8139_RCR_AM  | RTL8139_RCR_WRAP);
+
+    /* 13. Register interrupt handler (PIC offset: IRQ0+0x20, so IRQn -> 0x20+n) */
+    register_interrupt_handler(irq_num + 0x20, rtl8139_handler);
+
+    /* 14. Enable transmitter and receiver */
+    outb(io_base + RTL8139_REG_CR, RTL8139_CR_TE | RTL8139_CR_RE);
+
+    driver_initialized = 1;
+    terminal_writestring("RTL8139: Initialized\n");
+    log_serial("RTL8139: Initialized successfully\n");
 }
 
 /**
- * @brief Send a raw packet.
- * 
- * @param data Pointer to the packet data in memory.
- * @param len Length of the packet in bytes.
+ * Send a raw Ethernet frame.
+ *
+ * The data buffer must be in DMA-accessible memory (identity-mapped
+ * kernel space). Writes the buffer address to TSAD and triggers the
+ * transfer via TSD.
+ *
+ * @param data Pointer to the packet data.
+ * @param len  Length of the packet in bytes.
  */
-void rtl8139_send_packet(void* data, uint32_t len) {
-    /* The RTL8139 has 4 transmit descriptors (0-3). Each has a 
-     * Transmit Start Address (TSAD) and a Transmit Status Descriptor (TSD).
-     */
-    
-    /* 1. Write the physical address of the packet data to TSAD */
-    outw(io_base + RTL8139_REG_TSAD0 + (current_tx_desc * 4), (uint32_t)data);
-    
-    /** 
-     * @brief 2. Write the length to TSD to trigger the transfer.
-     * Bits 0-12: Size of the packet.
-     * Bit 13: MUST be 0.
-     * Bits 16-21: Transmit Threshold (0x3F = start transfer immediately).
-     */
-    outw(io_base + RTL8139_REG_TSD0 + (current_tx_desc * 4), len | 0x003F0000);
+void rtl8139_send_packet(void* data, uint32_t len)
+{
+    tx_packet_count++;
 
-    /* Move to the next descriptor in a circular fashion */
-    current_tx_desc++;
-    if (current_tx_desc > 3) current_tx_desc = 0;
+    /* Write the physical address of the data buffer to TSAD */
+    outl(io_base + RTL8139_REG_TSAD0 + (current_tx_desc * 4),
+         (uint32_t)data);
+
+    /*
+     * Trigger transmission: len in low 13 bits,
+     * Early TX Threshold in bits 16-21 (0x3F = earliest start).
+     */
+    outl(io_base + RTL8139_REG_TSD0 + (current_tx_desc * 4),
+         len | 0x003F0000);
+
+    /* Advance to next descriptor (0 → 1 → 2 → 3 → 0) */
+    current_tx_desc = (current_tx_desc + 1) & 3;
+}
+
+int rtl8139_is_initialized(void)
+{
+    return driver_initialized;
+}
+
+void rtl8139_get_mac(uint8_t* mac)
+{
+    for (int i = 0; i < 6; i++)
+        mac[i] = mac_addr[i];
+}
+
+uint32_t rtl8139_get_io_base(void)
+{
+    return io_base;
+}
+
+uint8_t rtl8139_get_irq(void)
+{
+    return irq_num;
+}
+
+uint32_t rtl8139_get_rx_count(void)
+{
+    return rx_packet_count;
+}
+
+uint32_t rtl8139_get_tx_count(void)
+{
+    return tx_packet_count;
 }

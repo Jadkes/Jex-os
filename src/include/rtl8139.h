@@ -63,4 +63,40 @@ void init_rtl8139();
  */
 void rtl8139_send_packet(void* data, uint32_t len);
 
+/**
+ * @brief Get the driver initialization status.
+ * @return 1 if initialized, 0 otherwise.
+ */
+int rtl8139_is_initialized(void);
+
+/**
+ * @brief Copy the MAC address into the provided buffer.
+ * @param mac 6-byte buffer to receive the MAC address.
+ */
+void rtl8139_get_mac(uint8_t* mac);
+
+/**
+ * @brief Get the I/O base port address.
+ * @return The I/O base address.
+ */
+uint32_t rtl8139_get_io_base(void);
+
+/**
+ * @brief Get the assigned IRQ number.
+ * @return The IRQ line number.
+ */
+uint8_t rtl8139_get_irq(void);
+
+/**
+ * @brief Get the number of packets received.
+ * @return Packet RX count.
+ */
+uint32_t rtl8139_get_rx_count(void);
+
+/**
+ * @brief Get the number of packets transmitted.
+ * @return Packet TX count.
+ */
+uint32_t rtl8139_get_tx_count(void);
+
 #endif // RTL8139_H

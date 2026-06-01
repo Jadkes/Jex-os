@@ -51,6 +51,26 @@ static inline void outw(uint16_t port, uint16_t val)
 }
 
 /**
+ * @brief Read a 32-bit dword from an I/O port.
+ */
+static inline uint32_t inl(uint16_t port)
+{
+    uint32_t ret;
+    asm volatile ( "inl %1, %0"
+                   : "=a"(ret)
+                   : "Nd"(port) );
+    return ret;
+}
+
+/**
+ * @brief Write a 32-bit dword to an I/O port.
+ */
+static inline void outl(uint16_t port, uint32_t val)
+{
+    asm volatile ( "outl %0, %1" : : "a"(val), "Nd"(port) );
+}
+
+/**
  * @brief Read a sequence of words from a port into memory.
  */
 static inline void insw(uint16_t port, void* addr, uint32_t count)

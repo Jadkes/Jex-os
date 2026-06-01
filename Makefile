@@ -70,9 +70,9 @@ $(ISO): $(KERNEL) $(IMG)
 run-iso: $(ISO)
 	qemu-system-i386 -cdrom $(ISO) -m 128 -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0 -device rtl8139,netdev=net0
 
-# Original run (kernel mode - no full PCI)
+# Original run (kernel mode)
 run: $(KERNEL) $(IMG)
-	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0
+	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0 -device rtl8139,netdev=net0
 
 clean:
 	rm -f $(OBJECTS) $(KERNEL) $(IMG) $(ISO) tools/mkjexfs

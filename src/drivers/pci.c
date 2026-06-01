@@ -13,32 +13,6 @@
 #include "config.h"
 #include <stddef.h>
 
-/* Helper: Convert uint32_t to hex string - stub for debugging */
-#if 0
-static void int_to_hex(uint32_t val, char* buf) {
-    const char* hex = "0123456789ABCDEF";
-    buf[0] = '0'; buf[1] = 'x';
-    for (int i = 7; i >= 0; i--) {
-        buf[2 + (7 - i)] = hex[(val >> (i * 4)) & 0xF];
-    }
-    buf[10] = '\0';
-}
-
-/* Helper: Convert int to decimal string */
-static void int_to_string(int val, char* buf) {
-    if (val == 0) { buf[0] = '0'; buf[1] = '\0'; return; }
-    int i = 0;
-    int neg = 0;
-    if (val < 0) { neg = 1; val = -val; }
-    char tmp[16];
-    while (val > 0) { tmp[i++] = '0' + (val % 10); val /= 10; }
-    int j = 0;
-    if (neg) buf[j++] = '-';
-    while (i > 0) buf[j++] = tmp[--i];
-    buf[j] = '\0';
-}
-#endif
-
 /**
  * @brief Internal list of detected PCI devices.
  * For simplicity, we only store up to 32 devices.
@@ -73,24 +47,16 @@ uint32_t pci_config_read_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t 
     uint32_t lbus  = (uint32_t)bus;
     uint32_t lslot = (uint32_t)slot;
     uint32_t lfunc = (uint32_t)func;
-    uint32_t tmp = 0;
 
     /* Build the 32-bit address as per the PCI specification */
     address = (uint32_t)((lbus << 16) | (lslot << 11) |
               (lfunc << 8) | (offset & 0xfc) | ((uint32_t)0x80000000));
 
-    /* 1. Write the address to the Address Port (0xCF8) */
-    /* We write in bytes for maximum compatibility across different x86 implementations */
-    outb(0xCF8 + 3, (address >> 24) & 0xFF);
-    outb(0xCF8 + 2, (address >> 16) & 0xFF);
-    outb(0xCF8 + 1, (address >> 8) & 0xFF);
-    outb(0xCF8 + 0, (address >> 0) & 0xFF);
+    /* Write the address as a single dword to the Address Port (0xCF8) */
+    outl(PCI_CONFIG_ADDRESS, address);
 
-    /* 2. Read the result from the Data Port (0xCFC) */
-    tmp = (uint32_t)inb(0xCFC + 0) | ((uint32_t)inb(0xCFC + 1) << 8) |
-          ((uint32_t)inb(0xCFC + 2) << 16) | ((uint32_t)inb(0xCFC + 3) << 24);
-
-    return tmp;
+    /* Read the result from the Data Port (0xCFC) */
+    return inl(PCI_CONFIG_DATA);
 }
 
 /**
@@ -112,17 +78,11 @@ void pci_config_write_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off
     address = (uint32_t)((lbus << 16) | (lslot << 11) |
               (lfunc << 8) | (offset & 0xfc) | ((uint32_t)0x80000000));
 
-    /* 1. Write the address to the Address Port */
-    outb(0xCF8 + 3, (address >> 24) & 0xFF);
-    outb(0xCF8 + 2, (address >> 16) & 0xFF);
-    outb(0xCF8 + 1, (address >> 8) & 0xFF);
-    outb(0xCF8 + 0, (address >> 0) & 0xFF);
+    /* Write the address to the Address Port (0xCF8) */
+    outl(PCI_CONFIG_ADDRESS, address);
 
-    /* 2. Write the data to the Data Port (0xCFC) */
-    outb(0xCFC + 3, (val >> 24) & 0xFF);
-    outb(0xCFC + 2, (val >> 16) & 0xFF);
-    outb(0xCFC + 1, (val >> 8) & 0xFF);
-    outb(0xCFC + 0, (val >> 0) & 0xFF);
+    /* Write the data to the Data Port (0xCFC) */
+    outl(PCI_CONFIG_DATA, val);
 }
 
 /**
@@ -167,6 +127,15 @@ static void pci_check_device(uint8_t bus, uint8_t device) {
     /* Offset 0x3C: Interrupt Line (bits 0-7) */
     uint32_t reg3C = pci_config_read_dword(bus, device, function, 0x3C);
     dev.irq_line = reg3C & 0xFF;
+
+    /* Log found device to serial for debugging */
+    log_serial("PCI: vendor=");
+    log_hex_serial(vendor_id);
+    log_serial(" device=");
+    log_hex_serial(dev.device_id);
+    log_serial(" class=");
+    log_hex_serial(dev.class_code);
+    log_serial("\n");
 
     /* Add the valid device to our system-wide list */
     if (pci_device_count < 32) {

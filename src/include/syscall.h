@@ -27,6 +27,8 @@ void init_syscalls();
 #define SYS_EXECVE   8
 #define SYS_FORK     9
 #define SYS_WAITPID  10
+#define SYS_PRINT_INT 11
+#define SYS_PRINT_CHAR 12
 
 /* File access modes */
 #define O_RDONLY    0x00
