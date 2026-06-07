@@ -154,6 +154,9 @@ typedef struct {
 #define DNS_SERVER   IP4(10, 0, 2, 3)
 #define DNS_PORT     53
 
+/* Ephemeral source port for DNS queries (responses arrive here). */
+#define DNS_CLIENT_PORT 54321
+
 /* ----------------------------------------------------------------- */
 /*  Protocol Helpers — shared by net.c and future protocols          */
 /* ----------------------------------------------------------------- */
