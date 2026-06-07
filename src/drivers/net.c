@@ -1,28 +1,18 @@
 /**
  * @file net.c
- * @brief Network Stack Implementation — ARP, IP, ICMP.
+ * @brief Network stack — ARP, IP, ICMP, UDP, DNS.
  *
- * Purpose: Provides L2/L3 networking on top of the RTL8139 NIC driver.
- *          Sits between the NIC's interrupt handler and higher protocols.
- *
- * Design: Protocol helpers (build_ether_header, build_ip_header) are
- *         factored out so that UDP/TCP can be added without duplicating
- *         header construction. The IP demux dispatches by protocol field
- *         — adding a new L4 protocol means adding a handler call.
- *
- *         Two independent send buffers prevent re-entrancy issues:
- *           send_buf  — shell/user context  (net_ping, future UDP send)
- *           reply_buf — IRQ context         (ARP reply, ICMP echo reply)
- *
- * Thread-safety: The interrupt handler (rtl8139_handler) calls
- *                net_process_packet() which may trigger reply_buf usage.
- *                Shell code uses send_buf. Never cross the streams.
+ * FIXME: ARP reply from QEMU slirp arrives after 3s polling timeout.
+ * FIXME: reply_buf double-DMA race in ISR batch processing.
+ * FIXME: 1512-byte on-stack buffer in udp_checksum (ISR context).
+ * FIXME: strict-aliasing audit for packet construction sites.
  */
 
 #include "net.h"
 #include "rtl8139.h"
 #include "terminal.h"
 #include "serial.h"
+#include "timer.h"
 #include "kheap.h"
 #include <string.h>
 
@@ -33,19 +23,17 @@
 /* shell / user-initiated transmits */
 static uint8_t send_buf[PACKET_BUF_SIZE];
 
-/* interrupt-reply-path transmits (ARP reply, ICMP echo reply) */
+/* IRQ reply path (ARP reply, ICMP echo reply).
+ * FIXME: double-DMA race when ISR processes >1 packet needing a reply. */
 static uint8_t reply_buf[PACKET_BUF_SIZE];
-
-/* ----------------------------------------------------------------- */
-/*  ARP Cache (4 entries, FIFO eviction)                             */
-/* ----------------------------------------------------------------- */
+/* FIXME: ARP reply from QEMU slirp skips 3s polling window */
 
 #define ARP_CACHE_SIZE 4
 
 typedef struct {
     uint32_t ip;
     uint8_t  mac[6];
-    int      valid;
+    volatile int valid;
 } arp_entry_t;
 
 static arp_entry_t arp_cache[ARP_CACHE_SIZE];
@@ -54,9 +42,9 @@ static arp_entry_t arp_cache[ARP_CACHE_SIZE];
 /*  State                                                            */
 /* ----------------------------------------------------------------- */
 
-static int      ping_responses = 0;
-static uint16_t ip_id          = 0;    /* Monotonic IP identification */
-static uint16_t icmp_seq       = 0;
+static volatile int ping_responses = 0;
+static uint16_t ip_id              = 0;    /* Monotonic IP identification */
+static uint16_t icmp_seq           = 0;
 
 /* ----------------------------------------------------------------- */
 /*  Checksum                                                         */
@@ -90,9 +78,7 @@ uint16_t checksum(uint16_t* buf, uint32_t len)
     return ~(uint16_t)sum & 0xFFFF;
 }
 
-/* ----------------------------------------------------------------- */
-/*  ARP Cache Helpers                                                */
-/* ----------------------------------------------------------------- */
+
 
 /*
  * arp_find - Search the cache for a given IP.
@@ -101,9 +87,12 @@ uint16_t checksum(uint16_t* buf, uint32_t len)
  */
 static int arp_find(uint32_t ip)
 {
-    for (int i = 0; i < ARP_CACHE_SIZE; i++)
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].valid && arp_cache[i].ip == ip)
             return i;
+        /* Compiler barrier: re-read arp_cache — ISR may have updated it */
+        __asm__ volatile("" ::: "memory");
+    }
     return -1;
 }
 
@@ -127,6 +116,8 @@ static void arp_add(uint32_t ip, const uint8_t* mac)
         if (!arp_cache[i].valid) {
             arp_cache[i].ip = ip;
             memcpy(arp_cache[i].mac, mac, 6);
+            /* Barrier: ip/mac written before valid=1 visible to main thread */
+            __asm__ volatile("" ::: "memory");
             arp_cache[i].valid = 1;
             return;
         }
@@ -136,6 +127,8 @@ static void arp_add(uint32_t ip, const uint8_t* mac)
         arp_cache[i - 1] = arp_cache[i];
     arp_cache[ARP_CACHE_SIZE - 1].ip = ip;
     memcpy(arp_cache[ARP_CACHE_SIZE - 1].mac, mac, 6);
+    /* Barrier: eviction writes done before valid=1 visible */
+    __asm__ volatile("" ::: "memory");
     arp_cache[ARP_CACHE_SIZE - 1].valid = 1;
 }
 
@@ -150,9 +143,6 @@ int arp_lookup(uint32_t ip)
     return arp_find(ip);
 }
 
-/* ----------------------------------------------------------------- */
-/*  Protocol Helpers                                                 */
-/* ----------------------------------------------------------------- */
 
 /*
  * build_ether_header - Write an Ethernet header and advance past it.
@@ -219,10 +209,6 @@ void net_send_ether(void* data, uint32_t len)
     rtl8139_send_packet(data, len);
 }
 
-/* ----------------------------------------------------------------- */
-/*  ARP Packet Handler                                               */
-/* ----------------------------------------------------------------- */
-
 /*
  * handle_arp - Process an incoming ARP packet.
  *
@@ -239,6 +225,9 @@ static void handle_arp(uint8_t* data, uint32_t len)
 
     arp_packet_t* ap = (arp_packet_t*)data;
     uint16_t oper = ntohs(ap->oper);
+    log_serial("ARP: received oper=");
+    log_hex_serial(oper);
+    log_serial("\n");
 
     /* Validate hardware / protocol types */
     if (ntohs(ap->htype) != ARP_HTYPE_ETHER ||
@@ -278,9 +267,6 @@ static void handle_arp(uint8_t* data, uint32_t len)
     log_serial("ARP: replied\n");
 }
 
-/* ----------------------------------------------------------------- */
-/*  UDP Handler Table                                                 */
-/* ----------------------------------------------------------------- */
 
 #define UDP_MAX_HANDLERS 8
 
@@ -300,6 +286,9 @@ static udp_handler_entry_t udp_handlers[UDP_MAX_HANDLERS];
  *      protocol, UDP length) to be prepended to the UDP datagram
  *      for checksum calculation.  We build it on the stack, compute
  *      the combined checksum, and discard the pseudo-header.
+ *
+ * FIXME: 1512-byte on-stack buffer called from ISR (handle_udp).
+ *         Leaves ~2KB headroom on a 4KB IRQ stack.
  *
  * @param src_ip    Source IP (network order).
  * @param dest_ip   Destination IP (network order).
@@ -362,30 +351,51 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
     if (udp_len < sizeof(udp_header_t) || udp_len > remaining)
         return;
 
+    uint16_t dest_port = ntohs(udp->dest_port);
+
     /* Verify checksum if non-zero (zero means sender omitted it) */
     if (udp->checksum != 0) {
-        uint16_t expected = udp_checksum(
+        uint16_t saved_csum = udp->checksum;
+        udp->checksum = 0;
+        uint16_t computed = udp_checksum(
             ((ip_header_t*)data)->src_ip,
             ((ip_header_t*)data)->dest_ip,
             (const uint16_t*)udp, udp_len);
-        if (udp->checksum != expected)
+        udp->checksum = saved_csum;
+        if (saved_csum != computed) {
+            if (dest_port == DNS_CLIENT_PORT) {
+                log_serial("UDP: DNS csum saved=");
+                log_hex_serial(saved_csum);
+                log_serial(" computed=");
+                log_hex_serial(computed);
+                log_serial(" DROPPED\n");
+            }
             return;
+        }
     }
 
-    uint16_t dest_port = ntohs(udp->dest_port);
-
-    /* Look up handler by destination port */
+    /* Look up handler by destination port.
+     * Disable interrupts so the table doesn't change under us. */
+    __asm__ volatile("cli");
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == dest_port) {
-            udp_handlers[i].handler(
+            if (dest_port == DNS_CLIENT_PORT)
+                log_serial("UDP: DNS handler found\n");
+            /* Snapshot handler + userdata before re-enabling interrupts,
+             * since the handler may itself register/unregister. */
+            udp_callback_t h = udp_handlers[i].handler;
+            void* udata      = udp_handlers[i].userdata;
+            __asm__ volatile("sti");
+            h(
                 ((ip_header_t*)data)->src_ip,
                 udp->src_port,
                 (uint8_t*)(udp + 1),        /* Payload starts after UDP hdr */
                 udp_len - sizeof(udp_header_t),
-                udp_handlers[i].userdata);
+                udata);
             return;
         }
     }
+    __asm__ volatile("sti");
 }
 
 /*
@@ -398,25 +408,32 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
  */
 int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
 {
+    __asm__ volatile("cli");
     /* Overwrite existing entry if the port is already registered */
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == port) {
             udp_handlers[i].handler  = handler;
             udp_handlers[i].userdata = userdata;
+            __asm__ volatile("sti");
             return 0;
         }
     }
 
-    /* Find a free slot */
+    /* Find a free slot — set handler/userdata BEFORE marking active */
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (!udp_handlers[i].active) {
             udp_handlers[i].port     = port;
             udp_handlers[i].handler  = handler;
             udp_handlers[i].userdata = userdata;
+            /* Memory barrier: ensure handler/userdata are visible
+             * before the ISR can see active=1. */
+            __asm__ volatile("" ::: "memory");
             udp_handlers[i].active   = 1;
+            __asm__ volatile("sti");
             return 0;
         }
     }
+    __asm__ volatile("sti");
     return -1;      /* Table full */
 }
 
@@ -427,17 +444,16 @@ int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
  */
 void net_udp_unregister(uint16_t port)
 {
+    __asm__ volatile("cli");
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == port) {
             udp_handlers[i].active = 0;
+            __asm__ volatile("sti");
             return;
         }
     }
+    __asm__ volatile("sti");
 }
-
-/* ----------------------------------------------------------------- */
-/*  net_send_udp - Send a UDP datagram.                              */
-/* ----------------------------------------------------------------- */
 
 /*
  * net_send_udp - Build and send a UDP datagram.
@@ -489,17 +505,14 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
     memcpy(p, data, len);
     p += len;
 
-    /* UDP checksum with pseudo-header */
+    /* Compute UDP checksum with pseudo-header (RFC 768).
+     * The checksum field was zeroed above before payload copy. */
     udp->checksum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
 
     uint32_t total = sizeof(eth_header_t) + IP_HEADER_LEN + ip_data_len;
     net_send_ether(buf, total);
     return 0;
 }
-
-/* ----------------------------------------------------------------- */
-/*  ICMP Packet Handler                                              */
-/* ----------------------------------------------------------------- */
 
 /*
  * handle_icmp - Process an ICMP message inside an IP datagram.
@@ -571,10 +584,6 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     }
 }
 
-/* ----------------------------------------------------------------- */
-/*  IP Packet Handler                                                */
-/* ----------------------------------------------------------------- */
-
 /*
  * handle_ip - Process an incoming IP datagram.
  *
@@ -602,15 +611,12 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
         return;
     }
 
-    /* Verify header checksum */
-    uint16_t saved = ip->checksum;
-    ip->checksum = 0;
-    if (checksum((uint16_t*)ip, ip_hdr) != saved) {
+    /* Verify header checksum: checksum() over the full header
+     * (including the stored checksum field) returns 0 if valid. */
+    if (checksum((uint16_t*)ip, ip_hdr) != 0) {
         log_serial("IP: bad checksum\n");
-        ip->checksum = saved;       /* restore before discard */
         return;
     }
-    ip->checksum = saved;
 
     /* Learn the sender's MAC for future replies */
     arp_add(ip->src_ip, src_mac);
@@ -630,10 +636,6 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     /* TODO: case IP_PROTO_TCP: handle_tcp(data, len, src_mac); */
     }
 }
-
-/* ----------------------------------------------------------------- */
-/*  Public: Called from NIC IRQ handler                              */
-/* ----------------------------------------------------------------- */
 
 /*
  * net_process_packet - Demux an incoming Ethernet frame.
@@ -663,10 +665,6 @@ void net_process_packet(uint8_t* data, uint32_t len)
         break;
     }
 }
-
-/* ----------------------------------------------------------------- */
-/*  Public: Send an ICMP Echo Request (ping)                         */
-/* ----------------------------------------------------------------- */
 
 /*
  * net_ping - Send an ICMP Echo Request to a given IP.
@@ -741,30 +739,19 @@ int net_ping(uint32_t dest_ip)
     return 0;
 }
 
-/* ----------------------------------------------------------------- */
-/*  Public: Ping response counter                                    */
-/* ----------------------------------------------------------------- */
-
 int net_get_ping_responses(void)
 {
     return ping_responses;
 }
 
-/* ----------------------------------------------------------------- */
-/*  DNS                                                              */
-/* ----------------------------------------------------------------- */
-
 /*
  * DNS query uses a transaction ID to match responses.  We keep a single
  * pending-query slot (serialised by the single-core design).
  */
-static int      dns_pending   = 0;
-static uint16_t dns_xid       = 0;
-static uint8_t  dns_reply[512];
-static uint16_t dns_reply_len = 0;
-
-/* Ephemeral source port for DNS queries */
-#define DNS_CLIENT_PORT 54321
+static volatile int dns_pending   = 0;
+static uint16_t     dns_xid       = 0;
+static uint8_t      dns_reply[512];
+static uint16_t     dns_reply_len = 0;
 
 /*
  * dns_handler - UDP callback for DNS responses.
@@ -779,11 +766,20 @@ static void dns_handler(uint32_t src_ip, uint16_t src_port,
     (void)src_port;
     (void)userdata;
 
+    /* Validate the DNS transaction ID matches our pending query */
+    if (len < 2)
+        return;
+    uint16_t resp_xid = ntohs(*(const uint16_t*)data);
+    if (resp_xid != dns_xid)
+        return;
+
     if (len > sizeof(dns_reply))
         len = sizeof(dns_reply);
     memcpy(dns_reply, data, len);
     dns_reply_len = len;
-    dns_pending    = 1;
+    /* Barrier: dns_reply/dns_reply_len visible before dns_pending */
+    __asm__ volatile("" ::: "memory");
+    dns_pending = 1;
 }
 
 /*
@@ -915,18 +911,23 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
 uint32_t net_dns_resolve(const char* hostname)
 {
     /* ---- Build the DNS query ---- */
-    uint8_t query[512];
-    uint32_t qlen = 0;
+    /* Use a union to write the 12-byte header via uint16_t[] (avoids
+     * strict-aliasing violations from casting uint8_t* to uint16_t*). */
+    union {
+        uint8_t  u8[512];
+        uint16_t u16[256];
+    } query_u;
+    uint8_t*  query  = query_u.u8;
+    uint32_t  qlen   = 0;
 
     /* Header (12 bytes) */
     dns_xid++;
-    uint16_t* hdr   = (uint16_t*)query;
-    hdr[0] = htons(dns_xid);            /* ID */
-    hdr[1] = htons(0x0100);             /* Flags: recursion desired */
-    hdr[2] = htons(1);                  /* Questions: 1 */
-    hdr[3] = 0;                         /* Answer RRs */
-    hdr[4] = 0;                         /* Authority RRs */
-    hdr[5] = 0;                         /* Additional RRs */
+    query_u.u16[0] = htons(dns_xid);            /* ID */
+    query_u.u16[1] = htons(0x0100);             /* Flags: recursion desired */
+    query_u.u16[2] = htons(1);                  /* Questions: 1 */
+    query_u.u16[3] = 0;                         /* Answer RRs */
+    query_u.u16[4] = 0;                         /* Authority RRs */
+    query_u.u16[5] = 0;                         /* Additional RRs */
     qlen = 12;
 
     /* Question: encoded name */
@@ -935,12 +936,15 @@ uint32_t net_dns_resolve(const char* hostname)
         return 0;
     qlen += (uint32_t)name_len;
 
-    /* QTYPE = A (1), QCLASS = IN (1) */
-    *(uint16_t*)(query + qlen)     = htons(1);
-    *(uint16_t*)(query + qlen + 2) = htons(1);
+    /* QTYPE = A (1), QCLASS = IN (1) — use memcpy for alignment safety */
+    uint16_t dns_qtype  = htons(1);
+    uint16_t dns_qclass = htons(1);
+    memcpy(query + qlen,     &dns_qtype,  2);
+    memcpy(query + qlen + 2, &dns_qclass, 2);
     qlen += 4;
 
     /* ---- Send via UDP ---- */
+    uint32_t result = 0;
     dns_pending = 0;
     dns_reply_len = 0;
 
@@ -971,53 +975,52 @@ uint32_t net_dns_resolve(const char* hostname)
 
         net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
 
-        /* Wait for ARP reply to arrive (interrupt handler populates cache) */
-        for (int i = 0; i < 1000000; i++) {
-            if (arp_find(DNS_SERVER) >= 0)
-                break;
+        {
+            /* FIXME: ARP reply from QEMU slirp skips 3s window */
+            int timeout = 300;
+            while (timeout-- > 0 && arp_find(DNS_SERVER) < 0)
+                sleep(10);
         }
 
         if (arp_find(DNS_SERVER) < 0) {
             log_serial("DNS: ARP resolution timed out\n");
-            net_udp_unregister(DNS_CLIENT_PORT);
-            return 0;
+            goto cleanup;
         }
 
         log_serial("DNS: ARP resolved, retrying UDP\n");
 
-        /* Retry the UDP send */
-        dns_pending = 0;
+        /* Retry the UDP send (match initial state: pending=0, reply_len=0) */
+        dns_pending   = 0;
+        dns_reply_len = 0;
         ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
     }
 
     if (ret < 0) {
         log_serial("DNS: UDP send failed\n");
-        net_udp_unregister(DNS_CLIENT_PORT);
-        return 0;
+        goto cleanup;
     }
 
     log_serial("DNS: query sent, waiting for response\n");
 
-    /* ---- Busy-wait for response (longer timeout for real DNS) ---- */
-    uint32_t result = 0;
-    for (int i = 0; i < 50000000; i++) {
+    {
+        int timeout = 500;
+        while (timeout-- > 0 && !dns_pending)
+            sleep(10);
         if (dns_pending) {
+            /* Barrier: pair with barrier in dns_handler */
+            __asm__ volatile("" ::: "memory");
             log_serial("DNS: response received\n");
-            result = dns_parse_response(dns_reply, dns_reply_len);
-            break;
+            result = dns_parse_response((const uint8_t*)dns_reply, dns_reply_len);
         }
     }
 
     if (!dns_pending)
         log_serial("DNS: response timed out\n");
 
+cleanup:
     net_udp_unregister(DNS_CLIENT_PORT);
     return result;
 }
-
-/* ----------------------------------------------------------------- */
-/*  Initialization                                                   */
-/* ----------------------------------------------------------------- */
 
 void net_init(void)
 {

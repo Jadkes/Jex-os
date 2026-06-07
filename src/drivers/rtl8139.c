@@ -33,6 +33,9 @@ static uint8_t* rx_buffer;
 /* Current transmit descriptor (0-3, round-robin) */
 static uint32_t current_tx_desc = 0;
 
+/* Track first-use of each TX descriptor — TOK spin-wait deadlocks on first call */
+static uint8_t  tx_desc_used[4] = {0, 0, 0, 0};
+
 /* Our read offset in the RX ring buffer (we don't trust CAPR readback) */
 static uint16_t rx_offset = 0;
 
@@ -227,6 +230,16 @@ void init_rtl8139()
 void rtl8139_send_packet(void* data, uint32_t len)
 {
     tx_packet_count++;
+
+    uint16_t tsd_port = (uint16_t)(io_base + RTL8139_REG_TSD0 + current_tx_desc * 4);
+
+    /* Wait for previous DMA on this descriptor (skip first use — no TOK yet) */
+    if (tx_desc_used[current_tx_desc]) {
+        while (!(inl(tsd_port) & 0x8000)) {
+            __asm__ volatile("pause");
+        }
+    }
+    tx_desc_used[current_tx_desc] = 1;
 
     /* Write the physical address of the data buffer to TSAD */
     outl(io_base + RTL8139_REG_TSAD0 + (current_tx_desc * 4),

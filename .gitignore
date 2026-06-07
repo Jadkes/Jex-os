@@ -3,6 +3,7 @@
 *.bin
 *.a
 tools/mkjexfs
+iso/
 
 # Disk images
 *.img
@@ -12,8 +13,22 @@ tools/mkjexfs
 a.out
 rootfs/
 
+# QEMU / debug
+serial.log
+core
+
+# Generated docs
+Doxyfile
+docs/
+
+# Tool config
+.sisyphus/
+
+# Editor swap
+*.swp
+*.swo
+*~
+
 # References and temp files
 linux 0.11/
 Linux-0.11/
-.swp
-*~
