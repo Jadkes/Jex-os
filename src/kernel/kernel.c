@@ -30,6 +30,7 @@
 #include "timer.h"
 #include "fs.h"
 #include "task.h"
+#include "klog.h"
 #include "syscall.h"
 #include "pci.h"
 #include "rtl8139.h"
@@ -54,6 +55,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * Useful for capturing kernel logs in QEMU via -serial stdio.
      */
     init_serial();
+    klog_init();
     terminal_writestring("JexOS Kernel Started\n");
     log_serial("JexOS Kernel Started\n");
 
