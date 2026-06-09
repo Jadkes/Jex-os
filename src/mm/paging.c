@@ -11,6 +11,7 @@
 #include "isr.h"
 #include "kheap.h"
 #include "terminal.h"
+#include "panic.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
@@ -109,32 +110,7 @@ void init_paging() {
  * Decodes the faulting address and error code to provide diagnostic output.
  */
 void page_fault_handler(registers_t regs) {
-    uint32_t faulting_address;
-    /* CR2 contains the address that caused the fault */
-    asm volatile("mov %%cr2, %0" : "=r" (faulting_address));
-
-    terminal_writestring("\nPAGE FAULT detected!\n");
-    terminal_writestring("Address: ");
-
-    const char *digits = "0123456789ABCDEF";
-    terminal_writestring("0x");
-    for (int i = 28; i >= 0; i -= 4) {
-        terminal_putchar(digits[(faulting_address >> i) & 0xF]);
-    }
-    terminal_writestring("\n");
-
-    /* Decode error code bits */
-    bool not_present = !(regs.err_code & 0x1);
-    bool write = regs.err_code & 0x2;
-    bool user = regs.err_code & 0x4;
-
-    terminal_writestring("Reason: ");
-    if (not_present) terminal_writestring("Not Present ");
-    if (write) terminal_writestring("Write Access ");
-    if (user) terminal_writestring("User-Mode ");
-    terminal_writestring("\nSystem Halted.\n");
-
-    for (;;) {
-        asm volatile("hlt");
-    }
+    /* Delegate to the new panic handler for full diagnostic output */
+    panic_handler(&regs);
+    for (;;) asm volatile("hlt");
 }
