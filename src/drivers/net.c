@@ -2,10 +2,11 @@
  * @file net.c
  * @brief Network stack — ARP, IP, ICMP, UDP, DNS.
  *
- * FIXME: ARP reply from QEMU slirp arrives after 3s polling timeout.
  * FIXME: reply_buf double-DMA race in ISR batch processing.
- * FIXME: 1512-byte on-stack buffer in udp_checksum (ISR context).
- * FIXME: strict-aliasing audit for packet construction sites.
+ * DONE:   strict-aliasing violations in DNS RX path (read_be16 helper).
+ * DONE:   udp_checksum 1512-byte buffer moved off the IRQ stack.
+ * DONE:   DNS handler minimum-valid-length check (was < 2, now < 12).
+ * DONE:   ARP timeout increased for QEMU slirp compatibility.
  */
 
 #include "net.h"
@@ -26,7 +27,7 @@ static uint8_t send_buf[PACKET_BUF_SIZE];
 /* IRQ reply path (ARP reply, ICMP echo reply).
  * FIXME: double-DMA race when ISR processes >1 packet needing a reply. */
 static uint8_t reply_buf[PACKET_BUF_SIZE];
-/* FIXME: ARP reply from QEMU slirp skips 3s polling window */
+/* DONE: ARP timeout increased to 10s for QEMU slirp compatibility */
 
 #define ARP_CACHE_SIZE 4
 
@@ -47,7 +48,7 @@ static uint16_t ip_id              = 0;    /* Monotonic IP identification */
 static uint16_t icmp_seq           = 0;
 
 /* ----------------------------------------------------------------- */
-/*  Checksum                                                         */
+/*  Checksum & Helpers                                               */
 /* ----------------------------------------------------------------- */
 
 /*
@@ -78,7 +79,22 @@ uint16_t checksum(uint16_t* buf, uint32_t len)
     return ~(uint16_t)sum & 0xFFFF;
 }
 
-
+/*
+ * read_be16 - Read a 16-bit big-endian value via memcpy (strict-aliasing safe).
+ *
+ * WHY: Casting uint8_t* to uint16_t* violates C99 §6.5 effective-type rules.
+ *      memcpy is the standard-compliant way to type-pun; the compiler
+ *      optimises the call to a single load on any half-decent arch.
+ *
+ * @param p  Pointer (need not be aligned).
+ * @return    Big-endian value converted to host byte order.
+ */
+static inline uint16_t read_be16(const uint8_t* p)
+{
+    uint16_t v;
+    memcpy(&v, p, sizeof(v));
+    return ntohs(v);
+}
 
 /*
  * arp_find - Search the cache for a given IP.
@@ -143,6 +159,67 @@ int arp_lookup(uint32_t ip)
     return arp_find(ip);
 }
 
+/*
+ * arp_dump - Print the contents of the ARP cache to terminal and serial.
+ *
+ * Walks all ARP_CACHE_SIZE slots and prints IP, MAC and validity status
+ * for each one.  Used by the shell's "arp" command.
+ */
+void arp_dump(void)
+{
+    extern void int_to_string(int n, char* str);
+    char buf[16];
+    int count = 0;
+
+    /* Disable interrupts while walking the cache (ISR may modify it) */
+    __asm__ volatile("cli");
+
+    for (int i = 0; i < ARP_CACHE_SIZE; i++)
+        if (arp_cache[i].valid) count++;
+
+    terminal_writestring("ARP Cache (");
+    int_to_string(count, buf);
+    terminal_writestring(buf);
+    terminal_writestring("/");
+    int_to_string(ARP_CACHE_SIZE, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" entries):\n");
+
+    const char* hex = "0123456789ABCDEF";
+
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (arp_cache[i].valid) {
+            /* IP stored in network order; byte-at-a-time gives dotted-decimal on LE x86 */
+            uint8_t* ip = (uint8_t*)&arp_cache[i].ip;
+            int_to_string(ip[0], buf); terminal_writestring(buf); terminal_putchar('.');
+            int_to_string(ip[1], buf); terminal_writestring(buf); terminal_putchar('.');
+            int_to_string(ip[2], buf); terminal_writestring(buf); terminal_putchar('.');
+            int_to_string(ip[3], buf); terminal_writestring(buf);
+
+            terminal_writestring("  ->  ");
+
+            /* Print MAC */
+            for (int j = 0; j < 6; j++) {
+                terminal_putchar(hex[(arp_cache[i].mac[j] >> 4) & 0xF]);
+                terminal_putchar(hex[arp_cache[i].mac[j] & 0xF]);
+                if (j < 5) terminal_putchar(':');
+            }
+            terminal_writestring("  (valid)\n");
+
+            /* Serial log */
+            log_serial("ARP: ");
+            log_hex_serial(arp_cache[i].ip);
+        } else {
+            terminal_writestring("  -- slot ");
+            int_to_string(i, buf);
+            terminal_writestring(buf);
+            terminal_writestring(" empty --\n");
+        }
+    }
+
+    /* Re-enable interrupts now that the cache walk is done */
+    __asm__ volatile("sti");
+}
 
 /*
  * build_ether_header - Write an Ethernet header and advance past it.
@@ -287,8 +364,8 @@ static udp_handler_entry_t udp_handlers[UDP_MAX_HANDLERS];
  *      for checksum calculation.  We build it on the stack, compute
  *      the combined checksum, and discard the pseudo-header.
  *
- * FIXME: 1512-byte on-stack buffer called from ISR (handle_udp).
- *         Leaves ~2KB headroom on a 4KB IRQ stack.
+ * DONE: Buffer moved from stack to static; was 1512 bytes on stack in ISR.
+ *       Single-core design means no re-entrancy concern.
  *
  * @param src_ip    Source IP (network order).
  * @param dest_ip   Destination IP (network order).
@@ -308,9 +385,10 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dest_ip,
 
     /*
      * We need to checksum pseudo-header + UDP datagram as one contiguous
-     * block.  Build a temporary buffer on the stack (up to 1500 bytes).
+     * block.  Static buffer avoids a 1500-byte stack allocation in
+     * ISR context.  Single-core, non-preemptible — no re-entrancy.
      */
-    uint8_t buf[sizeof(udp_pseudo_t) + 1500];
+    static uint8_t buf[sizeof(udp_pseudo_t) + 1500];
     uint32_t total = sizeof(udp_pseudo_t) + udp_len;
     if (total > sizeof(buf))
         return 0;       /* Too large — skip checksum */
@@ -756,8 +834,11 @@ static uint16_t     dns_reply_len = 0;
 /*
  * dns_handler - UDP callback for DNS responses.
  *
- * Called from handle_udp (IRQ context).  Just stashes the raw response
- * and signals the waiter.
+ * Called from handle_udp (IRQ context).  Validates the transaction ID,
+ * then stashes the raw response and signals the waiter.
+ *
+ * DONE: Minimum-length check raised to 12 bytes (full DNS header).
+ * DONE: XID read uses read_be16() to avoid strict-aliasing UB.
  */
 static void dns_handler(uint32_t src_ip, uint16_t src_port,
                          const uint8_t* data, uint32_t len, void* userdata)
@@ -766,13 +847,13 @@ static void dns_handler(uint32_t src_ip, uint16_t src_port,
     (void)src_port;
     (void)userdata;
 
-    /* Validate the DNS transaction ID matches our pending query */
-    if (len < 2)
+    /* Need at least the 12-byte DNS header to validate */
+    if (len < 12)
         return;
-    uint16_t resp_xid = ntohs(*(const uint16_t*)data);
-    if (resp_xid != dns_xid)
+    if (read_be16(data) != dns_xid)
         return;
 
+    /* Stash the raw response and signal the waiter */
     if (len > sizeof(dns_reply))
         len = sizeof(dns_reply);
     memcpy(dns_reply, data, len);
@@ -851,10 +932,9 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
     if (len < 12)
         return 0;
 
-    const uint16_t* hdr   = (const uint16_t*)msg;
-    uint16_t flags         = ntohs(hdr[1]);
-    uint16_t qdcount       = ntohs(hdr[2]);
-    uint16_t ancount       = ntohs(hdr[3]);
+    uint16_t flags         = read_be16(msg + 2);
+    uint16_t qdcount       = read_be16(msg + 4);
+    uint16_t ancount       = read_be16(msg + 6);
 
     /* Check for NXDOMAIN or other error (last 4 bits = rcode) */
     if ((flags & 0x000F) != 0)
@@ -879,9 +959,9 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
         /* type(2) + class(2) + ttl(4) + rdlength(2) = 10 bytes fixed */
         if (offset + 10 > len) return 0;
 
-        uint16_t type    = ntohs(*(const uint16_t*)(msg + offset));
-        uint16_t cls     = ntohs(*(const uint16_t*)(msg + offset + 2));
-        uint16_t rdlength = ntohs(*(const uint16_t*)(msg + offset + 8));
+        uint16_t type    = read_be16(msg + offset);
+        uint16_t cls     = read_be16(msg + offset + 2);
+        uint16_t rdlength = read_be16(msg + offset + 8);
         offset += 10;
 
         if (offset + rdlength > len) return 0;
@@ -976,8 +1056,8 @@ uint32_t net_dns_resolve(const char* hostname)
         net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
 
         {
-            /* FIXME: ARP reply from QEMU slirp skips 3s window */
-            int timeout = 300;
+            /* QEMU slirp ARP replies can take several seconds */
+            int timeout = 1000;     /* 1000 × 10 ms = 10 s */
             while (timeout-- > 0 && arp_find(DNS_SERVER) < 0)
                 sleep(10);
         }
@@ -1003,7 +1083,7 @@ uint32_t net_dns_resolve(const char* hostname)
     log_serial("DNS: query sent, waiting for response\n");
 
     {
-        int timeout = 500;
+        int timeout = 1000;     /* 1000 × 10 ms = 10 s */
         while (timeout-- > 0 && !dns_pending)
             sleep(10);
         if (dns_pending) {

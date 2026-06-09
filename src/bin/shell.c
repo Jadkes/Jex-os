@@ -62,7 +62,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "net", "ping", "dns", "reboot", "shutdown", "clear", "music", "hardbass", NULL
+    "mkcode", "tcc", "cc", "free", "net", "ping", "dns", "arp", "reboot", "shutdown", "clear", "music", "hardbass", NULL
 };
 
 /**
@@ -478,6 +478,7 @@ void help_command() {
     terminal_writestring("  net       - Show network status\n");
     terminal_writestring("  ping <ip> - Ping an IP address or hostname\n");
     terminal_writestring("  dns <host>- Resolve a hostname to IP\n");
+    terminal_writestring("  arp       - Show ARP cache\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
@@ -707,6 +708,9 @@ void execute_command() {
         terminal_writestring("\n");
         terminal_writestring("EFLAGS: "); format_hex(eflags, buf); terminal_writestring(buf);
         terminal_writestring("\n");
+    }
+    else if (strcmp(shell_buffer, "arp") == 0) {
+        arp_dump();
     }
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
