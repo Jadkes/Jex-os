@@ -218,6 +218,11 @@ void net_send_ether(void* data, uint32_t len);
  */
 int arp_lookup(uint32_t ip);
 
+/*
+ * arp_dump - Print the contents of the ARP cache.
+ */
+void arp_dump(void);
+
 /* ----------------------------------------------------------------- */
 /*  Public API                                                       */
 /* ----------------------------------------------------------------- */
