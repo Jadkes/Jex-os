@@ -10,6 +10,9 @@
 
 #include <stdint.h>
 
+/** Tick rate: PIT runs at 100 Hz by default */
+#define TICKS_PER_SEC 100
+
 /**
  * @brief Initialize the PIT at a specific frequency.
  * @param frequency Hertz (e.g., 100 for 10ms ticks).

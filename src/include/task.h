@@ -35,7 +35,8 @@ typedef struct task {
     page_directory_t* page_directory;   /**< Virtual memory space for this task. */
     uint32_t kstack;                    /**< Kernel stack base for this task. */
     task_state_t state;                 /**< Current execution state. */
-    struct task* next;                  /**< Next task in the circular scheduler list. */
+    char name[16];                      /**< Human-readable task name */
+    struct task* next;                  /**< Next task in the linked scheduler list. */
 } task_t;
 
 /**
@@ -68,5 +69,12 @@ void task_exit();
  * @brief List all active tasks to the terminal (for debugging).
  */
 void task_list();
+
+/**
+ * @brief Mark a task by PID as a zombie.
+ * @param pid The PID to kill.
+ * @return 0 on success, -1 if not found.
+ */
+int task_kill(int pid);
 
 #endif // TASK_H

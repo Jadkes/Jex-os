@@ -10,10 +10,13 @@
 #include "paging.h"
 #include "string.h"
 #include "gdt.h"
+#include "panic.h"
 
 extern page_directory_t kernel_directory;
 extern uint32_t read_eip();
 extern void terminal_writestring(const char* s);
+extern void terminal_putchar(char c);
+extern void int_to_string(int n, char* str);
 
 /**
  * @brief Global pointers to the current task and the head of the ready queue.
@@ -38,6 +41,7 @@ void init_tasking() {
     current_task->kstack = 0; /* Shell uses the initial boot stack */
     current_task->next = NULL;
     current_task->state = STATE_RUNNING;
+    strcpy((char*)current_task->name, "shell");
 
     __asm__ volatile("sti");
 }
@@ -94,6 +98,7 @@ int fork() {
     child->page_directory = parent->page_directory;
     child->state = STATE_READY;
     child->next = NULL;
+    strcpy(child->name, parent->name);
 
     /* Allocate a dedicated kernel stack for the child */
     uint32_t stack = (uint32_t)kmalloc(8192);
@@ -137,16 +142,31 @@ void task_exit() {
  */
 void task_list() {
     task_t* t = (task_t*)ready_queue;
-    terminal_writestring("PID  STATE\n");
-    while(t) {
-        char buf[10];
-        extern void int_to_string(int n, char* str);
+    char buf[12];
+
+    terminal_writestring("PID  STATE     EIP         NAME\n");
+    while (t) {
+        /* PID */
         int_to_string(t->id, buf);
         terminal_writestring(buf);
-        terminal_writestring("    ");
-        if (t->state == STATE_RUNNING) terminal_writestring("RUNNING\n");
-        else if (t->state == STATE_READY) terminal_writestring("READY\n");
-        else if (t->state == STATE_ZOMBIE) terminal_writestring("ZOMBIE\n");
+        terminal_putchar(' ');
+
+        /* State */
+        if (t->state == STATE_RUNNING) terminal_writestring("RUNNING ");
+        else if (t->state == STATE_READY) terminal_writestring("READY   ");
+        else if (t->state == STATE_SLEEPING) terminal_writestring("SLEEP   ");
+        else if (t->state == STATE_ZOMBIE) terminal_writestring("ZOMBIE  ");
+        else terminal_writestring("UNKNOWN ");
+
+        /* EIP */
+        format_hex(t->eip, buf);
+        terminal_writestring(buf);
+        terminal_putchar(' ');
+
+        /* Name */
+        terminal_writestring(t->name);
+        terminal_writestring("\n");
+
         t = t->next;
     }
 }
@@ -156,4 +176,25 @@ void task_list() {
  */
 int getpid() {
     return current_task->id;
+}
+
+/**
+ * @brief Mark a task by PID as a zombie.
+ * @param pid The PID to kill.
+ * @return 0 on success, -1 if not found.
+ */
+int task_kill(int pid)
+{
+    /* Kernel-level guard: never kill the init/shell task */
+    if (pid == 1)
+        return -1;
+    task_t* t = (task_t*)ready_queue;
+    while (t) {
+        if (t->id == pid) {
+            t->state = STATE_ZOMBIE;
+            return 0;
+        }
+        t = t->next;
+    }
+    return -1;
 }
