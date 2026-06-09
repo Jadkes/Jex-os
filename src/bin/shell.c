@@ -22,6 +22,10 @@
 #include "rtl8139.h"
 #include "net.h"
 #include "terminal.h"
+#include "panic.h"
+#include "klog.h"
+#include "timer.h"
+#include "task.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -477,6 +481,11 @@ void help_command() {
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
+    terminal_writestring("  uptime    - Show system uptime\n");
+    terminal_writestring("  dmesg     - Print kernel log buffer\n");
+    terminal_writestring("  ps        - List processes\n");
+    terminal_writestring("  kill <pid>- Terminate a process\n");
+    terminal_writestring("  regs      - Show CPU registers\n");
 }
 
 /**
@@ -635,6 +644,70 @@ void execute_command() {
     else if (strcmp(shell_buffer, "net") == 0) net_command();
     else if (strncmp(shell_buffer, "ping ", 5) == 0) ping_command(shell_buffer + 5);
     else if (strncmp(shell_buffer, "dns ", 4) == 0) dns_command(shell_buffer + 4);
+    /* ---- Debug Commands ---- */
+    else if (strcmp(shell_buffer, "uptime") == 0) {
+        uint32_t ticks = get_ticks();
+        uint32_t secs = ticks / TICKS_PER_SEC;
+        uint32_t mins = secs / 60;
+        uint32_t hours = mins / 60;
+        uint32_t days = hours / 24;
+        mins %= 60;
+        secs %= 60;
+        hours %= 24;
+        char buf[16];
+        terminal_writestring("Uptime: ");
+        if (days > 0) {
+            int_to_string((int)days, buf);
+            terminal_writestring(buf);
+            terminal_writestring("d ");
+        }
+        int_to_string((int)hours, buf);
+        terminal_writestring(buf);
+        terminal_writestring("h ");
+        int_to_string((int)mins, buf);
+        terminal_writestring(buf);
+        terminal_writestring("m ");
+        int_to_string((int)secs, buf);
+        terminal_writestring(buf);
+        terminal_writestring("s\n");
+    }
+    else if (strcmp(shell_buffer, "dmesg") == 0) {
+        klog_dump();
+    }
+    else if (strcmp(shell_buffer, "ps") == 0) {
+        task_list();
+    }
+    else if (strncmp(shell_buffer, "kill ", 5) == 0) {
+        char* pidstr = shell_buffer + 5;
+        int pid = atoi(pidstr);
+        if (pid == 1) {
+            terminal_writestring("kill: cannot kill init task\n");
+        } else if (task_kill(pid) < 0) {
+            terminal_writestring("kill: task not found\n");
+        } else {
+            terminal_writestring("Task marked for termination\n");
+        }
+    }
+    else if (strcmp(shell_buffer, "regs") == 0) {
+        uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp, eflags;
+        __asm__ volatile("mov %%eax, %0; mov %%ebx, %1; mov %%ecx, %2; mov %%edx, %3; mov %%esi, %4; mov %%edi, %5"
+            : "=m"(eax), "=m"(ebx), "=m"(ecx), "=m"(edx), "=m"(esi), "=m"(edi));
+        __asm__ volatile("mov %%ebp, %0; mov %%esp, %1; pushf; pop %2"
+            : "=m"(ebp), "=m"(esp), "=m"(eflags));
+        char buf[12];
+        terminal_writestring("EAX: "); format_hex(eax, buf); terminal_writestring(buf);
+        terminal_writestring("  EBX: "); format_hex(ebx, buf); terminal_writestring(buf);
+        terminal_writestring("  ECX: "); format_hex(ecx, buf); terminal_writestring(buf);
+        terminal_writestring("  EDX: "); format_hex(edx, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+        terminal_writestring("ESI: "); format_hex(esi, buf); terminal_writestring(buf);
+        terminal_writestring("  EDI: "); format_hex(edi, buf); terminal_writestring(buf);
+        terminal_writestring("  EBP: "); format_hex(ebp, buf); terminal_writestring(buf);
+        terminal_writestring("  ESP: "); format_hex(esp, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+        terminal_writestring("EFLAGS: "); format_hex(eflags, buf); terminal_writestring(buf);
+        terminal_writestring("\n");
+    }
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
     }
