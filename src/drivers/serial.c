@@ -1,6 +1,7 @@
 #include <serial.h>
 #include <ports.h>
 #include <config.h>
+#include "klog.h"
 
 /**
  * @file serial.c
@@ -62,6 +63,7 @@ char read_serial() {
  */
 void log_serial(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) write_serial(str[i]);
+    klog_write(KLOG_LEVEL_INFO, str);
 }
 
 /**
