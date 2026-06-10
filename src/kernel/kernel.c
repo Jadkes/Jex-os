@@ -7,6 +7,9 @@
  * and hands over control to the shell.
  */
 
+#define pr_fmt(fmt) "[KERNEL] " fmt
+#include "kernel/printk.h"
+
 // Standard headers
 #include <stdbool.h>
 #include <stddef.h>
@@ -57,8 +60,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      */
     init_serial();
     klog_init();
-    terminal_writestring("JexOS Kernel Started\n");
-    log_serial("JexOS Kernel Started\n");
+    pr_info("JexOS Kernel Started\n");
 
     /**
      * @brief 3. CPU & Interrupt Setup.
@@ -67,27 +69,27 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * ISR: Installs handlers for CPU exceptions (Page Fault, Divide by Zero, etc.).
      * IRQ: Installs handlers for hardware interrupts (Timer, Keyboard, etc.).
      */
-    terminal_writestring("Init GDT...\n"); log_serial("Init GDT...\n");
+    pr_info("Init GDT...\n");
     init_gdt();
-    terminal_writestring("Init IDT...\n"); log_serial("Init IDT...\n");
+    pr_info("Init IDT...\n");
     init_idt();
-    terminal_writestring("Init ISR...\n"); log_serial("Init ISR...\n");
+    pr_info("Init ISR...\n");
     isr_install();
-    terminal_writestring("Init IRQ...\n"); log_serial("Init IRQ...\n");
+    pr_info("Init IRQ...\n");
     init_irq();
 
     /* 4. Basic Hardware Drivers */
-    terminal_writestring("Init Keyboard...\n"); log_serial("Init Keyboard...\n");
+    pr_info("Init Keyboard...\n");
     init_keyboard();
 
     /* 5. Physical Memory Management.
      * Uses the Multiboot memory map to identify available RAM blocks.
      */
-    terminal_writestring("Init PMM...\n"); log_serial("Init PMM...\n");
+    pr_info("Init PMM...\n");
     if (magic == MULTIBOOT_MAGIC_VALID) {
         pmm_init(mboot_info);
     } else {
-        terminal_writestring("Error: Invalid Multiboot Magic!\n");
+        pr_err("Invalid Multiboot Magic!\n");
     }
 
     /**
@@ -95,58 +97,58 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * Paging: Enables 4KB page mapping and memory protection.
      * Heap: Enables dynamic memory allocation (kmalloc/kfree).
      */
-    terminal_writestring("Init Paging...\n"); log_serial("Init Paging...\n");
+    pr_info("Init Paging...\n");
     init_paging();
-    terminal_writestring("Init Heap...\n"); log_serial("Init Heap...\n");
+    pr_info("Init Heap...\n");
     init_kheap(KERNEL_HEAP_START);
 
     /**
      * @brief 7. PCI & Networking.
      * Disabled for now - focus on basic kernel boot
      */
-    terminal_writestring("Init PCI...\n"); log_serial("Init PCI...\n");
+    pr_info("Init PCI...\n");
     init_pci();
-    terminal_writestring("Init RTL8139...\n"); log_serial("Init RTL8139...\n");
+    pr_info("Init RTL8139...\n");
     init_rtl8139();
-    terminal_writestring("Init Net Stack...\n"); log_serial("Init Net Stack...\n");
+    pr_info("Init Net Stack...\n");
     net_init();
 
     /* 8. Filesystem Subsystems. */
-    terminal_writestring("Init FAT12...\n"); log_serial("Init FAT12...\n");
+    pr_info("Init FAT12...\n");
     init_fat12();
-    terminal_writestring("Init VFS...\n"); log_serial("Init VFS...\n");
+    pr_info("Init VFS...\n");
     fs_init();
 
     /* 9. Kallsyms: Initialize symbol table for backtrace resolution. */
-    terminal_writestring("Init Kallsyms...\n"); log_serial("Init Kallsyms...\n");
+    pr_info("Init Kallsyms...\n");
     kallsyms_init();
 
     /* 10. Multitasking Subsystem. */
-    terminal_writestring("Init Tasking...\n"); log_serial("Init Tasking...\n");
+    pr_info("Init Tasking...\n");
     init_tasking();
 
     /* 10. System Timer. */
-    terminal_writestring("Init Timer...\n"); log_serial("Init Timer...\n");
+    pr_info("Init Timer...\n");
     init_timer(100);
     
     /* 11. User-mode stack setup. */
-    terminal_writestring("Setup Stack...\n"); log_serial("Setup Stack...\n");
+    pr_info("Setup Stack...\n");
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
     
     /* 12. System Calls & Global Interrupt Enable. */
-    terminal_writestring("Init Syscalls...\n"); log_serial("Init Syscalls...\n");
+    pr_info("Init Syscalls...\n");
     init_syscalls();
     
     /* Enable interrupts globally (STI instruction) */
     __asm__ volatile("sti"); 
     
-    terminal_writestring("Starting Shell...\n"); log_serial("Starting Shell...\n");
+    pr_info("Starting Shell...\n");
 
     /* 13. Enter the Shell. */
     shell_main();
     
     /* 14. Shutdown/Halt. */
-    terminal_writestring("Kernel Halted.\n");
+    pr_info("Kernel Halted.\n");
     while(1) { __asm__ volatile("hlt"); }
 }
