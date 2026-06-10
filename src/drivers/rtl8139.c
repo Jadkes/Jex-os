@@ -221,6 +221,55 @@ void init_rtl8139()
 }
 
 /**
+ * rtl8139_poll_rx - Poll the RX ring buffer for pending packets.
+ *
+ * Called from the main thread during wait loops (e.g. DNS resolution)
+ * to process received packets when the interrupt may be delayed.
+ * Disables interrupts during the ring read to prevent the ISR from
+ * also draining the same packets.
+ *
+ * @return Number of packets processed.
+ */
+int rtl8139_poll_rx(void)
+{
+    /* Disable interrupts so the ISR doesn't also process the ring */
+    __asm__ volatile("cli");
+
+    int processed = 0;
+    uint16_t offset = rx_offset;
+
+    while (1) {
+        uint16_t* header = (uint16_t*)(rx_buffer + offset);
+        uint16_t rx_status = header[0];
+        uint16_t rx_len    = header[1];
+
+        /* ROK bit (0x0001) in packet status means valid packet */
+        if (!(rx_status & 0x0001))
+            break;
+
+        if (rx_len > RX_BUF_SIZE || rx_len < 4)
+            break;
+
+        uint8_t* frame = rx_buffer + offset + 4;
+        net_process_packet(frame, rx_len);
+
+        /* Advance past 4-byte header + payload, aligned to 4 bytes */
+        offset += rx_len + 4;
+        offset = (offset + 3) & ~3;
+        if (offset >= RX_BUF_SIZE)
+            offset -= RX_BUF_SIZE;
+
+        outw(io_base + RTL8139_REG_CAPR, offset);
+        processed++;
+    }
+
+    rx_offset = offset;
+
+    __asm__ volatile("sti");
+    return processed;
+}
+
+/**
  * Send a raw Ethernet frame.
  *
  * The data buffer must be in DMA-accessible memory (identity-mapped

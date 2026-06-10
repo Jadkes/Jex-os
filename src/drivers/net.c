@@ -1166,8 +1166,6 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
 uint32_t net_dns_resolve(const char* hostname)
 {
     /* ---- Build the DNS query ---- */
-    /* Use a union to write the 12-byte header via uint16_t[] (avoids
-     * strict-aliasing violations from casting uint8_t* to uint16_t*). */
     union {
         uint8_t  u8[512];
         uint16_t u16[256];
@@ -1175,105 +1173,124 @@ uint32_t net_dns_resolve(const char* hostname)
     uint8_t*  query  = query_u.u8;
     uint32_t  qlen   = 0;
 
-    /* Header (12 bytes) */
     dns_xid++;
-    query_u.u16[0] = htons(dns_xid);            /* ID */
-    query_u.u16[1] = htons(0x0100);             /* Flags: recursion desired */
-    query_u.u16[2] = htons(1);                  /* Questions: 1 */
-    query_u.u16[3] = 0;                         /* Answer RRs */
-    query_u.u16[4] = 0;                         /* Authority RRs */
-    query_u.u16[5] = 0;                         /* Additional RRs */
+    query_u.u16[0] = htons(dns_xid);
+    query_u.u16[1] = htons(0x0100);
+    query_u.u16[2] = htons(1);
+    query_u.u16[3] = 0;
+    query_u.u16[4] = 0;
+    query_u.u16[5] = 0;
     qlen = 12;
 
-    /* Question: encoded name */
     int name_len = dns_encode_name(hostname, query + qlen, sizeof(query) - qlen - 4);
     if (name_len < 0)
         return 0;
     qlen += (uint32_t)name_len;
 
-    /* QTYPE = A (1), QCLASS = IN (1) — use memcpy for alignment safety */
     uint16_t dns_qtype  = htons(1);
     uint16_t dns_qclass = htons(1);
     memcpy(query + qlen,     &dns_qtype,  2);
     memcpy(query + qlen + 2, &dns_qclass, 2);
     qlen += 4;
 
-    /* ---- Send via UDP ---- */
+    /*
+     * Retry loop: try the full ARP + DNS sequence up to 3 times.
+     * The first attempt may fail on slow QEMU slirp ARP resolution;
+     * subsequent attempts reuse cached ARP and re-send the query.
+     */
     uint32_t result = 0;
-    dns_pending = 0;
-    dns_reply_len = 0;
 
-    net_udp_register(DNS_CLIENT_PORT, dns_handler, NULL);
-    int ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
-
-    if (ret < 0) {
-        /* ARP not resolved for DNS server; send ARP request first */
-        log_serial("DNS: ARP not cached, sending request\n");
-        uint8_t our_mac[6];
-        rtl8139_get_mac(our_mac);
-        uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-        uint8_t* buf = send_buf;
-        uint8_t* p   = buf;
-
-        p = build_ether_header(p, broadcast, our_mac, ETHERTYPE_ARP);
-
-        arp_packet_t* ap = (arp_packet_t*)p;
-        ap->htype = htons(ARP_HTYPE_ETHER);
-        ap->ptype = htons(ARP_PROTO_IP);
-        ap->hlen  = ETH_ALEN;
-        ap->plen  = 4;
-        ap->oper  = htons(ARP_OP_REQUEST);
-        memcpy(ap->sha, our_mac, ETH_ALEN);
-        ap->spa   = OUR_IP;
-        memset(ap->tha, 0, ETH_ALEN);
-        ap->tpa   = DNS_SERVER;
-
-        net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
-
-        {
-            /* QEMU slirp ARP replies can take several seconds */
-            int timeout = 1000;     /* 1000 × 10 ms = 10 s */
-            while (timeout-- > 0 && arp_find(DNS_SERVER) < 0)
-                sleep(10);
+    for (int attempt = 0; attempt < 3 && result == 0; attempt++) {
+        if (attempt > 0) {
+            log_serial("DNS: retry ");
+            log_hex_serial(attempt + 1);
+            log_serial("\n");
         }
 
-        if (arp_find(DNS_SERVER) < 0) {
-            log_serial("DNS: ARP resolution timed out\n");
-            goto cleanup;
-        }
-
-        log_serial("DNS: ARP resolved, retrying UDP\n");
-
-        /* Retry the UDP send (match initial state: pending=0, reply_len=0) */
         dns_pending   = 0;
         dns_reply_len = 0;
-        ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
-    }
 
-    if (ret < 0) {
-        log_serial("DNS: UDP send failed\n");
-        goto cleanup;
-    }
+        net_udp_register(DNS_CLIENT_PORT, dns_handler, NULL);
+        int ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
 
-    log_serial("DNS: query sent, waiting for response\n");
+        if (ret < 0) {
+            log_serial("DNS: ARP not cached, sending request\n");
+            uint8_t our_mac[6];
+            rtl8139_get_mac(our_mac);
+            uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+            uint8_t* buf = send_buf;
+            uint8_t* p   = buf;
 
-    {
-        int timeout = 1000;     /* 1000 × 10 ms = 10 s */
-        while (timeout-- > 0 && !dns_pending)
-            sleep(10);
+            p = build_ether_header(p, broadcast, our_mac, ETHERTYPE_ARP);
+
+            arp_packet_t* ap = (arp_packet_t*)p;
+            ap->htype = htons(ARP_HTYPE_ETHER);
+            ap->ptype = htons(ARP_PROTO_IP);
+            ap->hlen  = ETH_ALEN;
+            ap->plen  = 4;
+            ap->oper  = htons(ARP_OP_REQUEST);
+            memcpy(ap->sha, our_mac, ETH_ALEN);
+            ap->spa   = OUR_IP;
+            memset(ap->tha, 0, ETH_ALEN);
+            ap->tpa   = DNS_SERVER;
+
+            log_serial("DNS: sending ARP request for DNS server\n");
+            net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
+
+            /* Wait up to ~30 seconds for ARP reply, polling RX path actively */
+            {
+                int timeout = 3000;
+                while (timeout-- > 0 && arp_find(DNS_SERVER) < 0) {
+                    rtl8139_poll_rx();
+                    sleep(10);
+                }
+            }
+
+            if (arp_find(DNS_SERVER) < 0) {
+                log_serial("DNS: ARP resolution timed out after 30s\n");
+                net_udp_unregister(DNS_CLIENT_PORT);
+                continue;  /* Try next retry */
+            }
+
+            log_serial("DNS: ARP resolved, sending query\n");
+
+            dns_pending   = 0;
+            dns_reply_len = 0;
+            ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
+        }
+
+        if (ret < 0) {
+            log_serial("DNS: UDP send failed even after ARP\n");
+            net_udp_unregister(DNS_CLIENT_PORT);
+            continue;
+        }
+
+        log_serial("DNS: query sent, waiting for response\n");
+
+        /* Wait up to ~20 seconds for the DNS response, polling RX */
+        {
+            int timeout = 2000;
+            while (timeout-- > 0 && !dns_pending) {
+                rtl8139_poll_rx();
+                sleep(10);
+            }
+        }
+
         if (dns_pending) {
-            /* Barrier: pair with barrier in dns_handler */
             __asm__ volatile("" ::: "memory");
             log_serial("DNS: response received\n");
             result = dns_parse_response((const uint8_t*)dns_reply, dns_reply_len);
+            net_udp_unregister(DNS_CLIENT_PORT);
+            break;  /* Success — exit retry loop */
         }
+
+        log_serial("DNS: response timed out\n");
+        net_udp_unregister(DNS_CLIENT_PORT);
     }
 
-    if (!dns_pending)
-        log_serial("DNS: response timed out\n");
+    if (result == 0)
+        log_serial("DNS: all retries exhausted\n");
 
-cleanup:
-    net_udp_unregister(DNS_CLIENT_PORT);
     return result;
 }
 
