@@ -4,7 +4,7 @@ LD = ld
 
 # Compiler flags for 32-bit C code, freestanding (no stdlib)
 # Added -Isrc/include to find headers
-CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie -Isrc/include
+CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie -Isrc/include -Isrc/tests
 
 # Assembler flags for 32-bit
 ASFLAGS = --32
@@ -23,7 +23,8 @@ SOURCES_C = $(wildcard src/kernel/*.c) \
             $(wildcard src/drivers/*.c) \
             $(wildcard src/mm/*.c) \
             $(wildcard src/fs/*.c) \
-            $(wildcard src/bin/*.c)
+            $(wildcard src/bin/*.c) \
+            $(wildcard src/tests/*.c)
 
 SOURCES_S = $(wildcard src/arch/i386/*.s)
 

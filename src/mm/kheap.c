@@ -10,15 +10,18 @@
 #include "paging.h"
 #include <stddef.h>
 
+/* Kernel heap — simple bump allocator starting at 16 MB */
+#define KHEAP_START 0x1000000
+
+static uint32_t heap_ptr = KHEAP_START;
+
 /**
- * @brief Simple bump allocator for kernel memory.
- * Note: Currently lacks a proper free implementation.
- * 
+ * @brief Allocate a block of memory from the kernel heap.
+ *
  * @param size Number of bytes to allocate.
  * @return Pointer to the allocated block.
  */
 void* kmalloc(size_t size) {
-    static uint32_t heap_ptr = 0x1000000; /* Start at 16MB */
     uint32_t old_ptr = heap_ptr;
     heap_ptr += size;
     return (void*)old_ptr;
@@ -33,6 +36,27 @@ void kfree(void *p) { (void)p; }
  * @brief Initialize the kernel heap.
  */
 void init_kheap(uint32_t start_addr) { (void)start_addr; }
+
+/**
+ * @brief Return number of bytes allocated from the heap so far.
+ */
+uint32_t kheap_get_used(void) {
+    return heap_ptr - KHEAP_START;
+}
+
+/**
+ * @brief Return the total heap range start address (for informational use).
+ */
+uint32_t kheap_get_start(void) {
+    return KHEAP_START;
+}
+
+/**
+ * @brief Return the current heap bump pointer (next free address).
+ */
+uint32_t kheap_get_current(void) {
+    return heap_ptr;
+}
 
 /* Memory Utilities */
 
