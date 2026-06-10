@@ -31,6 +31,14 @@ SECTIONS
 		*(.data)
 	}
 
+	/* Kallsyms symbol table (sorted, read-only) */
+	.kallsyms BLOCK(4K) : ALIGN(4K)
+	{
+		__kallsyms_start = .;
+		*(.kallsyms)
+		__kallsyms_end = .;
+	}
+
 	/* Read-write data (uninitialized) and stack */
 	.bss BLOCK(4K) : ALIGN(4K)
 	{

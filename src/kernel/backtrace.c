@@ -12,6 +12,7 @@
 #include "kernel/backtrace.h"
 #include "terminal.h"
 #include "serial.h"
+#include "kernel/kallsyms.h"
 
 void format_hex(uint32_t val, char* out)
 {
@@ -48,14 +49,23 @@ static void dump_stack_common(int to_terminal)
     char buf[12];
 
     for (int i = 0; i < depth; i++) {
+        uint32_t offset, size;
+        const char* name = kallsyms_lookup(eip_frames[i], &offset, &size);
         log_serial("  [<");
         log_hex_serial(eip_frames[i]);
-        log_serial(">]\n");
+        log_serial(">] ");
+        log_serial(name);
+        log_serial("+0x");
+        log_hex_serial(offset);
+        log_serial("/0x");
+        log_hex_serial(size);
+        log_serial("\n");
         if (to_terminal) {
             terminal_writestring("  [<");
             format_hex(eip_frames[i], buf);
             terminal_writestring(buf);
-            terminal_writestring(">]\n");
+            terminal_writestring(">] ");
+            terminal_writestring(name);
         }
     }
 }
