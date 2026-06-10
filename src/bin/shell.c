@@ -38,6 +38,7 @@ extern int editor_running;
 extern void read_block(uint32_t block, uint8_t* buffer);
 extern void beep(int freq, int duration);
 extern void start_editor(const char* filename);
+extern int  rtl8139_poll_rx(void);
 extern void sleep(uint32_t ms);
 extern void reboot(void);
 extern void shutdown(void);
@@ -391,6 +392,7 @@ void ping_command(const char* arg) {
             uint32_t start = get_ticks();
             while (arp_timeout-- > 0) {
                 if (arp_lookup(ip) >= 0) break;
+                rtl8139_poll_rx();
                 sleep(10);
             }
             uint32_t elapsed = get_ticks() - start;
@@ -423,35 +425,41 @@ void ping_command(const char* arg) {
         terminal_writestring("  ICMP echo request sent\n");
     }
 
-    /* Wait for reply */
+    /* Wait for reply (~2 second timeout, polling RX periodically) */
     uint32_t start = get_ticks();
-    for (int i = 0; i < 500000; i++) {
-        if (net_get_ping_responses() > before) {
-            uint32_t rtt = get_ticks() - start;
-            if (verbose) {
-                char buf[16];
-                terminal_writestring("  ICMP echo reply received after ");
-                int_to_string((int)rtt, buf);
-                terminal_writestring(buf);
-                terminal_writestring(" ticks\n");
-                terminal_writestring("  Round-trip time: ");
-                int_to_string((int)rtt, buf);
-                terminal_writestring(buf);
-                terminal_writestring(" ticks (");
-                int_to_string((int)(rtt * 10), buf);
-                terminal_writestring(buf);
-                terminal_writestring(" ms)\n");
-            } else {
-                terminal_writestring("  64 bytes from ");
-                terminal_writestring(addr);
-                terminal_writestring(": icmp_seq=1\n");
-            }
-            return;
-        }
-        __asm__ volatile("pause");
+    int timeout = 200;
+    while (timeout-- > 0 && net_get_ping_responses() <= before) {
+        rtl8139_poll_rx();
+        sleep(10);
     }
 
-    terminal_writestring("  No reply received (timeout)\n");
+    if (net_get_ping_responses() > before) {
+        uint32_t rtt = get_ticks() - start;
+        log_serial("PING: reply received (RTT=");
+        log_hex_serial(rtt * 10);
+        log_serial(" ms)\n");
+        if (verbose) {
+            char buf[16];
+            terminal_writestring("  ICMP echo reply received after ");
+            int_to_string((int)rtt, buf);
+            terminal_writestring(buf);
+            terminal_writestring(" ticks\n");
+            terminal_writestring("  Round-trip time: ");
+            int_to_string((int)rtt, buf);
+            terminal_writestring(buf);
+            terminal_writestring(" ticks (");
+            int_to_string((int)(rtt * 10), buf);
+            terminal_writestring(buf);
+            terminal_writestring(" ms)\n");
+        } else {
+            terminal_writestring("  64 bytes from ");
+            terminal_writestring(addr);
+            terminal_writestring(": icmp_seq=1\n");
+        }
+    } else {
+        log_serial("PING: timeout\n");
+        terminal_writestring("  No reply received (timeout)\n");
+    }
 }
 
 /**
@@ -574,10 +582,10 @@ void dns_command(const char* arg) {
         terminal_writestring("  Not found\n");
         return;
     }
+    /* Terminal output for the user */
     terminal_writestring("  ");
     terminal_writestring(arg);
     terminal_writestring(" -> ");
-    /* Print dotted-decimal */
     uint8_t* bytes = (uint8_t*)&ip;
     char buf[4];
     int_to_string(bytes[0], buf); terminal_writestring(buf); terminal_putchar('.');
@@ -585,6 +593,16 @@ void dns_command(const char* arg) {
     int_to_string(bytes[2], buf); terminal_writestring(buf); terminal_putchar('.');
     int_to_string(bytes[3], buf); terminal_writestring(buf);
     terminal_writestring("\n");
+
+    /* Also log to serial for automated testing */
+    log_serial("DNS: ");
+    log_serial(arg);
+    log_serial(" -> ");
+    log_hex_serial(bytes[0]); log_serial(".");
+    log_hex_serial(bytes[1]); log_serial(".");
+    log_hex_serial(bytes[2]); log_serial(".");
+    log_hex_serial(bytes[3]);
+    log_serial("\n");
 }
 
 /**

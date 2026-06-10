@@ -309,6 +309,17 @@ uint8_t* build_ip_header(uint8_t* buf, uint8_t protocol,
  */
 void net_send_ether(void* data, uint32_t len)
 {
+    /* Hex dump outbound packets for debugging */
+    log_serial("TX: len=");
+    log_hex_serial(len);
+    log_serial(" hex:");
+    for (uint32_t i = 0; i < len && i < 128; i++) {
+        if (i % 20 == 0) log_serial("\n  ");
+        log_hex_serial(((uint8_t*)data)[i]);
+        log_serial(" ");
+    }
+    log_serial("\n");
+
     rtl8139_send_packet(data, len);
 }
 
@@ -460,6 +471,12 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
         return;
 
     uint16_t dest_port = ntohs(udp->dest_port);
+
+    if (dest_port == DNS_CLIENT_PORT) {
+        log_serial("UDP: received on DNS port len=");
+        log_hex_serial(udp_len);
+        log_serial("\n");
+    }
 
     /* Verify checksum if non-zero (zero means sender omitted it) */
     if (udp->checksum != 0) {
@@ -614,8 +631,12 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
     p += len;
 
     /* Compute UDP checksum with pseudo-header (RFC 768).
-     * The checksum field was zeroed above before payload copy. */
-    udp->checksum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
+     * The checksum field was zeroed above before payload copy.
+     * RFC 768: if computed checksum is 0, send 0xFFFF (0 means "no checksum"). */
+    {
+        uint16_t csum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
+        udp->checksum = (csum == 0) ? 0xFFFF : csum;
+    }
 
     uint32_t total = sizeof(eth_header_t) + IP_HEADER_LEN + ip_data_len;
     net_send_ether(buf, total);
@@ -779,12 +800,21 @@ void net_process_packet(uint8_t* data, uint32_t len)
     /* tcpdump capture hook */
     tcpdump_capture(data, len, type);
 
+    log_serial("NET: rx type=0x");
+    log_hex_serial(type);
+    log_serial(" len=");
+    log_hex_serial(len);
+    log_serial("\n");
+
     switch (type) {
     case ETHERTYPE_ARP:
         handle_arp(payload, plen);
         break;
     case ETHERTYPE_IP:
         handle_ip(payload, plen, eth->src);
+        break;
+    default:
+        log_serial("NET: unknown type, dropping\n");
         break;
     }
 }
@@ -1022,11 +1052,26 @@ static void dns_handler(uint32_t src_ip, uint16_t src_port,
     (void)src_port;
     (void)userdata;
 
+    log_serial("DNS: handler called, len=");
+    log_hex_serial(len);
+    log_serial("\n");
+
     /* Need at least the 12-byte DNS header to validate */
-    if (len < 12)
+    if (len < 12) {
+        log_serial("DNS: too short\n");
         return;
-    if (read_be16(data) != dns_xid)
+    }
+
+    uint16_t rx_xid = read_be16(data);
+    if (rx_xid != dns_xid) {
+        log_serial("DNS: XID mismatch, rx=");
+        log_hex_serial(rx_xid);
+        log_serial(" expected=");
+        log_hex_serial(dns_xid);
+        log_serial("\n");
         return;
+    }
+    log_serial("DNS: XID match, storing response\n");
 
     /* Stash the raw response and signal the waiter */
     if (len > sizeof(dns_reply))
@@ -1193,6 +1238,20 @@ uint32_t net_dns_resolve(const char* hostname)
     memcpy(query + qlen + 2, &dns_qclass, 2);
     qlen += 4;
 
+    /* Hex dump the full DNS query for debugging */
+    {
+        log_serial("DNS: query hex:");
+        for (uint32_t i = 0; i < qlen; i++) {
+            if (i % 20 == 0) log_serial("\n  ");
+            log_hex_serial(query[i]);
+            log_serial(" ");
+        }
+        log_serial("\n");
+        log_serial("DNS: query len=");
+        log_hex_serial(qlen);
+        log_serial("\n");
+    }
+
     /*
      * Retry loop: try the full ARP + DNS sequence up to 3 times.
      * The first attempt may fail on slow QEMU slirp ARP resolution;
@@ -1271,7 +1330,12 @@ uint32_t net_dns_resolve(const char* hostname)
         {
             int timeout = 2000;
             while (timeout-- > 0 && !dns_pending) {
-                rtl8139_poll_rx();
+                int npackets = rtl8139_poll_rx();
+                if (npackets > 0) {
+                    log_serial("DNS: polled ");
+                    log_hex_serial(npackets);
+                    log_serial(" packets during wait\n");
+                }
                 sleep(10);
             }
         }

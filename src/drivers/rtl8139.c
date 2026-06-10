@@ -31,6 +31,24 @@ static uint8_t mac_addr[6];
 
 /* Receive Buffer: 32KB physically-contiguous ring buffer for DMA */
 #define RX_BUF_SIZE (32 * 1024)
+
+/*
+ * Minimum gap between CAPR and the card's internal write pointer.
+ *
+ * WHY: When the driver processes received packets (in the ISR or poll_rx),
+ *      it must tell the card how far it has read by writing CAPR.  If CAPR
+ *      is set too close to the card's write pointer, the next incoming
+ *      packet may not fit and the card raises RX OVF (receive overflow).
+ *
+ *      QEMU's RTL8139 model checks (write_ptr - CAPR) against the new
+ *      packet's length; if the gap is smaller than the frame, the card
+ *      drops the packet and sets ISR bit 4 (RX OVF).
+ *
+ *      We write CAPR = rx_offset - RX_CAPR_GAP (modulo ring size) so the
+ *      card always sees at least this many bytes of free space, regardless
+ *      of where the write pointer sits.
+ */
+#define RX_CAPR_GAP 2048
 static uint8_t* rx_buffer;
 
 /* Current transmit descriptor (0-3, round-robin) */
@@ -67,6 +85,14 @@ void rtl8139_handler(registers_t* regs)
 {
     uint16_t status = inw(io_base + RTL8139_REG_ISR);
 
+    log_serial("ISR: status=0x");
+    log_hex_serial(status);
+    log_serial(" ROK=");
+    log_hex_serial(status & RTL8139_ISR_ROK);
+    log_serial(" TOK=");
+    log_hex_serial(status & RTL8139_ISR_TOK);
+    log_serial("\n");
+
     /* Acknowledge by writing status back (writing 1 clears) */
     outw(io_base + RTL8139_REG_ISR, status);
 
@@ -78,6 +104,14 @@ void rtl8139_handler(registers_t* regs)
             uint16_t* header = (uint16_t*)(rx_buffer + offset);
             uint16_t rx_status = header[0];
             uint16_t rx_len = header[1];
+
+            log_serial("ISR_RX: off=");
+            log_hex_serial(offset);
+            log_serial(" status=0x");
+            log_hex_serial(rx_status);
+            log_serial(" len=");
+            log_hex_serial(rx_len);
+            log_serial("\n");
 
             /* ROK bit (0x0001) in packet status means valid packet */
             if (!(rx_status & 0x0001))
@@ -97,12 +131,17 @@ void rtl8139_handler(registers_t* regs)
             if (offset >= RX_BUF_SIZE)
                 offset -= RX_BUF_SIZE;
 
-            /* Tell the card how far we've read */
-            outw(io_base + RTL8139_REG_CAPR, offset);
         }
 
-        /* Update our tracking of where we are in the ring */
         rx_offset = offset;
+
+        /*
+         * Write CAPR with a gap so the card leaves room for the next
+         * incoming packet.  Without this the card may overflow on large
+         * frames (e.g. DNS responses) when write_ptr - CAPR is too small.
+         */
+        uint16_t capr = ((uint16_t)((int)offset - RX_CAPR_GAP)) & (RX_BUF_SIZE - 1);
+        outw(io_base + RTL8139_REG_CAPR, capr);
     }
 
     if (status & RTL8139_ISR_TOK) {
@@ -243,6 +282,25 @@ int rtl8139_poll_rx(void)
         uint16_t rx_status = header[0];
         uint16_t rx_len    = header[1];
 
+        log_serial("POLL: off=");
+        log_hex_serial(offset);
+        log_serial(" status=0x");
+        log_hex_serial(rx_status);
+        log_serial(" len=");
+        log_hex_serial(rx_len);
+        log_serial("\n");
+
+        /* Dump the 4-byte header and first 16 bytes of frame data */
+        /* for debugging the actual RX buffer content */
+        {
+            log_serial("POLL_DUMP:");
+            for (int di = 0; di < 20; di++) {
+                log_serial(" ");
+                log_hex_serial(rx_buffer[offset + di]);
+            }
+            log_serial("\n");
+        }
+
         /* ROK bit (0x0001) in packet status means valid packet */
         if (!(rx_status & 0x0001))
             break;
@@ -259,9 +317,12 @@ int rtl8139_poll_rx(void)
         if (offset >= RX_BUF_SIZE)
             offset -= RX_BUF_SIZE;
 
-        outw(io_base + RTL8139_REG_CAPR, offset);
         processed++;
     }
+
+    /* Tell the card how far we've read, leaving a gap for incoming frames */
+    uint16_t capr = ((uint16_t)((int)offset - RX_CAPR_GAP)) & (RX_BUF_SIZE - 1);
+    outw(io_base + RTL8139_REG_CAPR, capr);
 
     rx_offset = offset;
 
