@@ -37,6 +37,42 @@ typedef struct {
     uint8_t  irq_line;      /**< IRQ number (0-15) */
 } pci_device_t;
 
+struct pci_device_id {
+    uint16_t vendor;
+    uint16_t device;
+    uint32_t driver_data;
+};
+
+struct pci_driver {
+    const char*                 name;
+    const struct pci_device_id* id_table;
+    int  (*probe)(pci_device_t* dev);
+    void (*remove)(pci_device_t* dev);
+    struct pci_driver* next;
+};
+
+/**
+ * @brief Read a 16-bit word from PCI config space.
+ *
+ * @param bus PCI bus number.
+ * @param slot PCI slot (device) number.
+ * @param func PCI function number.
+ * @param offset Register offset within the config space (byte-aligned).
+ * @return The 16-bit value read from the register.
+ */
+uint16_t pci_config_read_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+/**
+ * @brief Register a PCI driver for automatic bus scanning.
+ *
+ * When a driver is registered, all PCI buses are scanned for matching
+ * device IDs. For each match, the driver's probe function is called
+ * with the device information.
+ *
+ * @param drv Pointer to a statically-allocated pci_driver structure.
+ */
+void pci_register_driver(struct pci_driver* drv);
+
 /**
  * @brief Read a 32-bit dword from PCI configuration space.
  * 
