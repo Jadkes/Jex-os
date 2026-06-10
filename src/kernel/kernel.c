@@ -40,6 +40,7 @@
 #include "net.h"
 #include "kernel/kallsyms.h"
 #include "init.h"
+#include "kernel/lockdep.h"
 #include "devtmpfs.h"
 #include "jexfs.h"
 
@@ -78,6 +79,9 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      *   device_initcalls: drivers, filesystems, higher-level subsystems
      */
     initcalls_run();
+
+    /* Initialize lock dependency validator */
+    lockdep_init();
 
     /* Initialize devtmpfs and mount /sys */
     devtmpfs_init();
