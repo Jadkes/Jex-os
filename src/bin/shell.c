@@ -64,8 +64,8 @@ char shell_cwd[128] = "/";
  * @brief List of supported shell commands.
  */
 static const char* shell_commands[] = {
-    "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", NULL
+    "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", NULL
 };
 
 /**
@@ -390,16 +390,17 @@ void ping_command(const char* arg) {
         {
             int arp_timeout = 1000;   /* 10 seconds */
             uint32_t start = get_ticks();
+            uint8_t resolved_mac[6];
             while (arp_timeout-- > 0) {
-                if (arp_lookup(ip) >= 0) break;
+                if (resolve_mac(ip, resolved_mac) == 0) break;
                 rtl8139_poll_rx();
                 sleep(10);
             }
             uint32_t elapsed = get_ticks() - start;
-            if (arp_lookup(ip) >= 0) {
+            if (resolve_mac(ip, resolved_mac) == 0) {
                 if (verbose) {
                     char buf[16];
-                    terminal_writestring("  ARP reply received in ");
+                    terminal_writestring("  MAC resolved in ");
                     int_to_string((int)elapsed, buf);
                     terminal_writestring(buf);
                     terminal_writestring(" ticks\n");
@@ -517,11 +518,13 @@ static void loopback_command(const char* arg) {
 
         if (ret < 0) {
             int timeout = 1000;
+            uint8_t resolved_mac[6];
             while (timeout-- > 0) {
-                if (arp_lookup(ip) >= 0) break;
+                if (resolve_mac(ip, resolved_mac) == 0) break;
+                rtl8139_poll_rx();
                 sleep(10);
             }
-            if (arp_lookup(ip) >= 0)
+            if (resolve_mac(ip, resolved_mac) == 0)
                 ret = net_ping(ip);
         }
 
@@ -934,6 +937,9 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "arp") == 0) {
         arp_dump();
+    }
+    else if (strcmp(shell_buffer, "route") == 0) {
+        route_print();
     }
     else if (strncmp(shell_buffer, "tcpdump", 7) == 0) {
         int count = 5;

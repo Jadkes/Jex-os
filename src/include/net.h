@@ -150,6 +150,9 @@ typedef struct {
 /* Our IP address on the wire (network byte order). */
 #define OUR_IP IP4(10, 0, 2, 15)
 
+/* Default gateway for non-local traffic (QEMU slirp provides NAT). */
+#define GATEWAY_IP IP4(10, 0, 2, 2)
+
 /* Default DNS server (QEMU user-mode gateway provides a DNS proxy). */
 #define DNS_SERVER   IP4(10, 0, 2, 3)
 #define DNS_PORT     53
@@ -222,6 +225,46 @@ int arp_lookup(uint32_t ip);
  * arp_dump - Print the contents of the ARP cache.
  */
 void arp_dump(void);
+
+/* ----------------------------------------------------------------- */
+/*  Routing                                                          */
+/* ----------------------------------------------------------------- */
+
+/*
+ * is_local_ip - Check if an IP is on the local subnet.
+ *
+ * @param ip  IP in network byte order.
+ * @return  1 if local, 0 if remote (should be routed through gateway).
+ */
+int is_local_ip(uint32_t ip);
+
+/*
+ * resolve_mac - Get the MAC address to reach a destination IP.
+ *
+ * For local IPs: returns the cached ARP entry.
+ * For remote IPs: returns the cached gateway MAC.
+ *
+ * @param ip      Destination IP (network byte order).
+ * @param mac_out 6-byte buffer for the resolved MAC.
+ * @return        0 on success, -1 if MAC not cached (caller needs ARP).
+ */
+int resolve_mac(uint32_t ip, uint8_t* mac_out);
+
+/*
+ * net_arp_resolve - Trigger ARP resolution for a destination.
+ *
+ * For local IPs: sends ARP request for the destination directly.
+ * For remote IPs: sends ARP request for the gateway.
+ * No-op if the target MAC is already cached.
+ *
+ * @param ip  Destination IP (network byte order).
+ */
+void net_arp_resolve(uint32_t ip);
+
+/*
+ * route_print - Display the routing table on the terminal.
+ */
+void route_print(void);
 
 /* ----------------------------------------------------------------- */
 /*  Public API                                                       */
