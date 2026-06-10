@@ -896,7 +896,9 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     case IP_PROTO_UDP:
         handle_udp(data, len, ip_hdr);
         break;
-    /* TODO: case IP_PROTO_TCP: handle_tcp(data, len, src_mac); */
+    case IP_PROTO_TCP:
+        handle_tcp(data, len, ip_hdr, src_mac);
+        break;
     }
 }
 

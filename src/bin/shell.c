@@ -28,6 +28,7 @@
 #include "task.h"
 #include "dump.h"
 #include "test_suite.h"
+#include "tcp.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -65,7 +66,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", NULL
 };
 
 /**
@@ -974,6 +975,28 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "nicregs") == 0) {
         rtl8139_dump_regs();
+    }
+    else if (strncmp(shell_buffer, "fetch ", 6) == 0) {
+        char* arg = shell_buffer + 6;
+        while (*arg == ' ') arg++;
+        /* Parse hostname [port] */
+        char hostname[128];
+        uint16_t port = 80;
+        uint32_t i = 0;
+        while (*arg && *arg != ' ' && i < sizeof(hostname) - 1)
+            hostname[i++] = *arg++;
+        hostname[i] = '\0';
+        while (*arg == ' ') arg++;
+        if (*arg >= '1' && *arg <= '9')
+            port = (uint16_t)atoi(arg);
+
+        log_serial("FETCH: host=");
+        log_serial(hostname);
+        log_serial(" port=");
+        log_hex_serial(port);
+        log_serial("\n");
+
+        http_get(hostname, port, "/");
     }
     else if (strncmp(shell_buffer, "dump ", 5) == 0) {
         char* args = shell_buffer + 5;

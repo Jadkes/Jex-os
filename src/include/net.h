@@ -267,6 +267,24 @@ void net_arp_resolve(uint32_t ip);
 void route_print(void);
 
 /* ----------------------------------------------------------------- */
+/*  TCP Integration                                                  */
+/* ----------------------------------------------------------------- */
+
+/*
+ * handle_tcp - Process an incoming TCP segment.
+ *
+ * Called from handle_ip() in net.c when IP protocol = IP_PROTO_TCP.
+ * Implements the TCP state machine and copies payload to the RX buffer.
+ *
+ * @param data    Pointer to the IP header (entire datagram).
+ * @param len     Total datagram length from IP header onward.
+ * @param ip_hdr  IP header length in bytes.
+ * @param src_mac Source MAC from the Ethernet header.
+ */
+void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
+                const uint8_t* src_mac);
+
+/* ----------------------------------------------------------------- */
 /*  Public API                                                       */
 /* ----------------------------------------------------------------- */
 
