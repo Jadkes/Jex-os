@@ -104,4 +104,15 @@ uint32_t rtl8139_get_tx_count(void);
  */
 void rtl8139_dump_regs(void);
 
+/**
+ * @brief Poll the RX ring for pending packets (main-thread fallback).
+ *
+ * Processes any packets that have been DMA'd into the RX ring but
+ * not yet handled by the ISR.  Useful during long busy-wait loops
+ * where interrupt delivery may be delayed.
+ *
+ * @return Number of packets processed.
+ */
+int rtl8139_poll_rx(void);
+
 #endif // RTL8139_H
