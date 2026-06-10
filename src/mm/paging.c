@@ -6,6 +6,7 @@
  * Handles virtual-to-physical mapping and Page Fault exceptions.
  */
 
+#include "kernel/printk.h"
 #include "paging.h"
 #include "pmm.h"
 #include "isr.h"
@@ -121,7 +122,7 @@ void init_paging() {
     cr0 |= 0x80000000;
     asm volatile("mov %0, %%cr0" :: "r"(cr0));
     
-    terminal_writestring("Paging enabled (Identity Map 512MB).\n");
+    pr_info("Paging enabled (Identity Map 512MB).\n");
 }
 
 /**

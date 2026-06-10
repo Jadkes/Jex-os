@@ -9,6 +9,8 @@
  * Transmit uses 4 separate descriptor slots (round-robin).
  */
 
+#define pr_fmt(fmt) "[RTL8139] " fmt
+#include "kernel/printk.h"
 #include "rtl8139.h"
 #include "ports.h"
 #include "pmm.h"
@@ -18,6 +20,9 @@
 #include "config.h"
 #include "net.h"
 #include <string.h>
+
+/* Set to 1 for per-packet ISR/Poll debug logging */
+#define RTL8139_DEBUG 0
 
 /* Forward declarations for functions used from other compilation units */
 extern void int_to_string(int n, char* str);
@@ -85,13 +90,9 @@ void rtl8139_handler(registers_t* regs)
 {
     uint16_t status = inw(io_base + RTL8139_REG_ISR);
 
-    log_serial("ISR: status=0x");
-    log_hex_serial(status);
-    log_serial(" ROK=");
-    log_hex_serial(status & RTL8139_ISR_ROK);
-    log_serial(" TOK=");
-    log_hex_serial(status & RTL8139_ISR_TOK);
-    log_serial("\n");
+    if (RTL8139_DEBUG)
+        pr_debug("ISR: status=0x%x ROK=0x%x TOK=0x%x\n", status,
+                 status & RTL8139_ISR_ROK, status & RTL8139_ISR_TOK);
 
     /* Acknowledge by writing status back (writing 1 clears) */
     outw(io_base + RTL8139_REG_ISR, status);
@@ -105,13 +106,8 @@ void rtl8139_handler(registers_t* regs)
             uint16_t rx_status = header[0];
             uint16_t rx_len = header[1];
 
-            log_serial("ISR_RX: off=");
-            log_hex_serial(offset);
-            log_serial(" status=0x");
-            log_hex_serial(rx_status);
-            log_serial(" len=");
-            log_hex_serial(rx_len);
-            log_serial("\n");
+            if (RTL8139_DEBUG)
+                pr_debug("ISR_RX: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
 
             /* ROK bit (0x0001) in packet status means valid packet */
             if (!(rx_status & 0x0001))
@@ -145,7 +141,7 @@ void rtl8139_handler(registers_t* regs)
     }
 
     if (status & RTL8139_ISR_TOK) {
-        log_serial("RTL8139: TX OK\n");
+        if (RTL8139_DEBUG) pr_debug("TX OK\n");
     }
 
     (void)regs;
@@ -166,18 +162,11 @@ void init_rtl8139()
 
     /* 1. Find the RTL8139 on the PCI bus */
     if (!pci_find_device(PCI_VENDOR_REALTEK, PCI_DEVICE_RTL8139, &dev)) {
-        terminal_writestring("RTL8139: PCI device not found\n");
-        log_serial("RTL8139: PCI device not found\n");
+        pr_err("PCI device not found\n");
         return;
     }
 
-    terminal_writestring("RTL8139: Found at ");
-    print_hex_byte(dev.bus);
-    terminal_putchar(':');
-    print_hex_byte(dev.device);
-    terminal_putchar('.');
-    print_hex_byte(dev.function);
-    terminal_writestring("\n");
+    pr_info("Found at %02x:%02x.%02x\n", dev.bus, dev.device, dev.function);
 
     /* 2. Extract I/O base from BAR0 (mask off I/O indicator bits) */
     io_base = dev.bar0 & ~0x3;
@@ -185,11 +174,7 @@ void init_rtl8139()
     /* 3. Extract IRQ line */
     irq_num = dev.irq_line;
 
-    log_serial("RTL8139: IO=");
-    log_hex_serial(io_base);
-    log_serial(" IRQ=");
-    log_hex_serial(irq_num);
-    log_serial("\n");
+    pr_debug("IO=0x%x IRQ=%d\n", io_base, irq_num);
 
     /* 4. Enable PCI Bus Mastering (bit 2) and I/O Space (bit 0) */
     uint32_t pci_cmd = pci_config_read_dword(dev.bus, dev.device,
@@ -211,18 +196,14 @@ void init_rtl8139()
     for (i = 0; i < 6; i++)
         mac_addr[i] = inb(io_base + RTL8139_REG_MAC0 + i);
 
-    terminal_writestring("RTL8139: MAC ");
-    for (i = 0; i < 6; i++) {
-        print_hex_byte(mac_addr[i]);
-        if (i < 5)
-            terminal_putchar(':');
-    }
-    terminal_writestring("\n");
+    pr_info("MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+            mac_addr[0], mac_addr[1], mac_addr[2],
+            mac_addr[3], mac_addr[4], mac_addr[5]);
 
     /* 8. Allocate 32KB physically-contiguous RX DMA buffer */
     rx_buffer = (uint8_t*)pmm_alloc_blocks(RX_BUF_SIZE / PMM_BLOCK_SIZE);
     if (!rx_buffer) {
-        terminal_writestring("RTL8139: RX buffer alloc failed\n");
+        pr_err("RX buffer alloc failed\n");
         return;
     }
     memset(rx_buffer, 0, RX_BUF_SIZE);
@@ -255,8 +236,7 @@ void init_rtl8139()
     outb(io_base + RTL8139_REG_CR, RTL8139_CR_TE | RTL8139_CR_RE);
 
     driver_initialized = 1;
-    terminal_writestring("RTL8139: Initialized\n");
-    log_serial("RTL8139: Initialized successfully\n");
+    pr_info("Initialized\n");
 }
 
 /**
@@ -271,7 +251,11 @@ void init_rtl8139()
  */
 int rtl8139_poll_rx(void)
 {
-    /* Disable interrupts so the ISR doesn't also process the ring */
+    /* Save interrupt state before disabling — must restore on exit so
+     * this function is safe to call from both shell (IF=1) and ISR
+     * (IF=0) contexts.  In the ISR case we must NOT re-enable IF. */
+    uint32_t _eflags;
+    __asm__ volatile("pushf; pop %0" : "=r"(_eflags));
     __asm__ volatile("cli");
 
     int processed = 0;
@@ -282,23 +266,24 @@ int rtl8139_poll_rx(void)
         uint16_t rx_status = header[0];
         uint16_t rx_len    = header[1];
 
-        log_serial("POLL: off=");
-        log_hex_serial(offset);
-        log_serial(" status=0x");
-        log_hex_serial(rx_status);
-        log_serial(" len=");
-        log_hex_serial(rx_len);
-        log_serial("\n");
-
-        /* Dump the 4-byte header and first 16 bytes of frame data */
-        /* for debugging the actual RX buffer content */
-        {
-            log_serial("POLL_DUMP:");
-            for (int di = 0; di < 20; di++) {
-                log_serial(" ");
-                log_hex_serial(rx_buffer[offset + di]);
+        if (RTL8139_DEBUG) {
+            pr_debug("POLL: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
+            /* Build a hex dump in a local buffer to keep it on one line */
+            char _pdump[72];
+            int _ppos = 0;
+            const char* _phex = "0123456789ABCDEF";
+            _pdump[_ppos++] = 'P'; _pdump[_ppos++] = 'O'; _pdump[_ppos++] = 'L';
+            _pdump[_ppos++] = 'L'; _pdump[_ppos++] = '_'; _pdump[_ppos++] = 'D';
+            _pdump[_ppos++] = 'U'; _pdump[_ppos++] = 'M'; _pdump[_ppos++] = 'P';
+            _pdump[_ppos++] = ':';
+            for (int di = 0; di < 20 && _ppos < 60; di++) {
+                _pdump[_ppos++] = ' ';
+                _pdump[_ppos++] = _phex[(rx_buffer[offset + di] >> 4) & 0xF];
+                _pdump[_ppos++] = _phex[rx_buffer[offset + di] & 0xF];
             }
-            log_serial("\n");
+            _pdump[_ppos++] = '\n';
+            _pdump[_ppos] = '\0';
+            pr_debug("%s", _pdump);
         }
 
         /* ROK bit (0x0001) in packet status means valid packet */
@@ -326,7 +311,9 @@ int rtl8139_poll_rx(void)
 
     rx_offset = offset;
 
-    __asm__ volatile("sti");
+    /* Restore IF to the state on entry (IF=1 for shell, IF=0 for ISR) */
+    if (_eflags & 0x200)
+        __asm__ volatile("sti");
     return processed;
 }
 

@@ -6,6 +6,8 @@
  * without using DMA or interrupts (Polling/PIO mode).
  */
 
+#define pr_fmt(fmt) "[IDE] " fmt
+#include "kernel/printk.h"
 #include "ide.h"
 #include "ports.h"
 #include "serial.h"
@@ -28,7 +30,7 @@ static void ide_wait_drq() {
  * @brief Initialize the primary master IDE drive.
  */
 void ide_init() {
-    log_serial("IDE: Initializing Primary Master...\n");
+    pr_info("Initializing Primary Master...\n");
     /* Select master drive on the primary bus */
     outb(IDE_DRIVE_SEL, 0xA0);
     ide_wait_busy();
@@ -56,7 +58,7 @@ int ide_read_sector(uint32_t lba, uint8_t* buffer) {
     
     /* Check for errors in the status register */
     if (inb(IDE_STATUS) & (IDE_STATUS_ERR | IDE_STATUS_DF)) {
-        log_serial("IDE: Read error!\n");
+        pr_err("Read error!\n");
         return -1;
     }
 
@@ -91,7 +93,7 @@ int ide_write_sector(uint32_t lba, const uint8_t* buffer) {
 
     /* Check for errors */
     if (inb(IDE_STATUS) & (IDE_STATUS_ERR | IDE_STATUS_DF)) {
-        log_serial("IDE: Write error!\n");
+        pr_err("Write error!\n");
         return -1;
     }
 

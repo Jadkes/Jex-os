@@ -9,6 +9,7 @@
  *                not yet safe for concurrent writers (single-core for now).
  */
 
+#include "kernel/printk.h"
 #include "klog.h"
 #include "terminal.h"
 

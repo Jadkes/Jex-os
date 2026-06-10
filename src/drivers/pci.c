@@ -6,6 +6,8 @@
  * via I/O ports 0xCF8 (address) and 0xCFC (data).
  */
 
+#define pr_fmt(fmt) "[PCI] " fmt
+#include "kernel/printk.h"
 #include "pci.h"
 #include "ports.h"
 #include "terminal.h"
@@ -128,14 +130,8 @@ static void pci_check_device(uint8_t bus, uint8_t device) {
     uint32_t reg3C = pci_config_read_dword(bus, device, function, 0x3C);
     dev.irq_line = reg3C & 0xFF;
 
-    /* Log found device to serial for debugging */
-    log_serial("PCI: vendor=");
-    log_hex_serial(vendor_id);
-    log_serial(" device=");
-    log_hex_serial(dev.device_id);
-    log_serial(" class=");
-    log_hex_serial(dev.class_code);
-    log_serial("\n");
+    /* Log found device for debugging */
+    pr_debug("vendor=0x%x device=0x%x class=0x%x\n", vendor_id, dev.device_id, dev.class_code);
 
     /* Add the valid device to our system-wide list */
     if (pci_device_count < 32) {
@@ -148,14 +144,14 @@ static void pci_check_device(uint8_t bus, uint8_t device) {
  * Iterates through all possible bus/device combinations and populates an internal table.
  */
 void init_pci() {
-    terminal_writestring("PCI: Scanning bus...\n");
+    pr_info("Scanning bus...\n");
     /* Scan all buses and slots defined in config.h */
     for (uint16_t bus = 0; bus < PCI_MAX_BUS; bus++) {
         for (uint8_t device = 0; device < PCI_MAX_DEVICE; device++) {
             pci_check_device((uint8_t)bus, device);
         }
     }
-    terminal_writestring("PCI: Scan complete.\n");
+    pr_info("Scan complete.\n");
 }
 
 /**

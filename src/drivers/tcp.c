@@ -2,28 +2,11 @@
  * @file tcp.c
  * @brief TCP/IP — single-connection client stack.
  *
- * Purpose: Minimal TCP client for outbound connections (HTTP GET).
- *          Implements a blocking synchronous API (tcp_connect, tcp_send,
- *          tcp_close) with timer-based retransmission.
- *
- * Design:
- *   - Single connection only (multiple sequential connections OK).
- *   - State machine: CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT_1 →
- *                    FIN_WAIT_2 → TIME_WAIT → CLOSED
- *   - The ISR path (handle_tcp) updates connection state and copies
- *     received data into the RX buffer.
- *   - The shell-context API busy-waits, polling the NIC via
- *     rtl8139_poll_rx(), until the desired state transition completes.
- *
- * Thread-safety: cli/sti guards on shared state (seq/ack nums, state).
- *                Single-core means no true concurrency — the guards
- *                prevent the ISR from seeing torn writes.
- *
- * Dependencies: net.h (build_ether_header, build_ip_header, checksum,
- *               resolve_mac, OUR_IP, net_send_ether, GATEWAY_IP),
- *               rtl8139.h (rtl8139_poll_rx), panic.h (format_hex).
+ * ISR path updates state / RX buffer; shell API blocks polling the NIC.
+ * Single core, cli/sti guards on shared state.
  */
-
+#define pr_fmt(fmt) "[TCP] " fmt
+#include "kernel/printk.h"
 #include "tcp.h"
 #include "net.h"
 #include "rtl8139.h"
@@ -33,15 +16,11 @@
 #include "timer.h"
 #include <string.h>
 
-/* Forward: int_to_string for serial/terminal output */
 extern void int_to_string(int n, char* str);
 
-/* ----------------------------------------------------------------- */
-/*  Connection State (static — single connection)                    */
-/* ----------------------------------------------------------------- */
+/* Connection state — single connection */
 
 static volatile int     tcp_state        = TCP_CLOSED;
-static uint32_t         local_ip         = 0;
 static uint32_t         remote_ip        = 0;
 static uint16_t         remote_port      = 0;
 static uint16_t         local_port       = 0;
@@ -54,35 +33,23 @@ static uint32_t         peer_acked_to    = 0;   /* Peer has acked up to here */
 /* Last-unacked segment for retransmission */
 static uint8_t          tx_buf[TCP_TX_BUF_SIZE];
 static uint32_t         tx_len           = 0;
-static uint32_t         tx_marker        = 0;   /* Index where unsent data begins */
-static uint32_t         tx_retry_marker  = 0;   /* Where retransmit from (seq) */
 
 /* Receive ring buffer */
 static uint8_t          rx_buf[TCP_RX_BUF_SIZE];
 static volatile uint32_t rx_len           = 0;
-static uint32_t         rx_bytes_consumed = 0;   /* Bytes already read by app */
 
 /* Source MAC of the remote end (for sending replies) */
 static uint8_t          peer_mac[6];
 
-/* Connection timeout tracking */
-static uint32_t         last_send_tick  = 0;
 static int              retry_count     = 0;
 
 /* Ephemeral port counter */
 static uint16_t         next_ephemeral  = 40000;
 
-/* ----------------------------------------------------------------- */
-/*  Local helpers                                                    */
-/* ----------------------------------------------------------------- */
+/* Local helpers */
 
-/*
- * tcp_checksum - Compute TCP checksum with pseudo-header.
- *
- * Same pattern as udp_checksum in net.c — prepend the 12-byte
- * pseudo-header (RFC 793) and checksum the combined block.
- * Returns 0 if the result is 0 (which RFC says to send as 0xFFFF).
- */
+/* TCP checksum — pseudo-header (RFC 793) then segment,
+ * same algorithm as udp_checksum in net.c */
 static uint16_t tcp_checksum(uint32_t src, uint32_t dst,
                               const uint16_t* seg, uint32_t seg_len)
 {
@@ -106,17 +73,8 @@ static uint16_t tcp_checksum(uint32_t src, uint32_t dst,
 }
 
 /*
- * send_tcp_segment - Build and transmit a raw TCP segment.
- *
- * Constructs Ethernet + IP + TCP headers, possibly with payload,
- * computes checksums, and sends via net_send_ether().
- *
- * @param flags    TCP flags (SYN, ACK, FIN, PSH, etc).
- * @param seq      Sequence number.
- * @param ack      Acknowledgment number.
- * @param payload  Optional payload data (NULL if none).
- * @param pay_len  Length of payload (0 if none).
- * @return         0 on success, -1 on MAC resolution failure.
+ * send_tcp_segment - Build Ethernet+IP+TCP segment and transmit.
+ * @return 0 on success, -1 if destination MAC cannot be resolved.
  */
 static int send_tcp_segment(uint8_t flags, uint32_t seq, uint32_t ack,
                              const uint8_t* payload, uint32_t pay_len)
@@ -133,9 +91,14 @@ static int send_tcp_segment(uint8_t flags, uint32_t seq, uint32_t ack,
             rtl8139_poll_rx();
             if (resolve_mac(remote_ip, dst_mac) == 0)
                 goto mac_ok;
-            sleep(10);
+            /* hlt: safe because rtl8139_poll_rx restores IF on exit,
+             * so after it returns IF reflects the caller's context
+             * (shell: IF=1 → timer ISR fires → ~10 ms granularity).
+             * This avoids sleep()'s unconditional sti, which would
+             * break if this code were ever called from an ISR. */
+            __asm__ volatile("hlt");
         }
-        log_serial("TCP: MAC resolution failed\n");
+        pr_debug("MAC resolution failed\n");
         return -1;
     }
 mac_ok:
@@ -160,14 +123,15 @@ mac_ok:
     uint32_t data_offset = tcp_hdr_len + opts_len;
     uint32_t tcp_seg_len = data_offset + pay_len;
 
-    /* Use a local buffer for packet construction (send_buf is static in net.c) */
-    uint8_t pkt_buf[PACKET_BUF_SIZE];
+    /* Static TX buffer avoids 2048 bytes on kernel stack.
+     * Single-core with cli/sti guards and non-re-entrant ISR means
+     * shell and ISR paths don't overlap; tcp_checksum's static scratch
+     * buffer is independently protected with cli/sti below. */
+    static uint8_t pkt_buf[PACKET_BUF_SIZE];
     uint8_t* p = pkt_buf;
 
     p = build_ether_header(p, dst_mac, our_mac, ETHERTYPE_IP);
     p = build_ip_header(p, IP_PROTO_TCP, OUR_IP, remote_ip, tcp_seg_len);
-
-    /* TCP header */
 
     /* TCP header */
     tcp_header_t* tcp = (tcp_header_t*)p;
@@ -188,47 +152,34 @@ mac_ok:
         p += opts_len;
     }
 
-    /* Payload */
     if (payload && pay_len > 0) {
         memcpy(p, payload, pay_len);
         p += pay_len;
     }
 
-    /* Compute TCP checksum (includes pseudo-header) */
+    /* tcp_checksum uses a static scratch buffer shared between ISR and
+     * shell contexts — protect with cli/sti (same pattern as udp_checksum). */
+    uint32_t _csum_ef;
+    __asm__ volatile("pushf; pop %0" : "=r"(_csum_ef));
+    __asm__ volatile("cli");
     tcp->checksum = tcp_checksum(OUR_IP, remote_ip,
                                   (const uint16_t*)tcp, tcp_seg_len);
+    if (_csum_ef & 0x200)
+        __asm__ volatile("sti");
 
     uint32_t total = sizeof(eth_header_t) + IP_HEADER_LEN + tcp_seg_len;
     net_send_ether(pkt_buf, total);
 
-    log_serial("TCP: sent flags=0x");
-    log_hex_serial(flags);
-    log_serial(" seq=0x");
-    log_hex_serial(seq);
-    log_serial(" ack=0x");
-    log_hex_serial(ack);
-    log_serial(" len=");
-    log_hex_serial(pay_len);
-    log_serial("\n");
+    pr_debug("sent flags=0x%x seq=0x%x ack=0x%x len=%u\n",
+             flags, seq, ack, pay_len);
 
     return 0;
 }
 
-/* ----------------------------------------------------------------- */
-/*  ISR path: called from handle_ip() when IP_PROTO_TCP              */
-/* ----------------------------------------------------------------- */
+/* ISR path */
 
 /*
- * handle_tcp - Process an incoming TCP segment.
- *
- * Called from the ISR context via net_process_packet → handle_ip.
- * Validates the segment against our connection tuple and updates
- * the state machine / RX buffer accordingly.
- *
- * @param data    Pointer to the IP header (entire datagram).
- * @param len     Total datagram length.
- * @param ip_hdr  IP header length in bytes.
- * @param src_mac Source MAC from the Ethernet header.
+ * handle_tcp - Validate segment against connection tuple, update state/RX buf.
  */
 void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
                 const uint8_t* src_mac)
@@ -236,9 +187,8 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     ip_header_t* ip  = (ip_header_t*)data;
     uint32_t ip_tot  = ntohs(ip->total_len);
 
-    if (len < ip_hdr + sizeof(tcp_header_t))
-        return;
-    if (ip_tot < ip_hdr + sizeof(tcp_header_t))
+    if (len < ip_hdr + sizeof(tcp_header_t) ||
+        ip_tot < ip_hdr + sizeof(tcp_header_t))
         return;
 
     tcp_header_t* seg = (tcp_header_t*)(data + ip_hdr);
@@ -259,15 +209,8 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     uint32_t seg_seq = ntohl(seg->seq_num);
     uint32_t seg_ack = ntohl(seg->ack_num);
 
-    log_serial("TCP_RX: flags=0x");
-    log_hex_serial(seg->flags);
-    log_serial(" seq=0x");
-    log_hex_serial(seg_seq);
-    log_serial(" ack=0x");
-    log_hex_serial(seg_ack);
-    log_serial(" pay_len=");
-    log_hex_serial(tcp_payload_len);
-    log_serial("\n");
+    pr_debug("RX: flags=0x%x seq=0x%x ack=0x%x pay_len=%u\n",
+             seg->flags, seg_seq, seg_ack, tcp_payload_len);
 
     /* ---- Handle SYN+ACK (reply to our SYN) ---- */
     if (seg->flags & TCP_SYN && seg->flags & TCP_ACK) {
@@ -285,7 +228,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
             tcp_state = TCP_ESTABLISHED;
             __asm__ volatile("sti");
 
-            log_serial("TCP: connection established\n");
+            pr_debug("connection established\n");
         }
         return;
     }
@@ -302,7 +245,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
             __asm__ volatile("cli");
             tcp_state = TCP_FIN_WAIT_2;
             __asm__ volatile("sti");
-            log_serial("TCP: state -> FIN_WAIT_2\n");
+            pr_debug("state -> FIN_WAIT_2\n");
         }
 
         /* LAST_ACK: peer ACKed our FIN → CLOSED */
@@ -310,7 +253,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
             __asm__ volatile("cli");
             tcp_state = TCP_CLOSED;
             __asm__ volatile("sti");
-            log_serial("TCP: state -> CLOSED\n");
+            pr_debug("state -> CLOSED\n");
         }
     }
 
@@ -333,15 +276,10 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 
             /* Send ACK for received data */
             send_tcp_segment(TCP_ACK, my_seq, my_ack, NULL, 0);
-            log_serial("TCP: received ");
-            log_hex_serial(tcp_payload_len);
-            log_serial(" bytes of data\n");
+            pr_debug("received %u bytes of data\n", tcp_payload_len);
         } else {
-            log_serial("TCP: out-of-order data (got seq=");
-            log_hex_serial(seg_seq);
-            log_serial(" expected seq=");
-            log_hex_serial(my_ack);
-            log_serial("), sending dup ACK\n");
+            pr_debug("out-of-order data (got seq=0x%x expected seq=0x%x), sending dup ACK\n",
+                     seg_seq, my_ack);
             /* Send duplicate ACK */
             send_tcp_segment(TCP_ACK, my_seq, my_ack, NULL, 0);
         }
@@ -351,7 +289,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     if (seg->flags & TCP_FIN) {
         my_ack = seg_seq + tcp_payload_len + 1;
 
-        log_serial("TCP: received FIN\n");
+        pr_debug("received FIN\n");
 
         if (tcp_state == TCP_ESTABLISHED) {
             /* Peer is closing first (passive close) */
@@ -370,16 +308,14 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 
     /* ---- Handle RST ---- */
     if (seg->flags & TCP_RST) {
-        log_serial("TCP: received RST\n");
+        pr_debug("received RST\n");
         __asm__ volatile("cli");
         tcp_state = TCP_CLOSED;
         __asm__ volatile("sti");
     }
 }
 
-/* ----------------------------------------------------------------- */
-/*  Public API — blocking (shell context)                            */
-/* ----------------------------------------------------------------- */
+/* Public API — blocking (shell context) */
 
 /*
  * tcp_connect - Open a TCP connection to a remote host.
@@ -390,7 +326,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port)
 {
     if (tcp_state != TCP_CLOSED) {
-        log_serial("TCP: already connected, aborting first\n");
+        pr_debug("already connected, aborting first\n");
         tcp_abort();
         /* Wait for state to settle */
         int timeout = 200;
@@ -423,13 +359,8 @@ int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port)
     tcp_state = TCP_SYN_SENT;
     __asm__ volatile("sti");
 
-    log_serial("TCP: connecting to ");
-    log_hex_serial(dest_ip);
-    log_serial(" port ");
-    log_hex_serial(dest_port);
-    log_serial(" (local port ");
-    log_hex_serial(local_port);
-    log_serial(")\n");
+    pr_debug("connecting to 0x%x port %u (local port %u)\n",
+             dest_ip, dest_port, local_port);
 
     int ret = send_tcp_segment(TCP_SYN, my_seq, 0, NULL, 0);
     if (ret < 0) {
@@ -446,11 +377,11 @@ int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port)
         while (get_ticks() < deadline) {
             rtl8139_poll_rx();
             if (tcp_state == TCP_ESTABLISHED) {
-                log_serial("TCP: connected successfully\n");
+                pr_debug("connected successfully\n");
                 return 0;
             }
             if (tcp_state == TCP_CLOSED) {
-                log_serial("TCP: connection rejected (RST)\n");
+                pr_debug("connection rejected (RST)\n");
                 return -1;
             }
             /* Small sleep to avoid busy-spinning too hard */
@@ -459,19 +390,13 @@ int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port)
 
         /* Retransmit SYN on timeout */
         attempts++;
-        log_serial("TCP: SYN timeout, retransmitting (attempt ");
-        char buf[4];
-        int_to_string(attempts, buf);
-        log_serial(buf);
-        log_serial("/");
-        int_to_string(TCP_MAX_RETRIES, buf);
-        log_serial(buf);
-        log_serial(")\n");
+        pr_debug("SYN timeout, retransmitting (attempt %d/%d)\n",
+                 attempts, TCP_MAX_RETRIES);
 
         send_tcp_segment(TCP_SYN, my_seq - 1, 0, NULL, 0);
     }
 
-    log_serial("TCP: connection timeout\n");
+    pr_debug("connection timeout\n");
     tcp_state = TCP_CLOSED;
     return -1;
 }
@@ -485,7 +410,7 @@ int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port)
 int tcp_send(const uint8_t* data, uint32_t len)
 {
     if (tcp_state != TCP_ESTABLISHED) {
-        log_serial("TCP: not connected\n");
+        pr_debug("not connected\n");
         return -1;
     }
 
@@ -503,13 +428,11 @@ int tcp_send(const uint8_t* data, uint32_t len)
         /* Copy to TX buffer for retransmission */
         memcpy(tx_buf, data + sent, chunk);
         tx_len       = chunk;
-        tx_marker    = sent;
-        tx_retry_marker = seg_seq;
 
         int ret = send_tcp_segment(TCP_PSH | TCP_ACK, seg_seq, my_ack,
                                     data + sent, chunk);
         if (ret < 0) {
-            log_serial("TCP: send failed (MAC)\n");
+            pr_debug("send failed (MAC)\n");
             return (int)sent > 0 ? (int)sent : -1;
         }
 
@@ -527,7 +450,7 @@ int tcp_send(const uint8_t* data, uint32_t len)
                     goto chunk_acked;
                 }
                 if (tcp_state == TCP_CLOSED) {
-                    log_serial("TCP: connection lost during send\n");
+                    pr_debug("connection lost during send\n");
                     return (int)sent > 0 ? (int)sent : -1;
                 }
                 __asm__ volatile("pause");
@@ -535,16 +458,12 @@ int tcp_send(const uint8_t* data, uint32_t len)
 
             /* Retransmit */
             attempts++;
-            log_serial("TCP: data timeout, retransmitting\n");
+            pr_debug("data timeout, retransmitting\n");
             send_tcp_segment(TCP_PSH | TCP_ACK, seg_seq, my_ack,
                               tx_buf, tx_len);
         }
 
-        log_serial("TCP: send timeout after ");
-        char buf[4];
-        int_to_string(attempts, buf);
-        log_serial(buf);
-        log_serial(" retries\n");
+        pr_debug("send timeout after %d retries\n", attempts);
         return (int)sent;
 
     chunk_acked:
@@ -596,29 +515,27 @@ void tcp_close(void)
 {
     /* Already in LAST_ACK (server closed first) — just wait for CLOSED */
     if (tcp_state == TCP_LAST_ACK) {
-        log_serial("TCP: waiting for LAST_ACK -> CLOSED\n");
+        pr_debug("waiting for LAST_ACK -> CLOSED\n");
         int timeout = 200; /* ~2 seconds */
         while (timeout-- > 0) {
             rtl8139_poll_rx();
             if (tcp_state == TCP_CLOSED) {
-                log_serial("TCP: connection closed\n");
+                pr_debug("connection closed\n");
                 return;
             }
             sleep(10);
         }
-        log_serial("TCP: LAST_ACK timeout, aborting\n");
+        pr_debug("LAST_ACK timeout, aborting\n");
         tcp_abort();
         return;
     }
 
     if (tcp_state != TCP_ESTABLISHED && tcp_state != TCP_CLOSE_WAIT) {
-        log_serial("TCP: nothing to close (state=");
-        log_hex_serial(tcp_state);
-        log_serial(")\n");
+        pr_debug("nothing to close (state=0x%x)\n", tcp_state);
         return;
     }
 
-    log_serial("TCP: closing connection\n");
+    pr_debug("closing connection\n");
 
     /* Send FIN */
     __asm__ volatile("cli");
@@ -641,7 +558,7 @@ void tcp_close(void)
                 __asm__ volatile("cli");
                 tcp_state = TCP_CLOSED;
                 __asm__ volatile("sti");
-                log_serial("TCP: connection closed\n");
+                pr_debug("connection closed\n");
                 return;
             }
             if (tcp_state == TCP_FIN_WAIT_2)
@@ -658,25 +575,25 @@ void tcp_close(void)
                     __asm__ volatile("cli");
                     tcp_state = TCP_CLOSED;
                     __asm__ volatile("sti");
-                    log_serial("TCP: connection closed\n");
+                    pr_debug("connection closed\n");
                     return;
                 }
                 __asm__ volatile("pause");
             }
             /* Timeout waiting for peer's FIN — force close */
-            log_serial("TCP: peer FIN timeout, aborting\n");
+            pr_debug("peer FIN timeout, aborting\n");
             tcp_abort();
             return;
         }
 
         /* Retransmit FIN */
         attempts++;
-        log_serial("TCP: FIN timeout, retransmitting\n");
+        pr_debug("FIN timeout, retransmitting\n");
         send_tcp_segment(TCP_FIN | TCP_ACK, my_seq - 1, my_ack, NULL, 0);
     }
 
     /* Force close after all retries exhausted */
-    log_serial("TCP: close timeout, aborting\n");
+    pr_debug("close timeout, aborting\n");
     tcp_abort();
 }
 
@@ -688,7 +605,7 @@ void tcp_abort(void)
     if (tcp_state == TCP_CLOSED)
         return;
 
-    log_serial("TCP: sending RST\n");
+    pr_debug("sending RST\n");
     send_tcp_segment(TCP_RST | TCP_ACK, my_seq, my_ack, NULL, 0);
 
     __asm__ volatile("cli");
@@ -696,37 +613,16 @@ void tcp_abort(void)
     __asm__ volatile("sti");
 }
 
-/* ----------------------------------------------------------------- */
-/*  State accessors                                                  */
-/* ----------------------------------------------------------------- */
+/* State accessors */
 
-int tcp_get_state(void)
-{
-    return (int)tcp_state;
-}
+int tcp_get_state(void)     { return (int)tcp_state; }
+uint32_t tcp_get_remote_ip(void)   { return remote_ip; }
+uint16_t tcp_get_remote_port(void) { return remote_port; }
 
-uint32_t tcp_get_remote_ip(void)
-{
-    return remote_ip;
-}
-
-uint16_t tcp_get_remote_port(void)
-{
-    return remote_port;
-}
-
-/* ----------------------------------------------------------------- */
-/*  HTTP GET Convenience                                             */
-/* ----------------------------------------------------------------- */
+/* HTTP GET convenience */
 
 /*
- * http_get - Perform an HTTP GET request and print the response.
- *
- * 1. DNS-resolve the hostname.
- * 2. TCP-connect to host:port.
- * 3. Send "GET /path HTTP/1.0\r\nHost: host\r\nConnection: close\r\n\r\n".
- * 4. Read response data and print it to the terminal.
- * 5. TCP-close.
+ * http_get - DNS-resolve hostname, TCP connect, send HTTP/1.0 GET, read response, close.
  */
 int http_get(const char* hostname, uint16_t port, const char* path)
 {
@@ -734,24 +630,21 @@ int http_get(const char* hostname, uint16_t port, const char* path)
     char ip_buf[16];
 
     /* ---- Resolve hostname ---- */
-    log_serial("HTTP: resolving ");
-    log_serial(hostname);
-    log_serial("\n");
+    pr_debug("resolving %s\n", hostname);
     terminal_writestring("Resolving ");
     terminal_writestring(hostname);
     terminal_writestring("...\n");
 
     uint32_t ip = net_dns_resolve(hostname);
     if (ip == 0) {
-        log_serial("HTTP: DNS resolution failed\n");
+        pr_debug("DNS resolution failed\n");
         terminal_writestring("DNS resolution failed\n");
         return -1;
     }
 
     /* Print resolved IP */
-    log_serial("HTTP: resolved to ");
+    pr_debug("resolved to 0x%x\n", ip);
     uint8_t* ipb = (uint8_t*)&ip;
-    log_hex_serial(ip);
     int_to_string(ipb[0], ip_buf); terminal_writestring(ip_buf); terminal_putchar('.');
     int_to_string(ipb[1], ip_buf); terminal_writestring(ip_buf); terminal_putchar('.');
     int_to_string(ipb[2], ip_buf); terminal_writestring(ip_buf); terminal_putchar('.');
@@ -759,7 +652,7 @@ int http_get(const char* hostname, uint16_t port, const char* path)
     terminal_writestring("\n");
 
     /* ---- TCP Connect ---- */
-    log_serial("HTTP: connecting...\n");
+    pr_debug("connecting...\n");
     terminal_writestring("Connecting...\n");
     if (tcp_connect(ip, port, 0) < 0) {
         terminal_writestring("Connection failed\n");
@@ -798,12 +691,10 @@ int http_get(const char* hostname, uint16_t port, const char* path)
     req[req_len++] = '\r';
     req[req_len++] = '\n';
 
-    log_serial("HTTP: request len=");
-    log_hex_serial(req_len);
-    log_serial("\n");
+    pr_debug("request len=%u\n", req_len);
 
     /* ---- Send request ---- */
-    log_serial("HTTP: sending request...\n");
+    pr_debug("sending request...\n");
     terminal_writestring("Sending request...\n");
     int sent = tcp_send((const uint8_t*)req, req_len);
     if (sent < 0) {
@@ -832,9 +723,7 @@ int http_get(const char* hostname, uint16_t port, const char* path)
                 if (n > 0) {
                     resp_buf[n] = '\0';
                     terminal_writestring(resp_buf);
-                    log_serial("HTTP: received ");
-                    log_hex_serial(n);
-                    log_serial(" bytes\n");
+                    pr_debug("received %d bytes\n", n);
                     total_read += n;
                     timeout = 500;  /* Reset timeout on received data */
                 }
@@ -849,11 +738,9 @@ int http_get(const char* hostname, uint16_t port, const char* path)
 
         if (total_read == 0) {
             terminal_writestring("(no response data)\n");
-            log_serial("HTTP: no response received\n");
+            pr_debug("no response received\n");
         } else {
-            log_serial("HTTP: total received ");
-            log_hex_serial(total_read);
-            log_serial(" bytes\n");
+            pr_debug("total received %d bytes\n", total_read);
         }
     }
 
