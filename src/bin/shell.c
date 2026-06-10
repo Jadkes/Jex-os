@@ -26,6 +26,7 @@
 #include "klog.h"
 #include "timer.h"
 #include "task.h"
+#include "dump.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -62,7 +63,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "dns", "arp", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", NULL
 };
 
 /**
@@ -343,16 +344,36 @@ static uint32_t resolve_or_parse(const char* str) {
 }
 
 /**
- * @brief Ping an IP address or hostname.
+ * @brief Ping an IP address or hostname with optional -v for verbose timing.
+ *
+ * When -v is given, shows ARP lookup results, tick-level timing,
+ * and round-trip time in milliseconds. Otherwise prints a concise
+ * normal ping output ("64 bytes from ...").
  */
 void ping_command(const char* arg) {
     if (!rtl8139_is_initialized()) {
         terminal_writestring("Network not initialized\n");
         return;
     }
-    uint32_t ip = resolve_or_parse(arg);
+
+    int verbose = 0;
+    const char* addr = arg;
+
+    /* Check for -v flag */
+    if (strncmp(arg, "-v ", 3) == 0) {
+        verbose = 1;
+        addr = arg + 3;
+        while (*addr == ' ') addr++;
+    }
+
+    if (*addr == '\0') {
+        terminal_writestring("Usage: ping [-v] <ip|hostname>\n");
+        return;
+    }
+
+    uint32_t ip = resolve_or_parse(addr);
     if (ip == 0) {
-        terminal_writestring("Usage: ping <ip|hostname>   e.g. ping 10.0.2.2\n");
+        terminal_writestring("Could not resolve address\n");
         return;
     }
 
@@ -360,22 +381,183 @@ void ping_command(const char* arg) {
     int ret = net_ping(ip);
 
     if (ret < 0) {
-        terminal_writestring("  ARP request sent (waiting for address resolution).\n");
-        terminal_writestring("  Try again in a moment.\n");
-        return;
-    }
-
-    /* Busy-wait for a reply (interrupt handler will set ping_responses) */
-    for (int i = 0; i < 500000; i++) {
-        if (net_get_ping_responses() > before) {
-            terminal_writestring("  64 bytes from ");
-            terminal_writestring(arg);
-            terminal_writestring(": icmp_seq=1\n");
-            return;
+        if (verbose) {
+            terminal_writestring("  ARP lookup: MISS -- sending broadcast request\n");
+            terminal_writestring("  Waiting for ARP resolution...\n");
+        }
+        {
+            int arp_timeout = 1000;   /* 10 seconds */
+            uint32_t start = get_ticks();
+            while (arp_timeout-- > 0) {
+                if (arp_lookup(ip) >= 0) break;
+                sleep(10);
+            }
+            uint32_t elapsed = get_ticks() - start;
+            if (arp_lookup(ip) >= 0) {
+                if (verbose) {
+                    char buf[16];
+                    terminal_writestring("  ARP reply received in ");
+                    int_to_string((int)elapsed, buf);
+                    terminal_writestring(buf);
+                    terminal_writestring(" ticks\n");
+                }
+                ret = net_ping(ip);
+            } else {
+                terminal_writestring("  ARP resolution timed out\n");
+                return;
+            }
+        }
+    } else {
+        if (verbose) {
+            terminal_writestring("  ARP lookup: cached\n");
         }
     }
 
+    if (ret < 0) {
+        terminal_writestring("  Ping send failed\n");
+        return;
+    }
+
+    if (verbose) {
+        terminal_writestring("  ICMP echo request sent\n");
+    }
+
+    /* Wait for reply */
+    uint32_t start = get_ticks();
+    for (int i = 0; i < 500000; i++) {
+        if (net_get_ping_responses() > before) {
+            uint32_t rtt = get_ticks() - start;
+            if (verbose) {
+                char buf[16];
+                terminal_writestring("  ICMP echo reply received after ");
+                int_to_string((int)rtt, buf);
+                terminal_writestring(buf);
+                terminal_writestring(" ticks\n");
+                terminal_writestring("  Round-trip time: ");
+                int_to_string((int)rtt, buf);
+                terminal_writestring(buf);
+                terminal_writestring(" ticks (");
+                int_to_string((int)(rtt * 10), buf);
+                terminal_writestring(buf);
+                terminal_writestring(" ms)\n");
+            } else {
+                terminal_writestring("  64 bytes from ");
+                terminal_writestring(addr);
+                terminal_writestring(": icmp_seq=1\n");
+            }
+            return;
+        }
+        __asm__ volatile("pause");
+    }
+
     terminal_writestring("  No reply received (timeout)\n");
+}
+
+/**
+ * @brief Loopback — send multiple pings and show timing statistics.
+ *
+ * Sends N pings to a target IP, measures min/avg/max RTT,
+ * and shows aggregate packet loss.
+ */
+static void loopback_command(const char* arg) {
+    if (!rtl8139_is_initialized()) {
+        terminal_writestring("Network not initialized\n");
+        return;
+    }
+
+    int count = 3;
+    uint32_t ip = 0;
+
+    /* First argument may be count, then IP */
+    const char* p = arg;
+    if (*p >= '1' && *p <= '9') {
+        count = atoi(p);
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+    }
+
+    ip = resolve_or_parse(p);
+    if (ip == 0) {
+        /* Fall back to QEMU default gateway */
+        ip = htonl((10 << 24) | (0 << 16) | (2 << 8) | 2); /* 10.0.2.2 */
+    }
+
+    if (count < 1) count = 1;
+    if (count > 10) count = 10;
+
+    char buf[16];
+    terminal_writestring("loopback: pinging ");
+    uint8_t* bytes = (uint8_t*)&ip;
+    int_to_string(bytes[0], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(bytes[1], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(bytes[2], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(bytes[3], buf); terminal_writestring(buf);
+    terminal_writestring(" ");
+    int_to_string(count, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" times\n");
+
+    int success = 0;
+    uint32_t min_rtt = 0xFFFFFFFF;
+    uint32_t max_rtt = 0;
+    uint32_t total_rtt = 0;
+
+    for (int i = 0; i < count; i++) {
+        int before = net_get_ping_responses();
+        int ret = net_ping(ip);
+
+        if (ret < 0) {
+            int timeout = 1000;
+            while (timeout-- > 0) {
+                if (arp_lookup(ip) >= 0) break;
+                sleep(10);
+            }
+            if (arp_lookup(ip) >= 0)
+                ret = net_ping(ip);
+        }
+
+        if (ret >= 0) {
+            uint32_t start = get_ticks();
+            for (int j = 0; j < 500000; j++) {
+                if (net_get_ping_responses() > before) {
+                    uint32_t rtt = get_ticks() - start;
+                    success++;
+                    if (rtt < min_rtt) min_rtt = rtt;
+                    if (rtt > max_rtt) max_rtt = rtt;
+                    total_rtt += rtt;
+                    break;
+                }
+                __asm__ volatile("pause");
+            }
+        }
+
+        sleep(100);  /* 100ms delay between pings */
+    }
+
+    terminal_writestring("\n--- loopback statistics ---\n");
+    int_to_string(success, buf);
+    terminal_writestring(buf);
+    terminal_writestring("/");
+    int_to_string(count, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" packets received\n");
+
+    if (success > 0) {
+        uint32_t avg = total_rtt / success;
+        terminal_writestring("  min/avg/max = ");
+        int_to_string((int)(min_rtt * 10), buf); terminal_writestring(buf);
+        terminal_writestring("/");
+        int_to_string((int)(avg * 10), buf); terminal_writestring(buf);
+        terminal_writestring("/");
+        int_to_string((int)(max_rtt * 10), buf); terminal_writestring(buf);
+        terminal_writestring(" ms\n");
+    }
+
+    int loss = ((count - success) * 100) / count;
+    terminal_writestring("  packet loss: ");
+    int_to_string(loss, buf);
+    terminal_writestring(buf);
+    terminal_writestring("%\n");
 }
 
 /**
@@ -477,11 +659,13 @@ void help_command() {
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  net       - Show network status\n");
     terminal_writestring("  netlog <mode> - Set network verbosity (all/arp/ip/off)\n");
-    terminal_writestring("  ping <ip> - Ping an IP address or hostname\n");
+    terminal_writestring("  ping [-v] <ip|host> - Ping with optional verbose timing\n");
+    terminal_writestring("  loopback [n] [ip] - Multi-ping timing statistics\n");
     terminal_writestring("  tcpdump [n] [arp|ip] - Capture and hexdump packets\n");
     terminal_writestring("  dns <host>- Resolve a hostname to IP\n");
     terminal_writestring("  arp       - Show ARP cache\n");
     terminal_writestring("  nicregs   - Dump RTL8139 NIC registers\n");
+    terminal_writestring("  dump <addr> [n] - Hexdump memory at address\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
@@ -490,6 +674,7 @@ void help_command() {
     terminal_writestring("  ps        - List processes\n");
     terminal_writestring("  kill <pid>- Terminate a process\n");
     terminal_writestring("  regs      - Show CPU registers\n");
+    terminal_writestring("  bt/backtrace - Show stack trace from current EBP\n");
 }
 
 /**
@@ -655,6 +840,11 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "net") == 0) net_command();
     else if (strncmp(shell_buffer, "ping ", 5) == 0) ping_command(shell_buffer + 5);
+    else if (strncmp(shell_buffer, "loopback", 8) == 0) {
+        char* loop_arg = shell_buffer + 8;
+        while (*loop_arg == ' ') loop_arg++;
+        loopback_command(loop_arg);
+    }
     else if (strncmp(shell_buffer, "dns ", 4) == 0) dns_command(shell_buffer + 4);
     /* ---- Debug Commands ---- */
     else if (strcmp(shell_buffer, "uptime") == 0) {
@@ -756,6 +946,53 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "nicregs") == 0) {
         rtl8139_dump_regs();
+    }
+    else if (strncmp(shell_buffer, "dump ", 5) == 0) {
+        char* args = shell_buffer + 5;
+        uint32_t addr = 0;
+        uint32_t count = 128;
+        int parsed_addr = 0;
+
+        if (args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) {
+            args += 2;
+            while (*args) {
+                uint8_t nibble;
+                if (*args >= '0' && *args <= '9') nibble = *args - '0';
+                else if (*args >= 'a' && *args <= 'f') nibble = *args - 'a' + 10;
+                else if (*args >= 'A' && *args <= 'F') nibble = *args - 'A' + 10;
+                else break;
+                addr = (addr << 4) | nibble;
+                args++;
+                parsed_addr = 1;
+            }
+            while (*args == ' ') args++;
+            if (*args >= '1' && *args <= '9')
+                count = (uint32_t)atoi(args);
+        }
+
+        if (!parsed_addr) {
+            terminal_writestring("Usage: dump <addr> [bytes]\n");
+            terminal_writestring("  e.g. dump 0xC0100000 256\n");
+        } else {
+            hexdump(addr, count);
+        }
+    }
+    else if (strcmp(shell_buffer, "bt") == 0 || strcmp(shell_buffer, "backtrace") == 0) {
+        uint32_t ebp, eip_frames[16];
+        __asm__ volatile("mov %%ebp, %0" : "=r"(ebp));
+        int depth = unwind_stack(ebp, eip_frames, 16);
+        if (depth == 0) {
+            terminal_writestring("No stack trace available\n");
+        } else {
+            char buf[12];
+            terminal_writestring("Stack Trace:\n");
+            for (int i = 0; i < depth; i++) {
+                terminal_writestring("  ");
+                format_hex(eip_frames[i], buf);
+                terminal_writestring(buf);
+                terminal_writestring("\n");
+            }
+        }
     }
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
