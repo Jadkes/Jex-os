@@ -7,6 +7,7 @@
  * sensitive areas (like the kernel itself).
  */
 
+#include "kernel/printk.h"
 #include "pmm.h"
 #include <stddef.h>
 

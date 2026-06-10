@@ -9,6 +9,8 @@
  * DONE:   ARP timeout increased for QEMU slirp compatibility.
  */
 
+#define pr_fmt(fmt) "[NET] " fmt
+#include "kernel/printk.h"
 #include "net.h"
 #include "rtl8139.h"
 #include "terminal.h"
@@ -50,19 +52,13 @@ static volatile int verbose_net_flags = NETLOG_OFF;
 
 static void netlog_write(const char* prefix, const char* msg)
 {
-    log_serial("[NET] ");
-    log_serial(prefix);
-    log_serial(": ");
-    log_serial(msg);
-    log_serial("\n");
+    pr_info("%s: %s\n", prefix, msg);
 }
 
 void netlog_set_flags(int flags)
 {
     verbose_net_flags = flags;
-    log_serial("NETLOG: verbose logging ");
-    log_serial(flags ? "enabled" : "disabled");
-    log_serial("\n");
+    pr_info("verbose logging %s\n", flags ? "enabled" : "disabled");
 }
 
 /* Checksum & helpers */
@@ -221,9 +217,7 @@ void arp_dump(void)
             }
             terminal_writestring("  (valid)\n");
 
-            /* Serial log */
-            log_serial("ARP: ");
-            log_hex_serial(arp_cache[i].ip);
+            pr_debug("cache entry: IP=0x%x\n", arp_cache[i].ip);
         } else {
             terminal_writestring("  -- slot ");
             int_to_string(i, buf);
@@ -296,15 +290,15 @@ void net_arp_resolve(uint32_t ip)
 
     if (is_local_ip(ip)) {
         arp_target = ip;
-        log_serial("ROUTE: local IP, ARPing for target\n");
+        pr_debug("local IP, ARPing for target\n");
     } else {
         arp_target = GATEWAY_IP;
-        log_serial("ROUTE: remote IP, ARPing for gateway 10.0.2.2\n");
+        pr_debug("remote IP, ARPing for gateway\n");
     }
 
     /* If already cached, skip */
     if (arp_find(arp_target) >= 0) {
-        log_serial("ROUTE: target already in ARP cache\n");
+        pr_debug("target already in ARP cache\n");
         return;
     }
 
@@ -328,7 +322,7 @@ void net_arp_resolve(uint32_t ip)
     ap->tpa   = arp_target;
 
     net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
-    log_serial("ROUTE: ARP request sent\n");
+    pr_debug("ARP request sent\n");
 }
 
 /*
@@ -341,7 +335,7 @@ void route_print(void)
     uint8_t* gwb = (uint8_t*)&gw;
 
     terminal_writestring("Routing table:\n");
-    log_serial("ROUTE: table\n");
+    pr_debug("displaying routing table\n");
 
     /* Local network */
     terminal_writestring("  Destination     Netmask          Gateway          Iface\n");
@@ -355,8 +349,7 @@ void route_print(void)
     int_to_string(gwb[3], buf); terminal_writestring(buf);
     terminal_writestring("         rtl8139\n");
 
-    /* Also log to serial */
-    log_serial("ROUTE: table shown\n");
+    pr_debug("routing table shown\n");
 }
 
 /*
@@ -421,10 +414,8 @@ uint8_t* build_ip_header(uint8_t* buf, uint8_t protocol,
  */
 void net_send_ether(void* data, uint32_t len)
 {
-    if (verbose_net_flags) {
-        log_serial("TX: len=");
-        log_hex_serial(len);
-    }
+    if (verbose_net_flags)
+        pr_debug("TX: len=0x%x\n", len);
 
     rtl8139_send_packet(data, len);
 }
@@ -449,9 +440,7 @@ static void handle_arp(uint8_t* data, uint32_t len)
 
     arp_packet_t* ap = (arp_packet_t*)data;
     uint16_t oper = ntohs(ap->oper);
-    log_serial("ARP: received oper=");
-    log_hex_serial(oper);
-    log_serial("\n");
+    pr_debug("received oper=0x%x\n", oper);
 
     /* Validate hardware / protocol types */
     if (ntohs(ap->htype) != ARP_HTYPE_ETHER ||
@@ -488,7 +477,7 @@ static void handle_arp(uint8_t* data, uint32_t len)
     reply->tpa   = ap->spa;
 
     net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
-    log_serial("ARP: replied\n");
+    pr_debug("ARP reply sent\n");
 }
 
 
@@ -582,11 +571,8 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
 
     uint16_t dest_port = ntohs(udp->dest_port);
 
-    if (dest_port == DNS_CLIENT_PORT) {
-        log_serial("UDP: received on DNS port len=");
-        log_hex_serial(udp_len);
-        log_serial("\n");
-    }
+    if (dest_port == DNS_CLIENT_PORT)
+        pr_debug("received on DNS port len=%u\n", udp_len);
 
     /* Verify checksum if non-zero (zero means sender omitted it) */
     if (udp->checksum != 0) {
@@ -598,13 +584,9 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
             (const uint16_t*)udp, udp_len);
         udp->checksum = saved_csum;
         if (saved_csum != computed) {
-            if (dest_port == DNS_CLIENT_PORT) {
-                log_serial("UDP: DNS csum saved=");
-                log_hex_serial(saved_csum);
-                log_serial(" computed=");
-                log_hex_serial(computed);
-                log_serial(" DROPPED\n");
-            }
+            if (dest_port == DNS_CLIENT_PORT)
+                pr_debug("DNS csum mismatch (saved=0x%x computed=0x%x) DROPPED\n",
+                         saved_csum, computed);
             return;
         }
     }
@@ -615,7 +597,7 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == dest_port) {
             if (dest_port == DNS_CLIENT_PORT)
-                log_serial("UDP: DNS handler found\n");
+                pr_debug("DNS handler found\n");
             /* Snapshot handler + userdata before re-enabling interrupts,
              * since the handler may itself register/unregister. */
             udp_callback_t h = udp_handlers[i].handler;
@@ -824,7 +806,7 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
         ricmp->checksum = checksum((uint16_t*)ricmp, icmp_len);
 
         net_send_ether(buf, total);
-        log_serial("ICMP: echo reply sent\n");
+        pr_debug("echo reply sent\n");
     }
 
     /* ---- Echo Reply: count it ---- */
@@ -833,7 +815,7 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
             netlog_write("ICMP", "echo reply received");
         }
         ping_responses++;
-        log_serial("ICMP: echo reply received\n");
+        pr_debug("echo reply received\n");
     }
 }
 
@@ -852,7 +834,7 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
 {
     /* Must at least fit the IP header */
     if (len < IP_HEADER_LEN) {
-        log_serial("IP: too short\n");
+        pr_debug("too short\n");
         return;
     }
 
@@ -860,7 +842,7 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     uint32_t     ip_hdr = (ip->ver_ihl & 0x0F) * 4;
 
     if (len < ip_hdr) {
-        log_serial("IP: hdr longer than data\n");
+        pr_debug("header longer than data\n");
         return;
     }
 
@@ -869,7 +851,7 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     if (checksum((uint16_t*)ip, ip_hdr) != 0) {
         if (verbose_net_flags & NETLOG_IP)
             netlog_write("IP", "bad checksum");
-        log_serial("IP: bad checksum\n");
+        pr_debug("bad IP checksum\n");
         return;
     }
 
@@ -919,11 +901,7 @@ void net_process_packet(uint8_t* data, uint32_t len)
     /* tcpdump capture hook */
     tcpdump_capture(data, len, type);
 
-    log_serial("NET: rx type=0x");
-    log_hex_serial(type);
-    log_serial(" len=");
-    log_hex_serial(len);
-    log_serial("\n");
+    pr_debug("rx type=0x%x len=0x%x\n", type, len);
 
     switch (type) {
     case ETHERTYPE_ARP:
@@ -933,7 +911,7 @@ void net_process_packet(uint8_t* data, uint32_t len)
         handle_ip(payload, plen, eth->src);
         break;
     default:
-        log_serial("NET: unknown type, dropping\n");
+        pr_debug("unknown ethertype, dropping\n");
         break;
     }
 }
@@ -990,10 +968,8 @@ int net_ping(uint32_t dest_ip)
     icmp->checksum = checksum((uint16_t*)icmp, ip_data_len);
 
     net_send_ether(buf, sizeof(eth_header_t) + IP_HEADER_LEN + ip_data_len);
-    log_serial("PING: sent echo request");
-    if (!is_local_ip(dest_ip))
-        log_serial(" (via gateway)");
-    log_serial("\n");
+    pr_debug("sent echo request%s\n",
+             is_local_ip(dest_ip) ? "" : " (via gateway)");
     return 0;
 }
 
@@ -1155,26 +1131,20 @@ static void dns_handler(uint32_t src_ip, uint16_t src_port,
     (void)src_port;
     (void)userdata;
 
-    log_serial("DNS: handler called, len=");
-    log_hex_serial(len);
-    log_serial("\n");
+    pr_debug("handler called, len=%u\n", len);
 
     /* Need at least the 12-byte DNS header to validate */
     if (len < 12) {
-        log_serial("DNS: too short\n");
+        pr_debug("response too short\n");
         return;
     }
 
     uint16_t rx_xid = read_be16(data);
     if (rx_xid != dns_xid) {
-        log_serial("DNS: XID mismatch, rx=");
-        log_hex_serial(rx_xid);
-        log_serial(" expected=");
-        log_hex_serial(dns_xid);
-        log_serial("\n");
+        pr_debug("XID mismatch (rx=0x%x expected=0x%x)\n", rx_xid, dns_xid);
         return;
     }
-    log_serial("DNS: XID match, storing response\n");
+    pr_debug("XID match, storing response\n");
 
     /* Stash the raw response and signal the waiter */
     if (len > sizeof(dns_reply))
@@ -1341,11 +1311,8 @@ uint32_t net_dns_resolve(const char* hostname)
     memcpy(query + qlen + 2, &dns_qclass, 2);
     qlen += 4;
 
-    if (verbose_net_flags & NETLOG_UDP) {
-        log_serial("DNS: query len=");
-        log_hex_serial(qlen);
-        log_serial("\n");
-    }
+    if (verbose_net_flags & NETLOG_UDP)
+        pr_debug("query len=%u\n", qlen);
 
     /*
      * Retry loop: try the full ARP + DNS sequence up to 3 times.
@@ -1355,11 +1322,8 @@ uint32_t net_dns_resolve(const char* hostname)
     uint32_t result = 0;
 
     for (int attempt = 0; attempt < 3 && result == 0; attempt++) {
-        if (attempt > 0) {
-            log_serial("DNS: retry ");
-            log_hex_serial(attempt + 1);
-            log_serial("\n");
-        }
+        if (attempt > 0)
+            pr_debug("retry %d\n", attempt + 1);
 
         dns_pending   = 0;
         dns_reply_len = 0;
@@ -1368,7 +1332,7 @@ uint32_t net_dns_resolve(const char* hostname)
         int ret = net_send_udp(DNS_SERVER, DNS_PORT, DNS_CLIENT_PORT, query, qlen);
 
         if (ret < 0) {
-            log_serial("DNS: ARP not cached, sending request\n");
+            pr_debug("ARP not cached, sending request\n");
             uint8_t our_mac[6];
             rtl8139_get_mac(our_mac);
             uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
@@ -1388,7 +1352,7 @@ uint32_t net_dns_resolve(const char* hostname)
             memset(ap->tha, 0, ETH_ALEN);
             ap->tpa   = DNS_SERVER;
 
-            log_serial("DNS: sending ARP request for DNS server\n");
+            pr_debug("sending ARP request for DNS server\n");
             net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
 
             /* Wait up to ~30 seconds for ARP reply, polling RX path actively */
@@ -1401,12 +1365,12 @@ uint32_t net_dns_resolve(const char* hostname)
             }
 
             if (arp_find(DNS_SERVER) < 0) {
-                log_serial("DNS: ARP resolution timed out after 30s\n");
+                pr_debug("ARP resolution timed out after 30s\n");
                 net_udp_unregister(DNS_CLIENT_PORT);
                 continue;  /* Try next retry */
             }
 
-            log_serial("DNS: ARP resolved, sending query\n");
+            pr_debug("ARP resolved, sending query\n");
 
             dns_pending   = 0;
             dns_reply_len = 0;
@@ -1414,41 +1378,38 @@ uint32_t net_dns_resolve(const char* hostname)
         }
 
         if (ret < 0) {
-            log_serial("DNS: UDP send failed even after ARP\n");
+            pr_debug("UDP send failed even after ARP\n");
             net_udp_unregister(DNS_CLIENT_PORT);
             continue;
         }
 
-        log_serial("DNS: query sent, waiting for response\n");
+        pr_debug("query sent, waiting for response\n");
 
         /* Wait up to ~20 seconds for the DNS response, polling RX */
         {
             int timeout = 2000;
             while (timeout-- > 0 && !dns_pending) {
                 int npackets = rtl8139_poll_rx();
-                if (npackets > 0) {
-                    log_serial("DNS: polled ");
-                    log_hex_serial(npackets);
-                    log_serial(" packets during wait\n");
-                }
+                if (npackets > 0)
+                    pr_debug("polled %d packets during wait\n", npackets);
                 sleep(10);
             }
         }
 
         if (dns_pending) {
             __asm__ volatile("" ::: "memory");
-            log_serial("DNS: response received\n");
+            pr_debug("response received\n");
             result = dns_parse_response((const uint8_t*)dns_reply, dns_reply_len);
             net_udp_unregister(DNS_CLIENT_PORT);
             break;  /* Success — exit retry loop */
         }
 
-        log_serial("DNS: response timed out\n");
+        pr_debug("response timed out\n");
         net_udp_unregister(DNS_CLIENT_PORT);
     }
 
     if (result == 0)
-        log_serial("DNS: all retries exhausted\n");
+        pr_debug("all retries exhausted\n");
 
     return result;
 }
@@ -1468,5 +1429,5 @@ void net_init(void)
     dns_pending = 0;
     dns_xid = 0;
 
-    log_serial("NET: Stack initialized\n");
+    pr_info("Stack initialized\n");
 }
