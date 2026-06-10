@@ -11,6 +11,7 @@
 #include "string.h"
 #include "gdt.h"
 #include "panic.h"
+#include "kernel/backtrace.h"
 
 extern page_directory_t kernel_directory;
 extern uint32_t read_eip();
