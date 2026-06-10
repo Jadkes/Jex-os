@@ -15,7 +15,11 @@
 #include "serial.h"
 #include "timer.h"
 #include "kheap.h"
+#include "panic.h"
 #include <string.h>
+
+/* Forward: int_to_string is defined in shell.c */
+extern void int_to_string(int n, char* str);
 
 /* ----------------------------------------------------------------- */
 /*  TX Buffers                                                       */
@@ -46,6 +50,29 @@ static arp_entry_t arp_cache[ARP_CACHE_SIZE];
 static volatile int ping_responses = 0;
 static uint16_t ip_id              = 0;    /* Monotonic IP identification */
 static uint16_t icmp_seq           = 0;
+
+/* ----------------------------------------------------------------- */
+/*  Verbose Logging                                                  */
+/* ----------------------------------------------------------------- */
+
+static volatile int verbose_net_flags = NETLOG_OFF;
+
+static void netlog_write(const char* prefix, const char* msg)
+{
+    log_serial("[NET] ");
+    log_serial(prefix);
+    log_serial(": ");
+    log_serial(msg);
+    log_serial("\n");
+}
+
+void netlog_set_flags(int flags)
+{
+    verbose_net_flags = flags;
+    log_serial("NETLOG: verbose logging ");
+    log_serial(flags ? "enabled" : "disabled");
+    log_serial("\n");
+}
 
 /* ----------------------------------------------------------------- */
 /*  Checksum & Helpers                                               */
@@ -167,7 +194,6 @@ int arp_lookup(uint32_t ip)
  */
 void arp_dump(void)
 {
-    extern void int_to_string(int n, char* str);
     char buf[16];
     int count = 0;
 
@@ -299,6 +325,10 @@ static void handle_arp(uint8_t* data, uint32_t len)
 {
     if (len < sizeof(arp_packet_t))
         return;
+
+    if (verbose_net_flags & NETLOG_ARP) {
+        netlog_write("ARP", "received packet");
+    }
 
     arp_packet_t* ap = (arp_packet_t*)data;
     uint16_t oper = ntohs(ap->oper);
@@ -617,6 +647,10 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     if (ip_tot < ip_hdr + sizeof(icmp_header_t))
         return;
 
+    if (verbose_net_flags & NETLOG_ICMP) {
+        netlog_write("ICMP", "packet received");
+    }
+
     icmp_header_t* icmp = (icmp_header_t*)(data + ip_hdr);
     uint32_t icmp_len   = ip_tot - ip_hdr;
 
@@ -657,6 +691,9 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
 
     /* ---- Echo Reply: count it ---- */
     if (icmp->type == ICMP_ECHO_REPLY && ip->dest_ip == OUR_IP) {
+        if (verbose_net_flags & NETLOG_ICMP) {
+            netlog_write("ICMP", "echo reply received");
+        }
         ping_responses++;
         log_serial("ICMP: echo reply received\n");
     }
@@ -692,6 +729,8 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     /* Verify header checksum: checksum() over the full header
      * (including the stored checksum field) returns 0 if valid. */
     if (checksum((uint16_t*)ip, ip_hdr) != 0) {
+        if (verbose_net_flags & NETLOG_IP)
+            netlog_write("IP", "bad checksum");
         log_serial("IP: bad checksum\n");
         return;
     }
@@ -715,6 +754,9 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     }
 }
 
+/* Forward declaration for static capture function used here */
+static void tcpdump_capture(uint8_t* data, uint32_t len, uint16_t ethertype);
+
 /*
  * net_process_packet - Demux an incoming Ethernet frame.
  *
@@ -733,6 +775,9 @@ void net_process_packet(uint8_t* data, uint32_t len)
     uint16_t      type = ntohs(eth->type);
     uint8_t*      payload = data + sizeof(eth_header_t);
     uint32_t      plen    = len - sizeof(eth_header_t);
+
+    /* tcpdump capture hook */
+    tcpdump_capture(data, len, type);
 
     switch (type) {
     case ETHERTYPE_ARP:
@@ -830,6 +875,136 @@ static volatile int dns_pending   = 0;
 static uint16_t     dns_xid       = 0;
 static uint8_t      dns_reply[512];
 static uint16_t     dns_reply_len = 0;
+
+/* ----------------------------------------------------------------- */
+/*  tcpdump-lite Capture                                             */
+/* ----------------------------------------------------------------- */
+
+#define TCPDUMP_MAX 20
+#define PACKET_MAX  2048
+
+static volatile int tcpdump_active = 0;
+static volatile int tcpdump_captured = 0;
+static volatile int tcpdump_max = 5;
+static volatile uint32_t tcpdump_cap_type = 0;
+static uint32_t tcpdump_start_tick = 0;
+static struct {
+    uint32_t tick;
+    uint16_t len;
+    uint8_t  data[PACKET_MAX];
+} tcpdump_buf[TCPDUMP_MAX];
+
+int tcpdump_start(int count, int filter)
+{
+    if (count < 1 || count > TCPDUMP_MAX)
+        return -1;
+    tcpdump_captured = 0;
+    tcpdump_max = count;
+    tcpdump_cap_type = filter;
+    tcpdump_start_tick = get_ticks();
+    __asm__ volatile("" ::: "memory");
+    tcpdump_active = 1;
+    return 0;
+}
+
+int tcpdump_is_done(void)
+{
+    return !tcpdump_active;
+}
+
+int tcpdump_get_count(void)
+{
+    return tcpdump_captured;
+}
+
+static void tcpdump_capture(uint8_t* data, uint32_t len, uint16_t ethertype)
+{
+    if (!tcpdump_active)
+        return;
+    if (tcpdump_captured >= tcpdump_max)
+        return;
+
+    if (tcpdump_cap_type != 0) {
+        int type_match = 0;
+        if (tcpdump_cap_type == 1 && ethertype == ETHERTYPE_ARP) type_match = 1;
+        if (tcpdump_cap_type == 2 && ethertype == ETHERTYPE_IP)  type_match = 1;
+        if (!type_match) return;
+    }
+
+    int idx = tcpdump_captured;
+    tcpdump_buf[idx].tick = get_ticks();
+    if (len > PACKET_MAX)
+        len = PACKET_MAX;
+    tcpdump_buf[idx].len = (uint16_t)len;
+    memcpy(tcpdump_buf[idx].data, data, len);
+    __asm__ volatile("" ::: "memory");
+    tcpdump_captured++;
+
+    if (tcpdump_captured >= tcpdump_max)
+        tcpdump_active = 0;
+}
+
+void tcpdump_print(void)
+{
+    char buf[16];
+    terminal_writestring("=== tcpdump: ");
+    int_to_string(tcpdump_captured, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" packets captured ===\n");
+
+    const char* hex = "0123456789ABCDEF";
+
+    for (int i = 0; i < tcpdump_captured; i++) {
+        uint32_t delta = tcpdump_buf[i].tick - tcpdump_start_tick;
+        uint32_t secs = delta / 100;
+        uint32_t msec = (delta % 100) * 10;
+        uint16_t len = tcpdump_buf[i].len;
+        uint8_t* d = tcpdump_buf[i].data;
+
+        terminal_writestring("--- Packet ");
+        int_to_string(i + 1, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" (");
+        int_to_string((int)len, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" bytes) [");
+        int_to_string((int)secs, buf);
+        terminal_writestring(buf);
+        terminal_putchar('.');
+        if (msec < 100) terminal_putchar('0');
+        if (msec < 10) terminal_putchar('0');
+        int_to_string((int)msec, buf);
+        terminal_writestring(buf);
+        terminal_writestring("s] ---\n");
+
+        for (uint32_t j = 0; j < len; j += 16) {
+            format_hex((uint32_t)(uint32_t)&d[j], buf);
+            terminal_writestring(buf);
+            terminal_putchar(' ');
+
+            for (uint32_t k = 0; k < 16; k++) {
+                if (j + k < len) {
+                    terminal_putchar(hex[(d[j + k] >> 4) & 0xF]);
+                    terminal_putchar(hex[d[j + k] & 0xF]);
+                } else {
+                    terminal_writestring("  ");
+                }
+                terminal_putchar(' ');
+                if (k == 7) terminal_putchar(' ');
+            }
+            terminal_putchar(' ');
+
+            for (uint32_t k = 0; k < 16 && j + k < len; k++) {
+                uint8_t c = d[j + k];
+                terminal_putchar((c >= 32 && c < 127) ? (char)c : '.');
+            }
+            terminal_writestring("\n");
+        }
+    }
+
+    tcpdump_captured = 0;
+    tcpdump_active = 0;
+}
 
 /*
  * dns_handler - UDP callback for DNS responses.

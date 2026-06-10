@@ -19,6 +19,9 @@
 #include "net.h"
 #include <string.h>
 
+/* Forward declarations for functions used from other compilation units */
+extern void int_to_string(int n, char* str);
+
 /* I/O Base Address and IRQ assigned by PCI */
 static uint32_t io_base;
 static uint8_t irq_num;
@@ -285,4 +288,65 @@ uint32_t rtl8139_get_rx_count(void)
 uint32_t rtl8139_get_tx_count(void)
 {
     return tx_packet_count;
+}
+
+/**
+ * Dump RTL8139 register state to the terminal for debugging.
+ *
+ * Reads live register values from the hardware and prints them alongside
+ * driver-tracking state (MAC, packet counts, link status).
+ */
+void rtl8139_dump_regs(void)
+{
+    char buf[12];
+
+    terminal_writestring("RTL8139 Registers:\n");
+
+    /* MAC (IDR0-5) */
+    terminal_writestring("  MAC: ");
+    for (int i = 0; i < 6; i++) {
+        print_hex_byte(mac_addr[i]);
+        if (i < 5) terminal_putchar(':');
+    }
+    terminal_writestring("\n");
+
+    /* Command Register */
+    uint8_t cr = inb(io_base + RTL8139_REG_CR);
+    terminal_writestring("  CR:  0x");
+    print_hex_byte(cr);
+    terminal_writestring("  (");
+    if (cr & RTL8139_CR_TE) terminal_writestring("TE ");
+    if (cr & RTL8139_CR_RE) terminal_writestring("RE ");
+    if (cr & RTL8139_CR_RST) terminal_writestring("RST ");
+    terminal_writestring(")\n");
+
+    /* ISR */
+    uint16_t isr = inw(io_base + RTL8139_REG_ISR);
+    terminal_writestring("  ISR: 0x");
+    print_hex_byte((isr >> 8) & 0xFF);
+    print_hex_byte(isr & 0xFF);
+    terminal_writestring("\n");
+
+    /* IMR */
+    uint16_t imr = inw(io_base + RTL8139_REG_IMR);
+    terminal_writestring("  IMR: 0x");
+    print_hex_byte((imr >> 8) & 0xFF);
+    print_hex_byte(imr & 0xFF);
+    terminal_writestring("\n");
+
+    /* RX/TX counts */
+    terminal_writestring("  TX:  ");
+    int_to_string((int)tx_packet_count, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" packets\n");
+    terminal_writestring("  RX:  ");
+    int_to_string((int)rx_packet_count, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" packets\n");
+
+    /* Link status from Media Status register at 0x58 */
+    uint16_t media = inw(io_base + 0x58);
+    terminal_writestring("  Link: ");
+    terminal_writestring((media & 0x0001) ? "UP" : "DOWN");
+    terminal_writestring("\n");
 }
