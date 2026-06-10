@@ -27,6 +27,14 @@ typedef struct {
 } file_descriptor_t;
 
 /**
+ * @brief Register a filesystem at a mount point path.
+ * @param path  The mount point prefix (e.g., "/sys/").
+ * @param fstype Filesystem driver name (e.g., "devtmpfs").
+ * @return 0 on success, -1 on failure.
+ */
+int fs_mount(const char* path, const char* fstype);
+
+/**
  * @brief Initialize the Virtual File System and register sub-filesystems.
  */
 void fs_init();
