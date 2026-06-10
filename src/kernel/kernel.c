@@ -40,6 +40,7 @@
 #include "net.h"
 #include "kernel/kallsyms.h"
 #include "init.h"
+#include "devtmpfs.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -76,6 +77,10 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      *   device_initcalls: drivers, filesystems, higher-level subsystems
      */
     initcalls_run();
+
+    /* Initialize devtmpfs and mount /sys */
+    devtmpfs_init();
+    fs_mount("/sys", "devtmpfs");
 
     /* 13. System Timer — needs explicit frequency parameter, kept manual */
     pr_info("Init Timer...\n");
