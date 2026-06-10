@@ -3,6 +3,8 @@
 *.bin
 *.a
 tools/mkjexfs
+tools/gen_kallsyms
+src/kernel/kallsyms_data.S
 iso/
 
 # Disk images

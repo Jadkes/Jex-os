@@ -38,8 +38,14 @@ ISO = jexos.iso
 
 all: $(KERNEL) $(IMG)
 
-$(KERNEL): $(OBJECTS)
+$(KERNEL): $(OBJECTS) tools/gen_kallsyms
 	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+	nm -n -S $@ | grep -E ' T ' | sort | ./tools/gen_kallsyms > src/kernel/kallsyms_data.S
+	$(AS) $(ASFLAGS) src/kernel/kallsyms_data.S -o src/kernel/kallsyms_data.o
+	$(LD) $(LDFLAGS) -o $@ $(OBJECTS) src/kernel/kallsyms_data.o
+
+tools/gen_kallsyms: tools/gen_kallsyms.c
+	$(CC) -o $@ $<
 
 $(IMG): tools/mkjexfs.c
 	gcc tools/mkjexfs.c -o tools/mkjexfs
@@ -76,7 +82,7 @@ run: $(KERNEL) $(IMG)
 	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0 -device rtl8139,netdev=net0
 
 clean:
-	rm -f $(OBJECTS) $(KERNEL) $(IMG) $(ISO) tools/mkjexfs
+	rm -f $(OBJECTS) $(KERNEL) $(IMG) $(ISO) tools/mkjexfs tools/gen_kallsyms src/kernel/kallsyms_data.S src/kernel/kallsyms_data.o
 	rm -rf iso/
 
 .PHONY: all run run-iso clean jexos.iso
