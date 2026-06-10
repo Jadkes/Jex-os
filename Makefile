@@ -24,6 +24,7 @@ SOURCES_C = $(wildcard src/kernel/*.c) \
             $(wildcard src/mm/*.c) \
             $(wildcard src/fs/*.c) \
             $(wildcard src/bin/*.c) \
+            $(wildcard src/debug/*.c) \
             $(filter-out src/lib/type.c, $(wildcard src/lib/*.c)) \
             $(wildcard src/tests/*.c)
 

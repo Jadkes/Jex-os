@@ -13,6 +13,7 @@
 #include "terminal.h"
 #include "serial.h"
 #include "panic.h"
+#include "debug/gdb_stub.h"
 #include <stddef.h>
 
 /* System call handler (int 0x80) */
@@ -73,25 +74,44 @@ early_init(isr_install);
 
 /**
  * @brief Main C handler for all ISRs.
- * 
+ *
+ * Now accepts a pointer so that handlers (e.g. GDB stub) can modify
+ * the register save area in the interrupt stack frame, and those
+ * changes are visible after iret.
+ *
  * Routes system calls to the syscall handler, page faults to the paging manager,
- * and halts the system on unhandled exceptions.
+ * debug/breakpoint events to the GDB stub, and halts on unhandled exceptions.
  */
-void isr_handler(registers_t regs)
+void isr_handler(registers_t *regs)
 {
     /* Handle System Call */
-    if (regs.int_no == 128) {
-        syscall_handler(&regs);
+    if (regs->int_no == 128) {
+        syscall_handler(regs);
         return;
     }
 
     /* Handle Page Fault */
-    if (regs.int_no == 14) {
-        page_fault_handler(regs);
+    if (regs->int_no == 14) {
+        page_fault_handler(*regs);
+        return;
+    }
+
+    /* Debug exception (int 1) — currently only handles single-step (TF flag) */
+    if (regs->int_no == 1) {
+        if (regs->eflags & 0x100) {
+            gdb_stub_handle_trace(regs);
+        }
+        /* Other debug events: ignore and return */
+        return;
+    }
+
+    /* Breakpoint (int 3) — route to GDB stub */
+    if (regs->int_no == 3) {
+        gdb_stub_handler(regs);
         return;
     }
 
     /* Delegate to the comprehensive panic handler (register dump, stack trace, recovery) */
-    panic_handler(&regs);
+    panic_handler(regs);
     for(;;) asm volatile ("hlt");   /* Safety net — panic_handler shouldn't return */
 }
