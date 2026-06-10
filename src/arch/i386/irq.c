@@ -90,6 +90,10 @@ void init_irq()
  */
 void irq_handler(registers_t regs)
 {
+    /* Notify printk that we are in ISR context (skip slow terminal PIO) */
+    extern volatile int in_isr;
+    in_isr = 1;
+
     /* Execute custom handler if one is registered */
     void (*handler)(registers_t*);
     handler = irq_routines[regs.int_no - 32];
@@ -104,4 +108,7 @@ void irq_handler(registers_t regs)
         outb(0xA0, 0x20); /* Slave PIC EOI */
     }
     outb(0x20, 0x20); /* Master PIC EOI */
+
+    /* Restore ISR context flag */
+    in_isr = 0;
 }
