@@ -31,6 +31,7 @@
 #include "dump.h"
 #include "test_suite.h"
 #include "tcp.h"
+#include "debug/ftrace.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -68,7 +69,7 @@ char shell_cwd[128] = "/home/user";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
 };
 
 /**
@@ -289,6 +290,30 @@ int atoi(const char* str) {
     int res = 0;
     for (int i = 0; str[i] != '\0'; ++i) { if (str[i] >= '0' && str[i] <= '9') res = res * 10 + str[i] - '0'; }
     return res;
+}
+
+/**
+ * @brief Handle the ftrace shell command.
+ * @param args Subcommand and arguments (start|stop|add <filter>|clear|dump)
+ */
+static void ftrace_command(char* args)
+{
+    if (!args || args[0] == '\0' || strcmp(args, "start") == 0) {
+        ftrace_enable();
+        terminal_writestring("ftrace started\n");
+    } else if (strcmp(args, "stop") == 0) {
+        ftrace_disable();
+        terminal_writestring("ftrace stopped\n");
+    } else if (strcmp(args, "clear") == 0) {
+        ftrace_clear_filters();
+        terminal_writestring("ftrace filters cleared\n");
+    } else if (strcmp(args, "dump") == 0) {
+        ftrace_dump();
+    } else if (strncmp(args, "add ", 4) == 0) {
+        ftrace_add_filter(args + 4);
+    } else {
+        terminal_writestring("usage: ftrace start|stop|add <filter>|clear|dump\n");
+    }
 }
 
 /**
@@ -703,6 +728,7 @@ void help_command() {
     terminal_writestring("  runtests   - Run kernel test suite\n");
     terminal_writestring("  heapcheck  - Show kernel heap statistics\n");
     terminal_writestring("  stackcheck - Show current stack pointer\n");
+    terminal_writestring("  ftrace <action> - Function tracer (start|stop|add <f>|clear|dump)\n");
 }
 
 /**
@@ -937,6 +963,11 @@ void execute_command() {
         terminal_writestring("\n");
         terminal_writestring("EFLAGS: "); format_hex(eflags, buf); terminal_writestring(buf);
         terminal_writestring("\n");
+    }
+    else if (strncmp(shell_buffer, "ftrace", 6) == 0) {
+        char* args = shell_buffer + 6;
+        while (*args == ' ') args++;
+        ftrace_command(args);
     }
     else if (strcmp(shell_buffer, "arp") == 0) {
         arp_dump();
