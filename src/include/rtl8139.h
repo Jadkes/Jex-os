@@ -99,4 +99,9 @@ uint32_t rtl8139_get_rx_count(void);
  */
 uint32_t rtl8139_get_tx_count(void);
 
+/**
+ * @brief Dump RTL8139 register state to the terminal for debugging.
+ */
+void rtl8139_dump_regs(void);
+
 #endif // RTL8139_H

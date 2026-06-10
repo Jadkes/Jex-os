@@ -227,10 +227,56 @@ void arp_dump(void);
 /*  Public API                                                       */
 /* ----------------------------------------------------------------- */
 
+/*
+ * Verbose logging flags for network debugging.
+ * Pass a bitwise-OR of these to netlog_set_flags().
+ */
+#define NETLOG_OFF  0
+#define NETLOG_ARP  (1 << 0)
+#define NETLOG_IP   (1 << 1)
+#define NETLOG_ICMP (1 << 2)
+#define NETLOG_UDP  (1 << 3)
+#define NETLOG_ALL  (NETLOG_ARP | NETLOG_IP | NETLOG_ICMP | NETLOG_UDP)
+
+void netlog_set_flags(int flags);
 void net_init(void);
 void net_process_packet(uint8_t* data, uint32_t len);
 int  net_ping(uint32_t dest_ip);
 int  net_get_ping_responses(void);
+
+/* ----------------------------------------------------------------- */
+/*  tcpdump-lite API                                                 */
+/* ----------------------------------------------------------------- */
+
+/*
+ * tcpdump_start - Begin raw packet capture.
+ *
+ * @param count   Max packets to capture (1..TCPDUMP_MAX).
+ * @param filter  0=all, 1=ARP only, 2=IP only.
+ * @return        0 on success, -1 on invalid count.
+ */
+int  tcpdump_start(int count, int filter);
+
+/*
+ * tcpdump_is_done - Check if capture has completed.
+ * @return  Non-zero if capture is still active, 0 if done.
+ */
+int  tcpdump_is_done(void);
+
+/*
+ * tcpdump_get_count - Number of packets captured so far.
+ * @return  Number of captured packets.
+ */
+int  tcpdump_get_count(void);
+
+/*
+ * tcpdump_print - Display captured packets as hexdump on terminal.
+ */
+void tcpdump_print(void);
+
+#define TCPDUMP_ALL  0
+#define TCPDUMP_ARP  1
+#define TCPDUMP_IP   2
 
 /* ----------------------------------------------------------------- */
 /*  DNS API                                                          */

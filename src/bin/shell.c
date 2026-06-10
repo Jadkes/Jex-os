@@ -62,7 +62,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "net", "ping", "dns", "arp", "reboot", "shutdown", "clear", "music", "hardbass", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "dns", "arp", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", NULL
 };
 
 /**
@@ -476,9 +476,12 @@ void help_command() {
     terminal_writestring("  ./<f>     - Execute file\n");
     terminal_writestring("  free      - Show memory usage\n");
     terminal_writestring("  net       - Show network status\n");
+    terminal_writestring("  netlog <mode> - Set network verbosity (all/arp/ip/off)\n");
     terminal_writestring("  ping <ip> - Ping an IP address or hostname\n");
+    terminal_writestring("  tcpdump [n] [arp|ip] - Capture and hexdump packets\n");
     terminal_writestring("  dns <host>- Resolve a hostname to IP\n");
     terminal_writestring("  arp       - Show ARP cache\n");
+    terminal_writestring("  nicregs   - Dump RTL8139 NIC registers\n");
     terminal_writestring("  reboot    - Restart JexOS\n");
     terminal_writestring("  shutdown  - Power off JexOS\n");
     terminal_writestring("  music     - Start Jexos Tune\n");
@@ -642,6 +645,14 @@ void execute_command() {
         terminal_writestring("  Used:  "); int_to_string(pmm_get_used_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
         terminal_writestring("  Free:  "); int_to_string(pmm_get_free_memory() / 1024, buf); terminal_writestring(buf); terminal_writestring(" KB\n");
     }
+    else if (strncmp(shell_buffer, "netlog ", 7) == 0) {
+        char* arg = shell_buffer + 7;
+        if (strcmp(arg, "all") == 0)  netlog_set_flags(NETLOG_ALL);
+        else if (strcmp(arg, "arp") == 0) netlog_set_flags(NETLOG_ARP);
+        else if (strcmp(arg, "ip") == 0)  netlog_set_flags(NETLOG_IP);
+        else if (strcmp(arg, "off") == 0) netlog_set_flags(NETLOG_OFF);
+        else terminal_writestring("Usage: netlog <all|arp|ip|off>\n");
+    }
     else if (strcmp(shell_buffer, "net") == 0) net_command();
     else if (strncmp(shell_buffer, "ping ", 5) == 0) ping_command(shell_buffer + 5);
     else if (strncmp(shell_buffer, "dns ", 4) == 0) dns_command(shell_buffer + 4);
@@ -711,6 +722,40 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "arp") == 0) {
         arp_dump();
+    }
+    else if (strncmp(shell_buffer, "tcpdump", 7) == 0) {
+        int count = 5;
+        int filter = TCPDUMP_ALL;
+        char* arg = shell_buffer + 7;
+        while (*arg == ' ') arg++;
+        if (*arg >= '1' && *arg <= '9') {
+            count = atoi(arg);
+            while (*arg && *arg != ' ') arg++;
+            while (*arg == ' ') arg++;
+        }
+        if (strcmp(arg, "arp") == 0) filter = TCPDUMP_ARP;
+        else if (strcmp(arg, "ip") == 0) filter = TCPDUMP_IP;
+
+        if (tcpdump_start(count, filter) == 0) {
+            terminal_writestring("Capturing ");
+            char buf[4];
+            int_to_string(count, buf);
+            terminal_writestring(buf);
+            terminal_writestring(" packets...\n");
+
+            int timeout = 500;
+            while (timeout-- > 0 && !tcpdump_is_done()) {
+                sleep(10);
+            }
+            if (tcpdump_get_count() == 0) {
+                terminal_writestring("No packets captured\n");
+            } else {
+                tcpdump_print();
+            }
+        }
+    }
+    else if (strcmp(shell_buffer, "nicregs") == 0) {
+        rtl8139_dump_regs();
     }
     else if (shell_buffer[0] != '\0') {
         terminal_writestring("Unknown: "); terminal_writestring(shell_buffer); terminal_writestring("\n");
