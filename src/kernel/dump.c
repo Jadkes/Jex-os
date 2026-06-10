@@ -10,6 +10,7 @@
 #include "dump.h"
 #include "terminal.h"
 #include "panic.h"
+#include "kernel/backtrace.h"
 #include <string.h>
 
 /* Forward: int_to_string is defined in shell.c */

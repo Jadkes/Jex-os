@@ -14,8 +14,6 @@
 
 void panic_handler(registers_t* regs);
 void panic_assert(const char* msg, const char* file, int line);
-void format_hex(uint32_t val, char* out);
-int unwind_stack(uint32_t ebp, uint32_t* eip_out, int max_frames);
 void decode_page_fault_err(uint32_t err_code, char* buf, int buf_len);
 
 /* ASSERT - kernel assertion macro.

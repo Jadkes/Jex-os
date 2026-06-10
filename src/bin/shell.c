@@ -23,6 +23,7 @@
 #include "net.h"
 #include "terminal.h"
 #include "panic.h"
+#include "kernel/backtrace.h"
 #include "klog.h"
 #include "timer.h"
 #include "task.h"
@@ -531,7 +532,9 @@ static void loopback_command(const char* arg) {
 
         if (ret >= 0) {
             uint32_t start = get_ticks();
-            for (int j = 0; j < 500000; j++) {
+            int ping_timeout = 500;  /* ~5 seconds at 100Hz */
+            while (ping_timeout-- > 0) {
+                rtl8139_poll_rx();
                 if (net_get_ping_responses() > before) {
                     uint32_t rtt = get_ticks() - start;
                     success++;
@@ -540,7 +543,7 @@ static void loopback_command(const char* arg) {
                     total_rtt += rtt;
                     break;
                 }
-                __asm__ volatile("pause");
+                sleep(10);
             }
         }
 
@@ -1061,9 +1064,9 @@ void execute_command() {
         terminal_writestring("\n");
     }
     else if (strcmp(shell_buffer, "bt") == 0 || strcmp(shell_buffer, "backtrace") == 0) {
-        uint32_t ebp, eip_frames[16];
+        uint32_t ebp, eip_frames[MAX_BACKTRACE_DEPTH];
         __asm__ volatile("mov %%ebp, %0" : "=r"(ebp));
-        int depth = unwind_stack(ebp, eip_frames, 16);
+        int depth = unwind_stack(ebp, eip_frames, MAX_BACKTRACE_DEPTH);
         if (depth == 0) {
             terminal_writestring("No stack trace available\n");
         } else {

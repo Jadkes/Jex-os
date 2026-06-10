@@ -1,3 +1,14 @@
+/**
+ * @file backtrace.c
+ * @brief Stack unwinder and backtrace display.
+ *
+ * Walks the EBP-linked call chain to produce human-readable stack traces
+ * for debugging kernel panics and shell diagnostics.
+ *
+ * Thread-safety: Uses inline asm to read the current EBP, which is
+ * per-CPU. Not safe to call concurrently on the same CPU.
+ */
+
 #include "kernel/backtrace.h"
 #include "terminal.h"
 #include "serial.h"
@@ -32,8 +43,8 @@ static void dump_stack_common(int to_terminal)
 {
     uint32_t ebp;
     __asm__ volatile("mov %%ebp, %0" : "=r"(ebp));
-    uint32_t eip_frames[16];
-    int depth = unwind_stack(ebp, eip_frames, 16);
+    uint32_t eip_frames[MAX_BACKTRACE_DEPTH];
+    int depth = unwind_stack(ebp, eip_frames, MAX_BACKTRACE_DEPTH);
     char buf[12];
 
     for (int i = 0; i < depth; i++) {

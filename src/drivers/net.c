@@ -16,22 +16,17 @@
 #include "timer.h"
 #include "kheap.h"
 #include "panic.h"
+#include "kernel/backtrace.h"
 #include <string.h>
 
 /* Forward: int_to_string is defined in shell.c */
 extern void int_to_string(int n, char* str);
 
-/* ----------------------------------------------------------------- */
-/*  TX Buffers                                                       */
-/* ----------------------------------------------------------------- */
+/* TX Buffers */
 
-/* shell / user-initiated transmits */
-static uint8_t send_buf[PACKET_BUF_SIZE];
-
-/* IRQ reply path (ARP reply, ICMP echo reply).
- * FIXME: double-DMA race when ISR processes >1 packet needing a reply. */
-static uint8_t reply_buf[PACKET_BUF_SIZE];
-/* DONE: ARP timeout increased to 10s for QEMU slirp compatibility */
+static uint8_t send_buf[PACKET_BUF_SIZE];       /* shell-initiated transmits */
+static uint8_t reply_buf[PACKET_BUF_SIZE];      /* IRQ reply path */
+/* FIXME: reply_buf double-DMA race when ISR processes >1 packet needing a reply */
 
 #define ARP_CACHE_SIZE 4
 
@@ -43,17 +38,13 @@ typedef struct {
 
 static arp_entry_t arp_cache[ARP_CACHE_SIZE];
 
-/* ----------------------------------------------------------------- */
-/*  State                                                            */
-/* ----------------------------------------------------------------- */
+/* State */
 
 static volatile int ping_responses = 0;
-static uint16_t ip_id              = 0;    /* Monotonic IP identification */
+static uint16_t ip_id              = 0;
 static uint16_t icmp_seq           = 0;
 
-/* ----------------------------------------------------------------- */
-/*  Verbose Logging                                                  */
-/* ----------------------------------------------------------------- */
+/* Verbose logging */
 
 static volatile int verbose_net_flags = NETLOG_OFF;
 
@@ -74,9 +65,7 @@ void netlog_set_flags(int flags)
     log_serial("\n");
 }
 
-/* ----------------------------------------------------------------- */
-/*  Checksum & Helpers                                               */
-/* ----------------------------------------------------------------- */
+/* Checksum & helpers */
 
 /*
  * checksum - 16-bit one's complement checksum over len bytes.
@@ -247,9 +236,7 @@ void arp_dump(void)
     __asm__ volatile("sti");
 }
 
-/* ----------------------------------------------------------------- */
-/*  Routing                                                          */
-/* ----------------------------------------------------------------- */
+/* Routing */
 
 /*
  * is_local_ip - Check if an IP is on the local subnet.
@@ -434,16 +421,10 @@ uint8_t* build_ip_header(uint8_t* buf, uint8_t protocol,
  */
 void net_send_ether(void* data, uint32_t len)
 {
-    /* Hex dump outbound packets for debugging */
-    log_serial("TX: len=");
-    log_hex_serial(len);
-    log_serial(" hex:");
-    for (uint32_t i = 0; i < len && i < 128; i++) {
-        if (i % 20 == 0) log_serial("\n  ");
-        log_hex_serial(((uint8_t*)data)[i]);
-        log_serial(" ");
+    if (verbose_net_flags) {
+        log_serial("TX: len=");
+        log_hex_serial(len);
     }
-    log_serial("\n");
 
     rtl8139_send_packet(data, len);
 }
@@ -551,8 +532,12 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dest_ip,
 
     /*
      * We need to checksum pseudo-header + UDP datagram as one contiguous
-     * block.  Static buffer avoids a 1500-byte stack allocation in
-     * ISR context.  Single-core, non-preemptible — no re-entrancy.
+     * block.  Static buffer avoids a 1500-byte stack allocation.
+     *
+     * PROTECTION: net_send_udp (shell context) wraps the call with cli/sti
+     * so the ISR cannot clobber this buffer.  handle_udp (ISR context)
+     * calls this with interrupts already disabled by the CPU's interrupt
+     * gate, so cli is already in effect.  Either way, the buffer is safe.
      */
     static uint8_t buf[sizeof(udp_pseudo_t) + 1500];
     uint32_t total = sizeof(udp_pseudo_t) + udp_len;
@@ -757,9 +742,16 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
 
     /* Compute UDP checksum with pseudo-header (RFC 768).
      * The checksum field was zeroed above before payload copy.
-     * RFC 768: if computed checksum is 0, send 0xFFFF (0 means "no checksum"). */
+     * RFC 768: if computed checksum is 0, send 0xFFFF (0 means "no checksum").
+     *
+     * WHY cli/sti: udp_checksum uses a static scratch buffer shared with
+     * handle_udp (ISR context).  Disabling interrupts prevents the ISR
+     * from clobbering the buffer mid-computation.  The window is < 100 us
+     * so the risk of missed Rx is negligible. */
     {
+        __asm__ volatile("cli");
         uint16_t csum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
+        __asm__ volatile("sti");
         udp->checksum = (csum == 0) ? 0xFFFF : csum;
     }
 
@@ -1019,9 +1011,7 @@ static uint16_t     dns_xid       = 0;
 static uint8_t      dns_reply[512];
 static uint16_t     dns_reply_len = 0;
 
-/* ----------------------------------------------------------------- */
-/*  tcpdump-lite Capture                                             */
-/* ----------------------------------------------------------------- */
+/* tcpdump-lite */
 
 #define TCPDUMP_MAX 20
 #define PACKET_MAX  2048
@@ -1351,15 +1341,7 @@ uint32_t net_dns_resolve(const char* hostname)
     memcpy(query + qlen + 2, &dns_qclass, 2);
     qlen += 4;
 
-    /* Hex dump the full DNS query for debugging */
-    {
-        log_serial("DNS: query hex:");
-        for (uint32_t i = 0; i < qlen; i++) {
-            if (i % 20 == 0) log_serial("\n  ");
-            log_hex_serial(query[i]);
-            log_serial(" ");
-        }
-        log_serial("\n");
+    if (verbose_net_flags & NETLOG_UDP) {
         log_serial("DNS: query len=");
         log_hex_serial(qlen);
         log_serial("\n");

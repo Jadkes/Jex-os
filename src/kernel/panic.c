@@ -134,8 +134,8 @@ void panic_handler(registers_t* regs)
     dump_stack_serial();
 
     /* Stack trace */
-    uint32_t eip_frames[16];
-    int depth = unwind_stack(regs->ebp, eip_frames, 16);
+    uint32_t eip_frames[MAX_BACKTRACE_DEPTH];
+    int depth = unwind_stack(regs->ebp, eip_frames, MAX_BACKTRACE_DEPTH);
     if (depth > 0) {
         terminal_writestring("\nStack Trace (depth ");
         char d[4];
