@@ -24,6 +24,7 @@
 #include "terminal.h"
 #include "panic.h"
 #include "kernel/backtrace.h"
+#include "kernel/workqueue.h"
 #include "klog.h"
 #include "timer.h"
 #include "task.h"
@@ -1117,6 +1118,7 @@ void shell_loop() {
     print_prompt();
     extern int is_serial_received(); extern char read_serial();
     while(1) {
+        workqueue_run();
         while (is_serial_received()) {
             char c = read_serial(); if (c == '\r') c = '\n'; shell_input(c);
         }
