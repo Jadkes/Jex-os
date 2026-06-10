@@ -6,6 +6,7 @@
  */
 
 #include "idt.h"
+#include "init.h"
 
 /* Assembly helper to load the IDTR */
 extern void idt_flush(uint32_t);
@@ -45,3 +46,5 @@ void init_idt()
     /* Load the IDTR */
     idt_flush((uint32_t)&idt_ptr);
 }
+
+early_init(init_idt);

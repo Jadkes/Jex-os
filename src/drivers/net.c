@@ -14,6 +14,7 @@
 #include "net.h"
 #include "rtl8139.h"
 #include "terminal.h"
+#include "init.h"
 #include "serial.h"
 #include "timer.h"
 #include "kheap.h"
@@ -1413,6 +1414,8 @@ uint32_t net_dns_resolve(const char* hostname)
 
     return result;
 }
+
+device_init(net_init);
 
 void net_init(void)
 {

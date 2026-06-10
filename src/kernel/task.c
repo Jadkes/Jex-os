@@ -8,6 +8,7 @@
 #include "task.h"
 #include "kheap.h"
 #include "paging.h"
+#include "init.h"
 #include "string.h"
 #include "gdt.h"
 #include "panic.h"
@@ -188,6 +189,8 @@ int getpid() {
  * @param pid The PID to kill.
  * @return 0 on success, -1 if not found.
  */
+device_init(init_tasking);
+
 int task_kill(int pid)
 {
     /* Kernel-level guard: never kill the init/shell task */

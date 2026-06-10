@@ -8,6 +8,7 @@
 
 #include "kheap.h"
 #include "paging.h"
+#include "init.h"
 #include <stddef.h>
 
 /* Kernel heap — simple bump allocator starting at 16 MB */
@@ -36,6 +37,12 @@ void kfree(void *p) { (void)p; }
  * @brief Initialize the kernel heap.
  */
 void init_kheap(uint32_t start_addr) { (void)start_addr; }
+
+/* Initcall wrapper: init_kheap takes a start address parameter */
+static void init_kheap_wrapper(void) {
+    init_kheap(KHEAP_START);
+}
+early_init(init_kheap_wrapper);
 
 /**
  * @brief Return number of bytes allocated from the heap so far.

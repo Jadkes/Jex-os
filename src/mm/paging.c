@@ -9,6 +9,7 @@
 #include "kernel/printk.h"
 #include "paging.h"
 #include "pmm.h"
+#include "init.h"
 #include "isr.h"
 #include "kheap.h"
 #include "terminal.h"
@@ -129,6 +130,8 @@ void init_paging() {
  * @brief Page Fault Exception Handler (Interrupt 14).
  * Decodes the faulting address and error code to provide diagnostic output.
  */
+early_init(init_paging);
+
 void page_fault_handler(registers_t regs) {
     /* Delegate to the new panic handler for full diagnostic output */
     panic_handler(&regs);
