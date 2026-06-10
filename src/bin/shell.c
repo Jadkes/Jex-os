@@ -27,6 +27,7 @@
 #include "timer.h"
 #include "task.h"
 #include "dump.h"
+#include "test_suite.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -63,7 +64,7 @@ char shell_cwd[128] = "/";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm", 
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "tcpdump", "nicregs", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", NULL
 };
 
 /**
@@ -675,6 +676,9 @@ void help_command() {
     terminal_writestring("  kill <pid>- Terminate a process\n");
     terminal_writestring("  regs      - Show CPU registers\n");
     terminal_writestring("  bt/backtrace - Show stack trace from current EBP\n");
+    terminal_writestring("  runtests   - Run kernel test suite\n");
+    terminal_writestring("  heapcheck  - Show kernel heap statistics\n");
+    terminal_writestring("  stackcheck - Show current stack pointer\n");
 }
 
 /**
@@ -976,6 +980,38 @@ void execute_command() {
         } else {
             hexdump(addr, count);
         }
+    }
+    else if (strcmp(shell_buffer, "runtests") == 0) {
+        run_all_tests();
+    }
+    else if (strcmp(shell_buffer, "heapcheck") == 0) {
+        char buf[16];
+        uint32_t used = kheap_get_used();
+        uint32_t cur  = kheap_get_current();
+        terminal_writestring("Heap: bump allocator at 0x");
+        format_hex(kheap_get_start(), buf);
+        terminal_writestring(buf);
+        terminal_writestring("\n  Used:     ");
+        int_to_string((int)used, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" bytes\n  Current:  0x");
+        format_hex(cur, buf);
+        terminal_writestring(buf);
+        terminal_writestring("\n  Free (est): ");
+        /* Approx ~1 GB addressable above start (on i386 kernel mapping) */
+        int_to_string((int)(0x40000000 - used), buf);
+        terminal_writestring(buf);
+        terminal_writestring(" bytes\n");
+    }
+    else if (strcmp(shell_buffer, "stackcheck") == 0) {
+        uint32_t esp;
+        __asm__ volatile("mov %%esp, %0" : "=r"(esp));
+        char buf[12];
+        terminal_writestring("Stack:\n");
+        terminal_writestring("  ESP: 0x");
+        format_hex(esp, buf);
+        terminal_writestring(buf);
+        terminal_writestring("\n");
     }
     else if (strcmp(shell_buffer, "bt") == 0 || strcmp(shell_buffer, "backtrace") == 0) {
         uint32_t ebp, eip_frames[16];
