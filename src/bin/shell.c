@@ -32,6 +32,7 @@
 #include "test_suite.h"
 #include "tcp.h"
 #include "debug/ftrace.h"
+#include "kernel/vsnprintf.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -50,16 +51,17 @@ extern void set_kernel_stack(uint32_t stack);
 void print_logo(void);
 
 #define SHELL_BUFFER_SIZE 256
-#define MAX_HISTORY 10
+#define HIST_SIZE 16
 #define HISTORY_FILE ".history"
 #define MAX_FILENAME_SIZE 63
 #define MAX_OUTPUT_SIZE 63
 
 /* Shell state variables */
 char shell_buffer[SHELL_BUFFER_SIZE];
-char history[MAX_HISTORY][SHELL_BUFFER_SIZE];
-int history_count = 0;
-int history_index = 0;
+static char history[HIST_SIZE][256];
+static int hist_head = 0;
+static int hist_count = 0;
+static int hist_pos = 0;
 int buffer_len = 0;
 int cursor_pos = 0;
 char shell_cwd[128] = "/home/user";
@@ -69,7 +71,7 @@ char shell_cwd[128] = "/home/user";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "history", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
 };
 
 /**
@@ -97,43 +99,86 @@ void print_prompt() {
 
 /**
  * @brief Tab-completion for commands and filenames.
+ *
+ * Completes the word at the cursor. Shows all matching options
+ * when multiple completions are possible.
  */
 void shell_autocomplete() {
     if (buffer_len == 0) return;
-    char* last_space = strrchr(shell_buffer, ' ');
-    char* search_term = last_space ? last_space + 1 : shell_buffer;
-    int search_len = strlen(search_term);
-    const char* match = NULL;
+
+    /* Find start of current word (cursor-aware) */
+    int word_start = cursor_pos;
+    while (word_start > 0 && shell_buffer[word_start - 1] != ' ')
+        word_start--;
+
+    int word_len = cursor_pos - word_start;
+    const char* matches[32];
     int match_count = 0;
-    
-    /* Search commands */
-    if (!last_space) {
+
+    if (word_start == 0) {
+        /* Complete a command name */
         for (int i = 0; shell_commands[i]; i++) {
-            if (strncmp(shell_commands[i], search_term, search_len) == 0) {
-                match = shell_commands[i]; match_count++;
+            if (strncmp(shell_buffer + word_start, shell_commands[i], (size_t)word_len) == 0)
+                matches[match_count++] = shell_commands[i];
+        }
+    } else {
+        /* Complete a filename from the current directory */
+        struct jex_inode dir_inode;
+        jexfs_read_inode(cwd_inode, &dir_inode);
+        uint8_t buf[BLOCK_SIZE];
+        read_block(dir_inode.blocks[0], buf);
+        struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
+        for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
+            if (de[i].inode != 0) {
+                if (strcmp(de[i].name, ".") == 0 || strcmp(de[i].name, "..") == 0)
+                    continue;
+                if (strncmp(de[i].name, shell_buffer + word_start, (size_t)word_len) == 0)
+                    matches[match_count++] = de[i].name;
             }
         }
     }
-    
-    /* Search filesystem */
-    struct jex_inode dir_inode; jexfs_read_inode(cwd_inode, &dir_inode);
-    uint8_t buf[BLOCK_SIZE]; read_block(dir_inode.blocks[0], buf);
-    struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
-    for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
-        if (de[i].inode != 0) {
-            if (strcmp(de[i].name, ".") == 0 || strcmp(de[i].name, "..") == 0) continue;
-            if (strncmp(de[i].name, search_term, search_len) == 0) {
-                match = de[i].name; match_count++;
-            }
+
+    if (match_count == 1) {
+        /* Insert the remainder of the match at the cursor */
+        const char* suffix = matches[0] + word_len;
+        while (*suffix && buffer_len < SHELL_BUFFER_SIZE - 1) {
+            /* Shift content right from cursor */
+            for (int i = buffer_len; i > cursor_pos; i--)
+                shell_buffer[i] = shell_buffer[i - 1];
+            shell_buffer[cursor_pos++] = *suffix++;
+            buffer_len++;
         }
-    }
-    
-    if (match_count == 1 && match) {
-        int term_offset = search_term - shell_buffer;
-        strcpy(shell_buffer + term_offset, (char*)match);
-        buffer_len = strlen(shell_buffer); cursor_pos = buffer_len;
+        shell_buffer[buffer_len] = '\0';
         shell_refresh_line();
+    } else if (match_count > 1) {
+        /* Show all matching possibilities */
+        terminal_writestring("\n");
+        for (int i = 0; i < match_count; i++) {
+            terminal_writestring(matches[i]);
+            terminal_writestring("  ");
+        }
+        terminal_writestring("\n");
+        print_prompt();
+        terminal_writestring(shell_buffer);
+        update_cursor(9 + cursor_pos, terminal_row);
     }
+}
+
+/**
+ * @brief Add a command to the circular history buffer.
+ */
+static void hist_add(const char* cmd)
+{
+    if (cmd[0] == '\0') return;
+    int i = 0;
+    while (cmd[i] && i < 255) {
+        history[hist_head][i] = cmd[i];
+        i++;
+    }
+    history[hist_head][i] = '\0';
+    hist_head = (hist_head + 1) % HIST_SIZE;
+    if (hist_count < HIST_SIZE) hist_count++;
+    hist_pos = hist_count;
 }
 
 /**
@@ -143,8 +188,11 @@ void shell_save_history() {
     fs_create(HISTORY_FILE);
     int fd = fs_open(HISTORY_FILE, 0);
     if (fd != -1) {
-        fs_write(fd, &history_count, sizeof(int));
-        for (int i = 0; i < history_count; i++) fs_write(fd, history[i], SHELL_BUFFER_SIZE);
+        fs_write(fd, &hist_count, sizeof(int));
+        for (int i = 0; i < hist_count; i++) {
+            int idx = (hist_head - hist_count + i + HIST_SIZE) % HIST_SIZE;
+            fs_write(fd, history[idx], 256);
+        }
         fs_close(fd);
     }
 }
@@ -155,10 +203,25 @@ void shell_save_history() {
 void shell_load_history() {
     int fd = fs_open(HISTORY_FILE, 0);
     if (fd != -1) {
-        fs_read(fd, &history_count, sizeof(int));
-        if (history_count > MAX_HISTORY) history_count = MAX_HISTORY;
-        for (int i = 0; i < history_count; i++) fs_read(fd, history[i], SHELL_BUFFER_SIZE);
-        history_index = history_count; fs_close(fd);
+        int count;
+        fs_read(fd, &count, sizeof(int));
+        if (count > HIST_SIZE) count = HIST_SIZE;
+        for (int i = 0; i < count; i++) {
+            char buf[256];
+            fs_read(fd, buf, 256);
+            buf[255] = '\0';
+            /* Add to circular buffer */
+            int j = 0;
+            while (buf[j] && j < 255) {
+                history[hist_head][j] = buf[j];
+                j++;
+            }
+            history[hist_head][j] = '\0';
+            hist_head = (hist_head + 1) % HIST_SIZE;
+            if (hist_count < HIST_SIZE) hist_count++;
+        }
+        hist_pos = hist_count;
+        fs_close(fd);
     }
 }
 
@@ -729,6 +792,7 @@ void help_command() {
     terminal_writestring("  heapcheck  - Show kernel heap statistics\n");
     terminal_writestring("  stackcheck - Show current stack pointer\n");
     terminal_writestring("  ftrace <action> - Function tracer (start|stop|add <f>|clear|dump)\n");
+    terminal_writestring("  history    - Show command history\n");
 }
 
 /**
@@ -737,15 +801,8 @@ void help_command() {
 void execute_command() {
     terminal_writestring("\n"); 
     if (buffer_len > 0) {
-        /* Add to history */
-        if (history_count < MAX_HISTORY) {
-            for(int i=0; i<=buffer_len; i++) history[history_count][i] = shell_buffer[i];
-            history_count++;
-        } else {
-            for (int i = 0; i < MAX_HISTORY - 1; i++) strcpy(history[i], history[i+1]);
-            for(int i=0; i<=buffer_len; i++) history[MAX_HISTORY-1][i] = shell_buffer[i];
-        }
-        history_index = history_count; shell_save_history();
+        hist_add(shell_buffer);
+        shell_save_history();
     }
     
     /* Dispatch command */
@@ -975,6 +1032,16 @@ void execute_command() {
     else if (strcmp(shell_buffer, "route") == 0) {
         route_print();
     }
+    else if (strcmp(shell_buffer, "history") == 0) {
+        for (int i = 0; i < hist_count; i++) {
+            int idx = (hist_head - hist_count + i + HIST_SIZE) % HIST_SIZE;
+            char line[8];
+            int n = snprintf(line, sizeof(line), "  %d  ", i + 1);
+            terminal_write(line, (size_t)n);
+            terminal_writestring(history[idx]);
+            terminal_putchar('\n');
+        }
+    }
     else if (strncmp(shell_buffer, "tcpdump", 7) == 0) {
         int count = 5;
         int filter = TCPDUMP_ALL;
@@ -1173,21 +1240,41 @@ void shell_input(char key) {
     
     /* Up Arrow (History Back) */
     if ((unsigned char)key == 0x80) {
-        if (history_count > 0) {
-            if (history_index > 0) history_index--;
-            int i = 0; while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) { shell_buffer[i] = history[history_index][i]; i++; }
-            shell_buffer[i] = 0; buffer_len = i; cursor_pos = i; shell_refresh_line();
+        if (hist_count > 0 && hist_pos > 0) {
+            hist_pos--;
+            int idx = (hist_head - hist_count + hist_pos + HIST_SIZE) % HIST_SIZE;
+            int i = 0;
+            while (history[idx][i] && i < SHELL_BUFFER_SIZE - 1) {
+                shell_buffer[i] = history[idx][i];
+                i++;
+            }
+            shell_buffer[i] = '\0';
+            buffer_len = i;
+            cursor_pos = i;
+            shell_refresh_line();
         }
         return;
     }
-    
+
     /* Down Arrow (History Forward) */
     if ((unsigned char)key == 0x81) {
-        if (history_count > 0 && history_index < history_count) {
-            history_index++;
-            if (history_index == history_count) { shell_buffer[0] = 0; buffer_len = 0; cursor_pos = 0; }
-            else { int i = 0; while(history[history_index][i] && i < SHELL_BUFFER_SIZE-1) { shell_buffer[i] = history[history_index][i]; i++; }
-                shell_buffer[i] = 0; buffer_len = i; cursor_pos = i; }
+        if (hist_count > 0 && hist_pos < hist_count) {
+            hist_pos++;
+            if (hist_pos == hist_count) {
+                shell_buffer[0] = '\0';
+                buffer_len = 0;
+                cursor_pos = 0;
+            } else {
+                int idx = (hist_head - hist_count + hist_pos + HIST_SIZE) % HIST_SIZE;
+                int i = 0;
+                while (history[idx][i] && i < SHELL_BUFFER_SIZE - 1) {
+                    shell_buffer[i] = history[idx][i];
+                    i++;
+                }
+                shell_buffer[i] = '\0';
+                buffer_len = i;
+                cursor_pos = i;
+            }
             shell_refresh_line();
         }
         return;
