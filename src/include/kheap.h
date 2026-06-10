@@ -30,6 +30,21 @@ void kfree(void *p);
  */
 void init_kheap(uint32_t start_addr);
 
+/**
+ * @brief Return number of bytes allocated from the heap so far.
+ */
+uint32_t kheap_get_used(void);
+
+/**
+ * @brief Return the total heap range start address.
+ */
+uint32_t kheap_get_start(void);
+
+/**
+ * @brief Return the current heap bump pointer (next free address).
+ */
+uint32_t kheap_get_current(void);
+
 /* Standard Library Utility Functions */
 
 void* memcpy(void* dest, const void* src, size_t n);
