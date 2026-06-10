@@ -247,6 +247,131 @@ void arp_dump(void)
     __asm__ volatile("sti");
 }
 
+/* ----------------------------------------------------------------- */
+/*  Routing                                                          */
+/* ----------------------------------------------------------------- */
+
+/*
+ * is_local_ip - Check if an IP is on the local subnet.
+ *
+ * QEMU slirp uses the 10.0.2.0/24 range by default.  Anything outside
+ * that must be reached via the gateway (10.0.2.2), which provides NAT.
+ *
+ * @param ip  IP in network byte order.
+ * @return  1 if local, 0 if remote.
+ */
+int is_local_ip(uint32_t ip)
+{
+    /* Our /24 subnet: any 10.0.2.x address is local */
+    return (ip & htonl(0xFFFFFF00)) == (OUR_IP & htonl(0xFFFFFF00));
+}
+
+/*
+ * resolve_mac - Get the MAC address to reach a destination IP.
+ *
+ * For local IPs: looks up the ARP cache for the destination directly.
+ * For remote IPs: looks up the ARP cache for the gateway instead.
+ *
+ * @param ip      Destination IP (network byte order).
+ * @param mac_out 6-byte buffer for the resolved MAC.
+ * @return        0 on success with mac_out filled, -1 if not cached.
+ */
+int resolve_mac(uint32_t ip, uint8_t* mac_out)
+{
+    uint32_t resolve_ip;
+
+    if (is_local_ip(ip)) {
+        resolve_ip = ip;
+    } else {
+        resolve_ip = GATEWAY_IP;
+    }
+
+    int idx = arp_find(resolve_ip);
+    if (idx < 0)
+        return -1;
+
+    memcpy(mac_out, arp_cache[idx].mac, ETH_ALEN);
+    return 0;
+}
+
+/*
+ * net_arp_resolve - Broadcast an ARP request for the right target.
+ *
+ * For local destinations, ARPs for the IP directly.
+ * For remote destinations, ARPs for the gateway (which will forward).
+ * Skips if the target MAC is already cached.
+ *
+ * @param ip  Destination IP (network byte order).
+ */
+void net_arp_resolve(uint32_t ip)
+{
+    uint32_t arp_target;
+
+    if (is_local_ip(ip)) {
+        arp_target = ip;
+        log_serial("ROUTE: local IP, ARPing for target\n");
+    } else {
+        arp_target = GATEWAY_IP;
+        log_serial("ROUTE: remote IP, ARPing for gateway 10.0.2.2\n");
+    }
+
+    /* If already cached, skip */
+    if (arp_find(arp_target) >= 0) {
+        log_serial("ROUTE: target already in ARP cache\n");
+        return;
+    }
+
+    uint8_t our_mac[6];
+    rtl8139_get_mac(our_mac);
+    uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    uint8_t* buf = send_buf;
+    uint8_t* p   = buf;
+
+    p = build_ether_header(p, broadcast, our_mac, ETHERTYPE_ARP);
+
+    arp_packet_t* ap = (arp_packet_t*)p;
+    ap->htype = htons(ARP_HTYPE_ETHER);
+    ap->ptype = htons(ARP_PROTO_IP);
+    ap->hlen  = ETH_ALEN;
+    ap->plen  = 4;
+    ap->oper  = htons(ARP_OP_REQUEST);
+    memcpy(ap->sha, our_mac, ETH_ALEN);
+    ap->spa   = OUR_IP;
+    memset(ap->tha, 0, ETH_ALEN);
+    ap->tpa   = arp_target;
+
+    net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
+    log_serial("ROUTE: ARP request sent\n");
+}
+
+/*
+ * route_print - Display the routing table.
+ */
+void route_print(void)
+{
+    char buf[16];
+    uint32_t gw = GATEWAY_IP;
+    uint8_t* gwb = (uint8_t*)&gw;
+
+    terminal_writestring("Routing table:\n");
+    log_serial("ROUTE: table\n");
+
+    /* Local network */
+    terminal_writestring("  Destination     Netmask          Gateway          Iface\n");
+    terminal_writestring("  10.0.2.0        255.255.255.0    link#1           rtl8139\n");
+
+    /* Default route */
+    terminal_writestring("  default         -                ");
+    int_to_string(gwb[0], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(gwb[1], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(gwb[2], buf); terminal_writestring(buf); terminal_putchar('.');
+    int_to_string(gwb[3], buf); terminal_writestring(buf);
+    terminal_writestring("         rtl8139\n");
+
+    /* Also log to serial */
+    log_serial("ROUTE: table shown\n");
+}
+
 /*
  * build_ether_header - Write an Ethernet header and advance past it.
  *
@@ -601,9 +726,9 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
     uint8_t our_mac[6];
     rtl8139_get_mac(our_mac);
 
-    /* Must have the destination MAC cached */
-    int arp_idx = arp_find(dest_ip);
-    if (arp_idx < 0)
+    /* Resolve MAC (local via ARP, remote via gateway) */
+    uint8_t dest_mac[6];
+    if (resolve_mac(dest_ip, dest_mac) < 0)
         return -1;
 
     uint32_t udp_len     = sizeof(udp_header_t) + len;
@@ -613,7 +738,7 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
     uint8_t* buf = send_buf;
     uint8_t* p   = buf;
 
-    p = build_ether_header(p, arp_cache[arp_idx].mac, our_mac, ETHERTYPE_IP);
+    p = build_ether_header(p, dest_mac, our_mac, ETHERTYPE_IP);
 
     /* IP header (UDP is the payload) */
     p = build_ip_header(p, IP_PROTO_UDP, OUR_IP, dest_ip, ip_data_len);
@@ -834,41 +959,24 @@ int net_ping(uint32_t dest_ip)
     uint8_t our_mac[6];
     rtl8139_get_mac(our_mac);
 
-    /* ---- ARP not cached: broadcast an ARP request ---- */
-    int arp_idx = arp_find(dest_ip);
-    if (arp_idx < 0) {
-        uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-        uint8_t* buf = send_buf;
-        uint8_t* p   = buf;
-
-        p = build_ether_header(p, broadcast, our_mac, ETHERTYPE_ARP);
-
-        arp_packet_t* ap = (arp_packet_t*)p;
-        ap->htype = htons(ARP_HTYPE_ETHER);
-        ap->ptype = htons(ARP_PROTO_IP);
-        ap->hlen  = ETH_ALEN;
-        ap->plen  = 4;
-        ap->oper  = htons(ARP_OP_REQUEST);
-        memcpy(ap->sha, our_mac, ETH_ALEN);
-        ap->spa   = OUR_IP;
-        memset(ap->tha, 0, ETH_ALEN);
-        ap->tpa   = dest_ip;
-
-        net_send_ether(buf, sizeof(eth_header_t) + sizeof(arp_packet_t));
-        log_serial("PING: ARP request sent\n");
+    /* ---- Resolve destination MAC (local or via gateway) ---- */
+    uint8_t dest_mac[6];
+    if (resolve_mac(dest_ip, dest_mac) < 0) {
+        /* MAC not cached — broadcast ARP request for the right target */
+        net_arp_resolve(dest_ip);
         return -1;
     }
 
-    /* ---- ARP cached: build ICMP echo request ---- */
+    /* ---- MAC resolved: build ICMP echo request ---- */
     uint8_t*      buf    = send_buf;
     uint8_t*      p      = buf;
     uint32_t      icmp_data_len = 32;
     uint32_t      ip_data_len   = sizeof(icmp_header_t) + icmp_data_len;
 
-    /* Ethernet header */
-    p = build_ether_header(p, arp_cache[arp_idx].mac, our_mac, ETHERTYPE_IP);
+    /* Ethernet header — send to dest_mac (which is gateway MAC for remote IPs) */
+    p = build_ether_header(p, dest_mac, our_mac, ETHERTYPE_IP);
 
-    /* IP header pointing at the ICMP payload */
+    /* IP header — destination IP is always the original target */
     p = build_ip_header(p, IP_PROTO_ICMP, OUR_IP, dest_ip, ip_data_len);
 
     /* ICMP header */
@@ -888,7 +996,10 @@ int net_ping(uint32_t dest_ip)
     icmp->checksum = checksum((uint16_t*)icmp, ip_data_len);
 
     net_send_ether(buf, sizeof(eth_header_t) + IP_HEADER_LEN + ip_data_len);
-    log_serial("PING: sent echo request\n");
+    log_serial("PING: sent echo request");
+    if (!is_local_ip(dest_ip))
+        log_serial(" (via gateway)");
+    log_serial("\n");
     return 0;
 }
 
