@@ -9,6 +9,8 @@
 
 #include "kernel/printk.h"
 #include "pmm.h"
+#include "init.h"
+#include "config.h"
 #include <stddef.h>
 
 extern void* memset(void* s, int c, size_t n);
@@ -247,3 +249,15 @@ uint32_t pmm_get_used_memory() {
 uint32_t pmm_get_total_memory() {
     return max_blocks * BLOCK_SIZE;
 }
+
+/* Initcall wrapper: pmm_init needs mboot info passed via globals */
+extern uint32_t g_mboot_magic;
+extern multiboot_info_t* g_mboot_info;
+
+static void pmm_wrapper(void) {
+    if (g_mboot_magic == MULTIBOOT_MAGIC_VALID)
+        pmm_init(g_mboot_info);
+    else
+        pr_err("Invalid Multiboot Magic, PMM init skipped!\n");
+}
+early_init(pmm_wrapper);

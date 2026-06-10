@@ -12,6 +12,7 @@
 #define pr_fmt(fmt) "[RTL8139] " fmt
 #include "kernel/printk.h"
 #include "rtl8139.h"
+#include "init.h"
 #include "ports.h"
 #include "pmm.h"
 #include "irq.h"
@@ -355,6 +356,8 @@ void rtl8139_send_packet(void* data, uint32_t len)
     /* Advance to next descriptor (0 → 1 → 2 → 3 → 0) */
     current_tx_desc = (current_tx_desc + 1) & 3;
 }
+
+device_init(init_rtl8139);
 
 int rtl8139_is_initialized(void)
 {

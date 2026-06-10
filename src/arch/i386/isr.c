@@ -7,6 +7,7 @@
 
 #include "isr.h"
 #include "idt.h"
+#include "init.h"
 #include "paging.h"
 #include "syscall.h"
 #include "terminal.h"
@@ -67,6 +68,8 @@ void isr_install()
     /* System Call (int 0x80) - DPL set to 3 to allow user mode access */
     idt_set_gate(128, (uint32_t)isr128, 0x08, 0xEE);
 }
+
+early_init(isr_install);
 
 /**
  * @brief Main C handler for all ISRs.

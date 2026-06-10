@@ -7,6 +7,7 @@
 
 #include "irq.h"
 #include "idt.h"
+#include "init.h"
 #include "ports.h"
 #include <stddef.h>
 
@@ -81,6 +82,8 @@ void init_irq()
     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E);
     idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
 }
+
+early_init(init_irq);
 
 /**
  * @brief Common C handler for IRQs.

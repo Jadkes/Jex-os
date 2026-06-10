@@ -9,6 +9,7 @@
 #include "fat12.h"
 #include "kheap.h"
 #include "terminal.h"
+#include "init.h"
 #include <stddef.h>
 
 /**
@@ -202,6 +203,8 @@ int fat12_read_file(const char* name, uint8_t* buffer) {
 /**
  * @brief Write raw data to a file.
  */
+device_init(init_fat12);
+
 void fat12_write_raw(const char* name, uint8_t* data, uint32_t size) {
     uint32_t root_offset = 19 * 512;
     fat12_entry_t* entries = (fat12_entry_t*)(ram_disk + root_offset);
