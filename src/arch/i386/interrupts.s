@@ -85,7 +85,7 @@ isr_common_stub:
     pusha                    /* Save all general purpose registers */
 
     mov %ds, %ax             /* Save data segment */
-    push %eax                
+    push %eax
 
     mov $0x10, %ax           /* Load Kernel Data segment descriptor */
     mov %ax, %ds
@@ -93,7 +93,9 @@ isr_common_stub:
     mov %ax, %fs
     mov %ax, %gs
 
-    call isr_handler         /* Call C handler */
+    push %esp                /* Pass pointer to register frame */
+    call isr_handler         /* Call C handler (registers_t *regs) */
+    add $4, %esp             /* Pop the pointer */
 
     pop %eax                 /* Restore data segment */
     mov %ax, %ds

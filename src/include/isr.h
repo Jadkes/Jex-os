@@ -31,8 +31,10 @@ void isr_install();
 
 /**
  * @brief Common C handler for all interrupts.
- * @param regs The CPU state at the time of the interrupt.
+ * @param regs Pointer to the CPU state at the time of the interrupt.
+ *             Handlers may modify the register frame directly (e.g. for
+ *             breakpoint single-step); changes are reflected after iret.
  */
-void isr_handler(registers_t regs);
+void isr_handler(registers_t *regs);
 
 #endif // ISR_H
