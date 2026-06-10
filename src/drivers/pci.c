@@ -9,6 +9,7 @@
 #define pr_fmt(fmt) "[PCI] " fmt
 #include "kernel/printk.h"
 #include "pci.h"
+#include "init.h"
 #include "ports.h"
 #include "terminal.h"
 #include "serial.h"
@@ -162,6 +163,8 @@ void init_pci() {
  * @param dev Pointer to a pci_device_t structure to fill with device info if found.
  * @return 1 if found, 0 otherwise.
  */
+device_init(init_pci);
+
 int pci_find_device(uint16_t vendor_id, uint16_t device_id, pci_device_t* dev) {
     for (int i = 0; i < pci_device_count; i++) {
         if (pci_devices[i].vendor_id == vendor_id && pci_devices[i].device_id == device_id) {

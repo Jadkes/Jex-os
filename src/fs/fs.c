@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "jexfs.h"
 #include "kheap.h"
+#include "init.h"
 #include <stddef.h>
 
 extern void terminal_writestring(const char* data);
@@ -29,6 +30,8 @@ void fs_init() {
     /* Initialize the native JexFS */
     jexfs_init();
 }
+
+device_init(fs_init);
 
 /**
  * @brief Open a file.

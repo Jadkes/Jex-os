@@ -14,6 +14,7 @@
  */
 
 #include "kernel/kallsyms.h"
+#include "init.h"
 #include <string.h>
 
 extern char __kallsyms_start[];
@@ -30,6 +31,8 @@ void kallsyms_init(void)
     sym_entries  = (kallsym_entry_t*)&header[1];
     sym_strings  = (const char*)&sym_entries[sym_count];
 }
+
+device_init(kallsyms_init);
 
 const char* kallsyms_lookup(uint32_t addr, uint32_t* offset, uint32_t* size)
 {

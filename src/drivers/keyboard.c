@@ -8,6 +8,7 @@
 
 #include "keyboard.h"
 #include "irq.h"
+#include "init.h"
 #include "ports.h"
 #include "shell.h"
 #include <stdint.h>
@@ -138,3 +139,5 @@ void keyboard_callback(registers_t *regs) {
 void init_keyboard() {
     register_interrupt_handler(1, keyboard_callback);
 }
+
+early_init(init_keyboard);

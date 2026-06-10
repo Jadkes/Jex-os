@@ -9,6 +9,7 @@
 #include "syscall.h"
 #include "idt.h"
 #include "shell.h"
+#include "init.h"
 #include "ports.h"
 #include "fs.h"
 #include <stdint.h>
@@ -134,3 +135,5 @@ void init_syscalls()
     /* Use gate 0x80, selector 0x08, flags 0xEE (User mode access) */
     idt_set_gate(0x80, (uint32_t)isr128, 0x08, 0xEE);
 }
+
+device_init(init_syscalls);

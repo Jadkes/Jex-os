@@ -7,6 +7,7 @@
  */
 
 #include "gdt.h"
+#include "init.h"
 #include <stddef.h>
 
 /* Assembly helper functions */
@@ -101,3 +102,5 @@ void init_gdt()
     gdt_flush((uint32_t)&gdt_ptr);
     tss_flush();
 }
+
+early_init(init_gdt);

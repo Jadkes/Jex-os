@@ -19,6 +19,22 @@ SECTIONS
 		*(.text)
 	}
 
+	/* Initcall tables -- collected function pointers.
+	   early_initcalls run first (CPU, memory), then device_initcalls. */
+	.early_initcalls BLOCK(4K) : ALIGN(4)
+	{
+		__early_initcall_start = .;
+		*(.early_initcalls)
+		__early_initcall_end = .;
+	}
+
+	.device_initcalls BLOCK(4K) : ALIGN(4)
+	{
+		__device_initcall_start = .;
+		*(.device_initcalls)
+		__device_initcall_end = .;
+	}
+
 	/* Read-only data. */
 	.rodata BLOCK(4K) : ALIGN(4K)
 	{

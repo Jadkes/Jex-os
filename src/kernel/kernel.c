@@ -39,9 +39,14 @@
 #include "rtl8139.h"
 #include "net.h"
 #include "kernel/kallsyms.h"
+#include "init.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
+
+// Globals for initcall parameter passing (e.g. pmm_init needs mboot info)
+uint32_t g_mboot_magic;
+multiboot_info_t* g_mboot_info;
 
 /**
  * @brief Kernel Entry Point
@@ -62,84 +67,25 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     klog_init();
     pr_info("JexOS Kernel Started\n");
 
-    /**
-     * @brief 3. CPU & Interrupt Setup.
-     * GDT: Defines memory segments (Kernel/User Code/Data).
-     * IDT: Points to handlers for exceptions and interrupts.
-     * ISR: Installs handlers for CPU exceptions (Page Fault, Divide by Zero, etc.).
-     * IRQ: Installs handlers for hardware interrupts (Timer, Keyboard, etc.).
+    /* Store multiboot info globally for initcalls that need it (pmm_init) */
+    g_mboot_magic = magic;
+    g_mboot_info = mboot_info;
+
+    /* 3-12. Run all registered initcalls in section order:
+     *   early_initcalls:  CPU setup, interrupt controllers, memory management
+     *   device_initcalls: drivers, filesystems, higher-level subsystems
      */
-    pr_info("Init GDT...\n");
-    init_gdt();
-    pr_info("Init IDT...\n");
-    init_idt();
-    pr_info("Init ISR...\n");
-    isr_install();
-    pr_info("Init IRQ...\n");
-    init_irq();
+    initcalls_run();
 
-    /* 4. Basic Hardware Drivers */
-    pr_info("Init Keyboard...\n");
-    init_keyboard();
-
-    /* 5. Physical Memory Management.
-     * Uses the Multiboot memory map to identify available RAM blocks.
-     */
-    pr_info("Init PMM...\n");
-    if (magic == MULTIBOOT_MAGIC_VALID) {
-        pmm_init(mboot_info);
-    } else {
-        pr_err("Invalid Multiboot Magic!\n");
-    }
-
-    /**
-     * @brief 6. Virtual Memory & Heap.
-     * Paging: Enables 4KB page mapping and memory protection.
-     * Heap: Enables dynamic memory allocation (kmalloc/kfree).
-     */
-    pr_info("Init Paging...\n");
-    init_paging();
-    pr_info("Init Heap...\n");
-    init_kheap(KERNEL_HEAP_START);
-
-    /**
-     * @brief 7. PCI & Networking.
-     * Disabled for now - focus on basic kernel boot
-     */
-    pr_info("Init PCI...\n");
-    init_pci();
-    pr_info("Init RTL8139...\n");
-    init_rtl8139();
-    pr_info("Init Net Stack...\n");
-    net_init();
-
-    /* 8. Filesystem Subsystems. */
-    pr_info("Init FAT12...\n");
-    init_fat12();
-    pr_info("Init VFS...\n");
-    fs_init();
-
-    /* 9. Kallsyms: Initialize symbol table for backtrace resolution. */
-    pr_info("Init Kallsyms...\n");
-    kallsyms_init();
-
-    /* 10. Multitasking Subsystem. */
-    pr_info("Init Tasking...\n");
-    init_tasking();
-
-    /* 10. System Timer. */
+    /* 13. System Timer — needs explicit frequency parameter, kept manual */
     pr_info("Init Timer...\n");
     init_timer(100);
-    
-    /* 11. User-mode stack setup. */
+
+    /* 14. User-mode stack setup */
     pr_info("Setup Stack...\n");
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
-    
-    /* 12. System Calls & Global Interrupt Enable. */
-    pr_info("Init Syscalls...\n");
-    init_syscalls();
-    
+
     /* Enable interrupts globally (STI instruction) */
     __asm__ volatile("sti"); 
     
