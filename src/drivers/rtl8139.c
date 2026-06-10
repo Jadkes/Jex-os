@@ -357,7 +357,46 @@ void rtl8139_send_packet(void* data, uint32_t len)
     current_tx_desc = (current_tx_desc + 1) & 3;
 }
 
-device_init(init_rtl8139);
+/* PCI device ID table for the RTL8139 driver */
+static struct pci_device_id rtl8139_ids[] = {
+    { PCI_VENDOR_REALTEK, PCI_DEVICE_RTL8139, 0 },
+    { 0, 0, 0 }
+};
+
+/**
+ * rtl8139_probe - PCI probe callback for RTL8139 devices.
+ * @dev: PCI device information from bus scan.
+ *
+ * Called by the PCI subsystem when a matching device is found.
+ * Delegates to the existing init_rtl8139() which handles all
+ * hardware initialization.
+ */
+static int rtl8139_probe(pci_device_t* dev)
+{
+    pr_info("rtl8139: probing at %02x:%02x.%x\n", dev->bus, dev->device, dev->function);
+    init_rtl8139();
+    return 0;
+}
+
+/* PCI driver structure — registered at boot via initcall */
+static struct pci_driver rtl8139_pci_driver = {
+    .name     = "rtl8139",
+    .id_table = rtl8139_ids,
+    .probe    = rtl8139_probe,
+};
+
+/**
+ * init_rtl8139_driver - Initcall wrapper that registers with PCI subsystem.
+ *
+ * Replaces the original direct initcall on init_rtl8139().  The PCI
+ * subsystem will scan the bus and call our probe for each matching
+ * device.
+ */
+static void init_rtl8139_driver(void)
+{
+    pci_register_driver(&rtl8139_pci_driver);
+}
+device_init(init_rtl8139_driver);
 
 int rtl8139_is_initialized(void)
 {

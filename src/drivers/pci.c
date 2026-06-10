@@ -89,6 +89,29 @@ void pci_config_write_dword(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off
 }
 
 /**
+ * @brief Read a 16-bit word from PCI configuration space.
+ *
+ * Reads only the relevant 16-bit word from the 32-bit dword at the
+ * aligned offset.  Bit 1 of offset selects the upper vs lower half.
+ *
+ * @param bus PCI bus number.
+ * @param slot PCI slot (device) number.
+ * @param func PCI function number.
+ * @param offset Register offset (may be 0, 2, 4, 6, ... up to 0xFC).
+ * @return The 16-bit value read from the register.
+ */
+uint16_t pci_config_read_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset)
+{
+    uint32_t addr = 0x80000000UL
+                  | ((uint32_t)bus   << 16)
+                  | ((uint32_t)slot  << 11)
+                  | ((uint32_t)func  << 8)
+                  | (offset & 0xFC);
+    outl(PCI_CONFIG_ADDRESS, addr);
+    return (uint16_t)(inl(PCI_CONFIG_DATA) >> ((offset & 2) * 8));
+}
+
+/**
  * @brief Read device information from configuration space and store it.
  * 
  * This probes a specific slot to see if a device is connected.
@@ -173,4 +196,59 @@ int pci_find_device(uint16_t vendor_id, uint16_t device_id, pci_device_t* dev) {
         }
     }
     return 0;
+}
+
+/* Linked list of registered PCI drivers */
+static struct pci_driver* pci_drivers = NULL;
+
+/**
+ * @brief Scan all PCI buses and invoke the probe for matching devices.
+ *
+ * For each bus/slot/function, reads vendor and device IDs and compares
+ * against the driver's id_table.  On match, constructs a pci_device_t
+ * and calls the driver's probe function.
+ *
+ * @param drv The driver to match against.
+ */
+static void pci_probe_driver(struct pci_driver* drv)
+{
+    for (int bus = 0; bus < 256; bus++) {
+        for (int slot = 0; slot < 32; slot++) {
+            for (int func = 0; func < 8; func++) {
+                uint16_t vendor = pci_config_read_word(bus, slot, func, 0);
+                if (vendor == 0xFFFF) continue;
+
+                for (const struct pci_device_id* id = drv->id_table;
+                     id->vendor != 0; id++) {
+                    uint16_t device = pci_config_read_word(bus, slot, func, 2);
+                    if (vendor == id->vendor && device == id->device) {
+                        pci_device_t pdev;
+                        pdev.bus = bus;
+                        pdev.device = slot;
+                        pdev.function = func;
+                        pdev.vendor_id = vendor;
+                        pdev.device_id = device;
+                        pdev.bar0 = pci_config_read_dword(bus, slot, func, 0x10);
+                        pdev.irq_line = (uint8_t)(pci_config_read_dword(bus, slot, func, 0x3C) & 0xFF);
+                        drv->probe(&pdev);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief Register a PCI driver and probe for matching devices.
+ *
+ * Adds the driver to the internal linked list and immediately scans
+ * all PCI buses for devices matching the driver's id_table.
+ *
+ * @param drv Statically-allocated pci_driver with probe/remove callbacks.
+ */
+void pci_register_driver(struct pci_driver* drv)
+{
+    drv->next = pci_drivers;
+    pci_drivers = drv;
+    pci_probe_driver(drv);
 }
