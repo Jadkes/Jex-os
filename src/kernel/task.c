@@ -101,8 +101,12 @@ int fork() {
     child->next = NULL;
     strcpy(child->name, parent->name);
 
-    /* Allocate a dedicated kernel stack for the child */
-    uint32_t stack = (uint32_t)kmalloc(8192);
+    /* Allocate kernel stack with a guard page below it */
+    /* Allocate 12KB total — 8KB stack + 4KB guard page */
+    /* Then align the stack region to a page boundary */
+    uint32_t stack_alloc = (uint32_t)kmalloc(12288);
+    uint32_t stack = (stack_alloc + 0xFFF) & ~0xFFF;
+    paging_unmap_page((void*)(stack - 0x1000));
     child->kstack = stack;
 
     uint32_t esp, ebp;
