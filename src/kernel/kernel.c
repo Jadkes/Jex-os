@@ -35,6 +35,7 @@
 #include "pci.h"
 #include "rtl8139.h"
 #include "net.h"
+#include "kernel/kallsyms.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -115,8 +116,12 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     init_fat12();
     terminal_writestring("Init VFS...\n"); log_serial("Init VFS...\n");
     fs_init();
-    
-    /* 9. Multitasking Subsystem. */
+
+    /* 9. Kallsyms: Initialize symbol table for backtrace resolution. */
+    terminal_writestring("Init Kallsyms...\n"); log_serial("Init Kallsyms...\n");
+    kallsyms_init();
+
+    /* 10. Multitasking Subsystem. */
     terminal_writestring("Init Tasking...\n"); log_serial("Init Tasking...\n");
     init_tasking();
 
