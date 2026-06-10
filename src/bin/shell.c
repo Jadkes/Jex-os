@@ -60,7 +60,7 @@ int history_count = 0;
 int history_index = 0;
 int buffer_len = 0;
 int cursor_pos = 0;
-char shell_cwd[128] = "/";
+char shell_cwd[128] = "/home/user";
 
 /**
  * @brief List of supported shell commands.
@@ -73,7 +73,7 @@ static const char* shell_commands[] = {
 /**
  * @brief Calculate the current prompt length.
  */
-int get_prompt_len() { return 11 + strlen(shell_cwd) + 2; }
+int get_prompt_len() { return 9; } /* "JexOS:~$ " */
 
 /**
  * @brief Redraw the current shell line.
@@ -89,9 +89,7 @@ void shell_refresh_line() {
  * @brief Display the shell prompt.
  */
 void print_prompt() {
-    terminal_setcolor(0x02); terminal_writestring("root@jexos:");
-    terminal_setcolor(0x0B); terminal_writestring(shell_cwd);
-    terminal_setcolor(0x02); terminal_writestring("> ");
+    terminal_setcolor(0x0B); terminal_writestring("JexOS:~$ ");
     terminal_setcolor(0x07);
 }
 
