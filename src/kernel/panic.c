@@ -9,6 +9,7 @@
  */
 
 #include "panic.h"
+#include "kernel/backtrace.h"
 #include "terminal.h"
 #include "serial.h"
 #include "power.h"
@@ -32,15 +33,6 @@ static const char* exception_names[] = {
     "Reserved", "Reserved", "Reserved", "Reserved", "Reserved",
     "Reserved", "Reserved"
 };
-
-void format_hex(uint32_t val, char* out)
-{
-    const char* digits = "0123456789ABCDEF";
-    out[0] = '0'; out[1] = 'x';
-    for (int i = 0; i < 8; i++)
-        out[2 + i] = digits[(val >> (28 - i * 4)) & 0xF];
-    out[10] = '\0';
-}
 
 static void print_hex_val(uint32_t val)
 {
@@ -74,22 +66,6 @@ void decode_page_fault_err(uint32_t err, char* buf, int buf_len)
         }
     }
     buf[pos] = '\0';
-}
-
-int unwind_stack(uint32_t ebp, uint32_t* eip_out, int max_frames)
-{
-    int count = 0;
-    while (ebp != 0 && eip_out && count < max_frames) {
-        uint32_t* frame = (uint32_t*)ebp;
-        uint32_t saved_ebp = frame[0];
-        uint32_t saved_eip = frame[1];
-        /* Guard: if saved_ebp has moved backwards or is clearly invalid, stop */
-        if (saved_ebp <= ebp || saved_ebp > 0xFFFFF000)
-            break;
-        eip_out[count++] = saved_eip;
-        ebp = saved_ebp;
-    }
-    return count;
 }
 
 void panic_handler(registers_t* regs)
@@ -153,6 +129,9 @@ void panic_handler(registers_t* regs)
     terminal_writestring("  CR2: "); print_hex_val(cr2);
     terminal_writestring("  CR3: "); print_hex_val(cr3_val);
     terminal_writestring("\n");
+
+    /* Serial stack trace */
+    dump_stack_serial();
 
     /* Stack trace */
     uint32_t eip_frames[16];
