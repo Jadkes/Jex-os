@@ -6,6 +6,13 @@ LD = ld
 # Added -Isrc/include to find headers
 CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie -Isrc/include -Isrc/tests
 
+# Optional profiling for ftrace (-finstrument-functions)
+CFLAGS_DEBUG = -finstrument-functions
+
+ifeq ($(DEBUG),1)
+CFLAGS += $(CFLAGS_DEBUG)
+endif
+
 # Assembler flags for 32-bit
 ASFLAGS = --32
 

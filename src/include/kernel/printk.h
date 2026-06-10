@@ -57,6 +57,7 @@ void _printk(int level, const char* fmt, ...);
 #define pr_notice(fmt, ...)  _printk(LOG_NOTICE,  pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_info(fmt, ...)    _printk(LOG_INFO,    pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debug(fmt, ...)   _printk(LOG_DEBUG,   pr_fmt(fmt), ##__VA_ARGS__)
+#define pr_cont(fmt, ...)    _printk(LOG_INFO,    fmt, ##__VA_ARGS__)
 
 /* ISR context flag -- set by IRQ entry, cleared on exit */
 extern volatile int in_isr;
