@@ -73,6 +73,25 @@ void map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
 }
 
 /**
+ * @brief Unmap a virtual address by clearing its page table entry.
+ *
+ * @param virtualaddr Virtual address to unmap.
+ */
+void paging_unmap_page(void* virtualaddr) {
+    uint32_t pdindex = (uint32_t)virtualaddr >> 22;
+    uint32_t ptindex = ((uint32_t)virtualaddr >> 12) & 0x03FF;
+
+    if (!kernel_directory.tables[pdindex].present)
+        return;
+
+    page_table_t* table = (page_table_t*)((uint32_t)kernel_directory.tables[pdindex].table_frame << 12);
+    table->pages[ptindex].present = 0;
+
+    /* Flush TLB entry for this page */
+    asm volatile("invlpg (%0)" :: "r"(virtualaddr));
+}
+
+/**
  * @brief Initialize paging and identity map the first 512MB of RAM.
  * Loads the page directory into CR3 and enables the PG bit in CR0.
  */

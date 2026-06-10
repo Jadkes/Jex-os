@@ -78,6 +78,13 @@ void init_paging();
 void map_page(void* physaddr, void* virtualaddr, unsigned int flags);
 
 /**
+ * @brief Unmap a virtual page (mark as not present).
+ *
+ * @param virtualaddr The virtual address of the page to unmap.
+ */
+void paging_unmap_page(void* virtualaddr);
+
+/**
  * @brief Handler for Page Fault exceptions (Interrupt 14).
  * @param regs The CPU state at the time of the fault.
  */

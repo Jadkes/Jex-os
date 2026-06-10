@@ -133,6 +133,19 @@ void panic_handler(registers_t* regs)
     /* Serial stack trace */
     dump_stack_serial();
 
+    /* Detect stack overflow via guard page access */
+    if (regs->int_no == 14) {
+        uint32_t cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        log_serial("PAGE FAULT at 0x");
+        log_hex_serial(cr2);
+        log_serial(" (");
+        if (regs->err_code & 0x1) log_serial("protection "); else log_serial("not-present ");
+        if (regs->err_code & 0x2) log_serial("write "); else log_serial("read ");
+        if (regs->err_code & 0x4) log_serial("user");
+        log_serial(")\n");
+    }
+
     /* Stack trace */
     uint32_t eip_frames[MAX_BACKTRACE_DEPTH];
     int depth = unwind_stack(regs->ebp, eip_frames, MAX_BACKTRACE_DEPTH);
