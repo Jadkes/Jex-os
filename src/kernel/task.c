@@ -141,7 +141,31 @@ int fork() {
  */
 void task_exit() {
     __asm__ volatile("cli");
-    current_task->state = STATE_ZOMBIE;
+
+    task_t* dying = (task_t*)current_task;
+    dying->state = STATE_ZOMBIE;
+
+    /* Remove from ready queue so scheduler never picks this task again */
+    if (ready_queue == dying) {
+        ready_queue = dying->next;
+    } else {
+        task_t* prev = (task_t*)ready_queue;
+        while (prev && prev->next != dying) {
+            prev = prev->next;
+        }
+        if (prev) {
+            prev->next = dying->next;
+        }
+    }
+
+    /* Free kernel stack if one was allocated (fork'd tasks have kstack != 0) */
+    if (dying->kstack) {
+        kfree((void*)(dying->kstack - 0x1000));
+    }
+
+    /* Free the task_t struct itself */
+    kfree((void*)dying);
+
     task_switch();
 }
 
