@@ -4,7 +4,7 @@
 
 **Goal:** Replace the bump allocator with a power-of-2 slab allocator that actually frees memory, add signal handling (5 signals, syscall-based), add keyboard buffering (256-byte ring buffer), and fix bugs enabled by proper `kfree`.
 
-**Architecture:** Three ordered subsystems. (1) Slab allocator: 9 size classes, intra-slab free list, O(1) kfree via page-mask, PMM fallback >4KB. (2) Signal handling: bitmasks + handler array in task_t, delivery in task_switch(). (3) Keyboard buffering: ring buffer in ISR, pull model in shell.
+**Architecture:** Three ordered subsystems. (1) Slab allocator: 8 size classes (16B–2048B), intra-slab free list, O(1) kfree via page-mask, PMM fallback >2048B. (2) Signal handling: bitmasks + handler array in task_t, delivery in task_switch(). (3) Keyboard buffering: ring buffer in ISR, pull model in shell.
 
 **Tech Stack:** Freestanding C (gnu99), target i386 (QEMU). No libc. No FPU.
 
@@ -271,7 +271,7 @@ static slab_t* ptr_to_slab(void* ptr) {
 /**
  * @brief Allocate kernel memory.
  *
- * Routes to slab cache for sizes <= 4096 bytes, PMM large alloc for larger.
+ * Routes to slab cache for sizes <= 2048 bytes, PMM large alloc for larger.
  * Returns NULL for size == 0 or allocation failure.
  *
  * @param size Number of bytes to allocate.
