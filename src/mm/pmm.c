@@ -7,6 +7,7 @@
  * sensitive areas (like the kernel itself).
  */
 
+#define pr_fmt(fmt) "PMM: " fmt
 #include "kernel/printk.h"
 #include "pmm.h"
 #include "init.h"
@@ -132,7 +133,7 @@ void pmm_init(multiboot_info_t* mboot_info) {
     /* Process the Memory Map provided by the bootloader (e.g., GRUB) */
     if (mboot_info->flags & (1 << 6)) {
         multiboot_memory_map_t* mmap = (multiboot_memory_map_t*)mboot_info->mmap_addr;
-        
+
         while((uint32_t)mmap < mboot_info->mmap_addr + mboot_info->mmap_length) {
             /* Type 1 = Available RAM. Other types are reserved or hardware mapped. */
             if (mmap->type == 1) {
@@ -143,7 +144,7 @@ void pmm_init(multiboot_info_t* mboot_info) {
                 for (uint64_t i = 0; i < len; i += BLOCK_SIZE) {
                     uint64_t frame_addr = addr + i;
                     uint32_t frame_idx = (uint32_t)(frame_addr / BLOCK_SIZE);
-                    
+
                     if (frame_idx < TOTAL_BLOCKS) {
                         /* Only unset if it was previously set (to avoid double counting) */
                         if (mmap_test(frame_idx)) {
@@ -158,9 +159,24 @@ void pmm_init(multiboot_info_t* mboot_info) {
         }
     }
 
+    /* Fallback: if the multiboot memory map wasn't provided or freed nothing,
+     * assume the configured RAM_SIZE_MB is correct and free blocks above 2MB.
+     * This is needed because QEMU -kernel boot doesn't always provide a memory map. */
+    if (used_blocks == TOTAL_BLOCKS) {
+        pr_info("no memory map from bootloader, assuming %dMB RAM\n",
+                RAM_SIZE_MB);
+        uint32_t start_free = (2 * 1024 * 1024) / BLOCK_SIZE;  /* frame 512 */
+        for (uint32_t i = start_free; i < TOTAL_BLOCKS; i++) {
+            if (mmap_test(i)) {
+                mmap_unset(i);
+                used_blocks--;
+            }
+        }
+    }
+
     /**
      * @brief Kernel Reservation.
-     * We reserve the first 2MB to protect the Interrupt Vector Table (IVT), 
+     * We reserve the first 2MB to protect the Interrupt Vector Table (IVT),
      * BIOS data, and the kernel's own executable code and initial data structures.
      */
     int kernel_pages = (2 * 1024 * 1024) / BLOCK_SIZE;
@@ -255,8 +271,9 @@ extern uint32_t g_mboot_magic;
 extern multiboot_info_t* g_mboot_info;
 
 static void pmm_wrapper(void) {
-    if (g_mboot_magic == MULTIBOOT_MAGIC_VALID)
+    if (g_mboot_magic == MULTIBOOT_MAGIC_VALID) {
         pmm_init(g_mboot_info);
+    }
     else
         pr_err("Invalid Multiboot Magic, PMM init skipped!\n");
 }
