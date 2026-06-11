@@ -16,8 +16,8 @@
 #define SLAB_MAGIC      0x534C4142  /* "SLAB" */
 #define LARGE_MAGIC     0x4C524700  /* "LRG\0" */
 #define SLAB_PAGE_SIZE  4096
-#define SLAB_MAX_SIZE   4096
-#define SLAB_CACHE_COUNT 9
+#define SLAB_MAX_SIZE   2048
+#define SLAB_CACHE_COUNT 8
 
 typedef struct slab {
     uint32_t        magic;      /* SLAB_MAGIC or LARGE_MAGIC */
