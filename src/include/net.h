@@ -109,14 +109,25 @@ typedef struct {
 
 #define PACKET_BUF_SIZE 2048
 
-/* Our IP on the wire */
-#define OUR_IP IP4(10, 0, 2, 15)
+/*
+ * Runtime-configurable network addresses.
+ *
+ * Initialised to QEMU slirp defaults.  DHCP updates these at runtime
+ * so the kernel can work in any DHCP-enabled network.
+ */
+extern uint32_t our_ip;
+extern uint32_t gateway_ip;
+extern uint32_t dns_server;
 
-/* Default gateway for non-local traffic (QEMU slirp NAT) */
-#define GATEWAY_IP IP4(10, 0, 2, 2)
+/* Macro aliases so existing source (net.c, tcp.c, shell.c) compiles unchanged */
+#define OUR_IP     our_ip
+#define GATEWAY_IP gateway_ip
+#define DNS_SERVER dns_server
 
-/* DNS proxy (QEMU slirp) + ephemeral source port */
-#define DNS_SERVER   IP4(10, 0, 2, 3)
+/* Default initial values (QEMU slirp) — used before DHCP runs */
+#define OUR_IP_DEFAULT     IP4(10, 0, 2, 15)
+#define GATEWAY_DEFAULT    IP4(10, 0, 2, 2)
+#define DNS_DEFAULT        IP4(10, 0, 2, 3)
 #define DNS_PORT     53
 #define DNS_CLIENT_PORT 54321
 

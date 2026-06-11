@@ -4,6 +4,38 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## ✅ Completed Milestones
 
+### v0.6.5 — TCP Hardening, HTTP Server, DHCP Client
+
+### TCP & Network Stack
+- [x] **Runtime IP Configuration**: `OUR_IP`, `GATEWAY_IP`, `DNS_SERVER` as mutable globals
+- [x] **Passive TCP Open**: `tcp_listen()` / `tcp_accept()` — LISTEN → SYN_RCVD → ESTABLISHED
+- [x] **TCP State Expansion**: Added LISTEN (8) and SYN_RCVD (9) states
+- [x] **MSS Option**: Advertised on SYN segments
+- [x] **TCP Checksum**: Proper pseudo-header checksum on all segments
+- [x] **Zero Compiler Warnings**: All `-Wall -Wextra` issues fixed in `tcp.c`
+- [x] **Connection Filtering**: Source IP/port matching for established connections
+
+### HTTP Server
+- [x] **`serve` Command**: Listens on port 80, accepts connections
+- [x] **HTTP/1.0 Response**: Content-Type, Content-Length headers
+- [x] **JexFS File Service**: Serves files from the filesystem
+- [x] **Default Fallback Page**: "Hello from JexOS!" HTML
+- [x] **QEMU hostfwd**: Makefile updated for host→guest port forwarding
+
+### DHCP Client
+- [x] **DORA Cycle**: Discover → Offer → Request → Ack
+- [x] **UDP Broadcast**: Manual packet construction for 255.255.255.255
+- [x] **TLV Option Parsing**: Extracts IP, gateway, DNS from DHCP ACK
+- [x] **`dhcp` Command**: One-shot network auto-configuration
+- [x] **Retry Logic**: 3 retries per message type with timeout
+- [x] **`dhcp.h` Header**: Protocol constants and packet struct
+
+### Shell & UX
+- [x] **Paged Help**: `more`-style pagination (22 lines per page)
+- [x] **`dhcp` in Command List**: Tab-completion and help entry
+- [x] **`serve` in Command List**: Tab-completion and help entry
+- [x] **Updated `net` Command**: Shows IP/Gateway/DNS config
+
 ### v0.6.0 — Slab Allocator, Signals, Keyboard Buffer
 - [x] **Slab Allocator**: 8 power-of-2 size classes (16B–2048B), O(1) kfree
 - [x] **PMM Fallback**: Handles missing multiboot memory map
@@ -63,12 +95,11 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## 🎯 Current Goals
 
-### Networking Hardening
-- [ ] **DHCP Client**: Automatic IP configuration
-- [ ] **TCP Retransmit**: Handle packet loss gracefully
-- [ ] **TCP Connection Close**: Proper FIN handshake
+### Networking
+- [ ] **TCP Window Scaling**: Advertise and handle window sizes
 - [ ] **Checksum Validation**: Verify on receive, not just on send
 - [ ] **Concurrent Connections**: Multiple sockets
+- [ ] **TLS / HTTPS**: Because plaintext is 1995
 
 ### Shell & Utilities
 - [ ] **JexSnake**: Terminal snake game

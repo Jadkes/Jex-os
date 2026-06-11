@@ -9,6 +9,7 @@
 #include "kernel/printk.h"
 #include "tcp.h"
 #include "net.h"
+#include "fs.h"
 #include "rtl8139.h"
 #include "panic.h"
 #include "terminal.h"
@@ -198,10 +199,13 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     /* Only accept segments for our connection */
     if (dest_port != local_port)
         return;
-    if (src_port != remote_port && remote_port != 0)
-        return;
-    if (ip->src_ip != remote_ip && remote_ip != 0)
-        return;
+    /* In LISTEN state we accept any source IP/port */
+    if (tcp_state != TCP_LISTEN) {
+        if (src_port != remote_port && remote_port != 0)
+            return;
+        if (ip->src_ip != remote_ip && remote_ip != 0)
+            return;
+    }
 
     uint32_t seg_data_offset = (seg->data_offset >> 4) * 4;
     uint32_t tcp_payload_len = ip_tot - ip_hdr - seg_data_offset;
@@ -211,6 +215,41 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 
     pr_debug("RX: flags=0x%x seq=0x%x ack=0x%x pay_len=%u\n",
              seg->flags, seg_seq, seg_ack, tcp_payload_len);
+
+    /* ---- Passive open: SYN on LISTEN ---- */
+    if (tcp_state == TCP_LISTEN) {
+        if ((seg->flags & TCP_SYN) && !(seg->flags & TCP_ACK)) {
+            memcpy(peer_mac, src_mac, 6);
+            remote_ip   = ip->src_ip;
+            remote_port = src_port;
+            peer_isn    = seg_seq;
+
+            my_seq = (get_ticks() ^ 0xCAFEBABE);
+            my_ack = seg_seq + 1;
+
+            pr_debug("SYN from 0x%x port %u\n", remote_ip, src_port);
+
+            send_tcp_segment(TCP_SYN | TCP_ACK, my_seq, my_ack, NULL, 0);
+            my_seq++;
+
+            __asm__ volatile("cli");
+            tcp_state = TCP_SYN_RCVD;
+            __asm__ volatile("sti");
+        }
+        return;
+    }
+
+    /* ---- Passive open: ACK on SYN_RCVD ---- */
+    if (tcp_state == TCP_SYN_RCVD && (seg->flags & TCP_ACK)) {
+        if (seg_ack == my_seq) {
+            peer_acked_to = seg_ack;
+            __asm__ volatile("cli");
+            tcp_state = TCP_ESTABLISHED;
+            __asm__ volatile("sti");
+            pr_debug("connection established (passive open)\n");
+        }
+        return;
+    }
 
     /* ---- Handle SYN+ACK (reply to our SYN) ---- */
     if (seg->flags & TCP_SYN && seg->flags & TCP_ACK) {
@@ -414,7 +453,6 @@ int tcp_send(const uint8_t* data, uint32_t len)
         return -1;
     }
 
-    uint32_t remaining = len;
     uint32_t sent = 0;
 
     while (sent < len) {
@@ -619,6 +657,73 @@ int tcp_get_state(void)     { return (int)tcp_state; }
 uint32_t tcp_get_remote_ip(void)   { return remote_ip; }
 uint16_t tcp_get_remote_port(void) { return remote_port; }
 
+/*
+ * tcp_listen - Start listening on a port (passive open).
+ *
+ * Sets state to TCP_LISTEN and clears any previous connection state.
+ * Call tcp_accept() to block until a connection arrives.
+ */
+int tcp_listen(uint16_t port)
+{
+    if (tcp_state != TCP_CLOSED) {
+        pr_debug("already active (state=%d), aborting\n", tcp_state);
+        tcp_abort();
+        int timeout = 200;
+        while (timeout-- > 0 && tcp_state != TCP_CLOSED) {
+            rtl8139_poll_rx();
+            sleep(10);
+        }
+    }
+
+    remote_ip   = 0;
+    remote_port = 0;
+    local_port  = port;
+    rx_len      = 0;
+    tx_len      = 0;
+
+    __asm__ volatile("cli");
+    tcp_state = TCP_LISTEN;
+    __asm__ volatile("sti");
+
+    pr_debug("listening on port %u\n", port);
+    return 0;
+}
+
+/*
+ * tcp_accept - Accept a pending connection (busy-wait).
+ *
+ * Blocks polling the NIC until the three-way handshake completes
+ * (LISTEN → SYN_RCVD → ESTABLISHED). Returns 0 on success.
+ */
+int tcp_accept(void)
+{
+    if (tcp_state != TCP_LISTEN) {
+        pr_debug("not listening (state=%d)\n", tcp_state);
+        return -1;
+    }
+
+    pr_debug("waiting for connection...\n");
+
+    /* Busy-wait up to ~20 seconds (2000 × 10ms sleep) */
+    int timeout = 2000;
+    while (timeout-- > 0) {
+        rtl8139_poll_rx();
+        if (tcp_state == TCP_ESTABLISHED) {
+            pr_debug("connection accepted from port %u\n", remote_port);
+            return 0;
+        }
+        if (tcp_state == TCP_CLOSED) {
+            pr_debug("connection aborted during accept\n");
+            return -1;
+        }
+        sleep(10);
+    }
+
+    pr_debug("accept timeout\n");
+    tcp_abort();
+    return -1;
+}
+
 /* HTTP GET convenience */
 
 /*
@@ -626,7 +731,6 @@ uint16_t tcp_get_remote_port(void) { return remote_port; }
  */
 int http_get(const char* hostname, uint16_t port, const char* path)
 {
-    char buf[128];
     char ip_buf[16];
 
     /* ---- Resolve hostname ---- */
@@ -743,6 +847,183 @@ int http_get(const char* hostname, uint16_t port, const char* path)
             pr_debug("total received %d bytes\n", total_read);
         }
     }
+
+    /* ---- Close ---- */
+    tcp_close();
+    return 0;
+}
+
+/*
+ * http_serve - Listen, accept, and serve one HTTP request.
+ *
+ * Listens on @port, accepts one connection via the passive-open TCP
+ * path (LISTEN → SYN_RCVD → ESTABLISHED), parses the HTTP GET request
+ * path, and serves the file from JexFS. Falls back to a default
+ * "Hello from JexOS" page. Handles one request and closes.
+ */
+int http_serve(uint16_t port)
+{
+    char num_buf[8];
+
+    /* ---- Listen ---- */
+    if (tcp_listen(port) < 0) {
+        terminal_writestring("Listen failed\n");
+        return -1;
+    }
+
+    terminal_writestring("Listening on port ");
+    int_to_string(port, num_buf);
+    terminal_writestring(num_buf);
+    terminal_writestring("...\n");
+
+    /* ---- Accept ---- */
+    if (tcp_accept() < 0) {
+        terminal_writestring("Accept failed\n");
+        return -1;
+    }
+
+    terminal_writestring("Connection from ");
+    {
+        uint8_t* ipb = (uint8_t*)&remote_ip;
+        int_to_string(ipb[0], num_buf); terminal_writestring(num_buf); terminal_putchar('.');
+        int_to_string(ipb[1], num_buf); terminal_writestring(num_buf); terminal_putchar('.');
+        int_to_string(ipb[2], num_buf); terminal_writestring(num_buf); terminal_putchar('.');
+        int_to_string(ipb[3], num_buf); terminal_writestring(num_buf);
+    }
+    terminal_writestring("\n");
+    terminal_writestring("Receiving request...\n");
+
+    /* ---- Read HTTP request ---- */
+    static char req_buf[1024];
+    int req_len = 0;
+    int timeout = 1000; /* ~10 seconds */
+
+    while (timeout-- > 0 && req_len < (int)sizeof(req_buf) - 1) {
+        rtl8139_poll_rx();
+        if (tcp_state != TCP_ESTABLISHED)
+            break;
+        int avail = tcp_available();
+        if (avail > 0) {
+            int n = tcp_receive((uint8_t*)req_buf + req_len,
+                                (uint32_t)(sizeof(req_buf) - 1 - req_len));
+            if (n > 0) {
+                req_len += n;
+                timeout = 1000;
+                /* Stop at \r\n\r\n (end of HTTP headers) */
+                if (req_len >= 4 &&
+                    req_buf[req_len - 4] == '\r' &&
+                    req_buf[req_len - 3] == '\n' &&
+                    req_buf[req_len - 2] == '\r' &&
+                    req_buf[req_len - 1] == '\n')
+                    break;
+            }
+        }
+        __asm__ volatile("pause");
+    }
+
+    if (req_len == 0) {
+        terminal_writestring("No request received\n");
+        tcp_close();
+        return -1;
+    }
+
+    req_buf[req_len] = '\0';
+    pr_debug("HTTP request (%d bytes)\n", req_len);
+
+    /* ---- Parse GET path ---- */
+    char path[256];
+    int path_len = 0;
+
+    if (req_len < 5 || req_buf[0] != 'G' || req_buf[1] != 'E' ||
+        req_buf[2] != 'T' || req_buf[3] != ' ') {
+        pr_debug("not a GET request\n");
+        {
+            const char* resp = "HTTP/1.0 400 Bad Request\r\nContent-Length: 15\r\n\r\n400 Bad Request\n";
+            tcp_send((const uint8_t*)resp, strlen(resp));
+        }
+        tcp_close();
+        return -1;
+    }
+
+    int gi = 4; /* skip "GET " */
+    while (gi < req_len && req_buf[gi] != ' ' && req_buf[gi] != '\r' &&
+           path_len < (int)sizeof(path) - 1)
+        path[path_len++] = req_buf[gi++];
+    path[path_len] = '\0';
+
+    pr_debug("GET %s\n", path);
+
+    /* ---- Try to serve file from JexFS ---- */
+    static char resp_buf[4096];
+    uint32_t body_len = 0;
+    const char* content_type = "text/html";
+
+    /* "/" -> "/index.html" */
+    if (path_len == 1 && path[0] == '/') {
+        path[0] = '/';
+        memcpy(path + 1, "index.html", 11); /* includes NUL */
+    }
+
+    int fd = fs_open(path, 0); /* O_RDONLY = 0 */
+    if (fd >= 0) {
+        uint32_t file_size = (uint32_t)fs_seek(fd, 0, 2); /* SEEK_END */
+        fs_seek(fd, 0, 0); /* SEEK_SET */
+
+        if (file_size <= sizeof(resp_buf)) {
+            int nread = fs_read(fd, resp_buf, file_size);
+            if (nread > 0)
+                body_len = (uint32_t)nread;
+        } else {
+            pr_debug("file too large: %u\n", file_size);
+        }
+        fs_close(fd);
+    }
+
+    if (body_len == 0) {
+        /* File not found or too large — serve default page */
+        const char* default_page =
+            "<!DOCTYPE html>\n"
+            "<html><head><title>JexOS</title></head><body>\n"
+            "<h1>Hello from JexOS!</h1>\n"
+            "<p>Your hobby OS is serving HTTP.</p>\n"
+            "</body></html>\n";
+        uint32_t dflen = strlen(default_page);
+        if (dflen <= sizeof(resp_buf)) {
+            memcpy(resp_buf, default_page, dflen);
+            body_len = dflen;
+        }
+    }
+
+    /* ---- Build HTTP response header ---- */
+    char header[256];
+    uint32_t hdr_len = 0;
+
+    {
+        const char* s = "HTTP/1.0 200 OK\r\nContent-Type: ";
+        while (*s) header[hdr_len++] = *s++;
+        s = content_type;
+        while (*s) header[hdr_len++] = *s++;
+        s = "\r\nContent-Length: ";
+        while (*s) header[hdr_len++] = *s++;
+        int_to_string((int)body_len, num_buf);
+        {
+            char* np = num_buf;
+            while (*np) header[hdr_len++] = *np++;
+        }
+        header[hdr_len++] = '\r';
+        header[hdr_len++] = '\n';
+        header[hdr_len++] = '\r';
+        header[hdr_len++] = '\n';
+    }
+
+    tcp_send((const uint8_t*)header, hdr_len);
+    tcp_send((const uint8_t*)resp_buf, body_len);
+
+    terminal_writestring("200 OK (");
+    int_to_string((int)body_len, num_buf);
+    terminal_writestring(num_buf);
+    terminal_writestring(" bytes)\n");
+    pr_debug("served %u bytes\n", body_len);
 
     /* ---- Close ---- */
     tcp_close();

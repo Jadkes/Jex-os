@@ -31,6 +31,7 @@
 #include "dump.h"
 #include "test_suite.h"
 #include "tcp.h"
+#include "dhcp.h"
 #include "debug/ftrace.h"
 #include "kernel/vsnprintf.h"
 #include <stddef.h>
@@ -71,7 +72,7 @@ char shell_cwd[128] = "/home/user";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "history", "top", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp", "history", "top", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
 };
 
 /**
@@ -748,53 +749,147 @@ void net_command() {
     int_to_string(rtl8139_get_tx_count(), buf);
     terminal_writestring(buf);
     terminal_writestring(" packets\n");
+
+    terminal_writestring("  IP:   ");
+    {
+        uint8_t* ipb = (uint8_t*)&our_ip;
+        int_to_string(ipb[0], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(ipb[1], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(ipb[2], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(ipb[3], buf); terminal_writestring(buf);
+    }
+    terminal_writestring("\n");
+
+    terminal_writestring("  GW:   ");
+    {
+        uint8_t* gwb = (uint8_t*)&gateway_ip;
+        int_to_string(gwb[0], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(gwb[1], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(gwb[2], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(gwb[3], buf); terminal_writestring(buf);
+    }
+    terminal_writestring("\n");
+
+    terminal_writestring("  DNS:  ");
+    {
+        uint8_t* dnsb = (uint8_t*)&dns_server;
+        int_to_string(dnsb[0], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(dnsb[1], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(dnsb[2], buf); terminal_writestring(buf); terminal_putchar('.');
+        int_to_string(dnsb[3], buf); terminal_writestring(buf);
+    }
+    terminal_writestring("\n");
+}
+
+/**
+ * @brief Pager helper — pause after ~22 lines and wait for a keypress.
+ */
+static void more_prompt(int* line_count)
+{
+    (*line_count)++;
+    if (*line_count >= 22) {
+        terminal_writestring("--- more (press key) ---");
+        while (!keyboard_has_data())
+            __asm__ volatile("pause");
+        keyboard_read();                    /* consume the key */
+        terminal_writestring("\n");
+        *line_count = 0;
+    }
 }
 
 /**
  * @brief Display help text.
  */
 void help_command() {
+    int hlp_line = 0;
     terminal_writestring("Available commands:\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  help      - Show this help message\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  ls        - List files\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  cd <dir>  - Change directory\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  touch <f> - Create file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  mkdir <d> - Create directory\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  vix <f>   - Open Text Editor\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  cat <f>   - Read file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  cp <s> <d>- Copy file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  mv <o> <n>- Rename file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  rm <f>    - Delete file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  mkcode    - Create persistent hello.c\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  tcc <f>   - Compile and run C file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  cc <f>    - Compile C file to ELF\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  ./<f>     - Execute file\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  free      - Show memory usage\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  net       - Show network status\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  netlog <mode> - Set network verbosity (all/arp/ip/off)\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  ping [-v] <ip|host> - Ping with optional verbose timing\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  loopback [n] [ip] - Multi-ping timing statistics\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  tcpdump [n] [arp|ip] - Capture and hexdump packets\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  dns <host>- Resolve a hostname to IP\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  arp       - Show ARP cache\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  nicregs   - Dump RTL8139 NIC registers\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  fetch <host> [port] - HTTP GET a URL\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  serve     - Start HTTP server on port 80\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  dhcp      - Auto-configure IP via DHCP (DORA)\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  dump <addr> [n] - Hexdump memory at address\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  reboot    - Restart JexOS\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  shutdown  - Power off JexOS\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  music     - Start Jexos Tune\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  uptime    - Show system uptime\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  dmesg     - Print kernel log buffer\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  ps        - List processes\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  kill [-<sig>] <pid> - Send a signal to a process\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  kill -l            - List available signals\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  regs      - Show CPU registers\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  bt/backtrace - Show stack trace from current EBP\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  runtests   - Run kernel test suite\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  heapcheck  - Show kernel heap statistics\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  stackcheck - Show current stack pointer\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  ftrace <action> - Function tracer (start|stop|add <f>|clear|dump)\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  history    - Show command history\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  top        - Show per-task CPU usage\n");
+    more_prompt(&hlp_line);
 }
 
 /**
@@ -1157,6 +1252,12 @@ void execute_command() {
         log_serial("\n");
 
         http_get(hostname, port, "/");
+    }
+    else if (strcmp(shell_buffer, "serve") == 0) {
+        http_serve(80);
+    }
+    else if (strcmp(shell_buffer, "dhcp") == 0) {
+        dhcp_start();
     }
     else if (strncmp(shell_buffer, "dump ", 5) == 0) {
         char* args = shell_buffer + 5;

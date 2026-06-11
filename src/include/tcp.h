@@ -37,7 +37,7 @@ typedef struct {
 #define TCP_OPT_MSS_LEN     4
 #define TCP_OPT_MSS_VAL    1460
 
-/* TCP States */
+/* TCP States — passive-open states for HTTP server */
 
 enum tcp_state {
     TCP_CLOSED      = 0,
@@ -48,6 +48,8 @@ enum tcp_state {
     TCP_TIME_WAIT   = 5,
     TCP_CLOSE_WAIT  = 6,
     TCP_LAST_ACK    = 7,
+    TCP_LISTEN      = 8,   /* passive open: waiting for SYN */
+    TCP_SYN_RCVD    = 9,   /* SYN received, waiting for ACK */
 };
 
 /* TCP pseudo-header for checksum computation */
@@ -68,6 +70,8 @@ typedef struct {
 /* Public API */
 
 int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port);
+int tcp_listen(uint16_t port);                          /* passive open on port */
+int tcp_accept(void);                                   /* accept pending connection */
 int tcp_send(const uint8_t* data, uint32_t len);
 int tcp_receive(uint8_t* buf, uint32_t buf_len);
 int tcp_available(void);
@@ -77,5 +81,6 @@ int tcp_get_state(void);
 uint32_t tcp_get_remote_ip(void);
 uint16_t tcp_get_remote_port(void);
 int http_get(const char* hostname, uint16_t port, const char* path);
+int http_serve(uint16_t port);                          /* serve one HTTP request */
 
 #endif /* TCP_H */
