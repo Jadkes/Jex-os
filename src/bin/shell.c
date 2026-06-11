@@ -785,7 +785,8 @@ void help_command() {
     terminal_writestring("  uptime    - Show system uptime\n");
     terminal_writestring("  dmesg     - Print kernel log buffer\n");
     terminal_writestring("  ps        - List processes\n");
-    terminal_writestring("  kill <pid>- Terminate a process\n");
+    terminal_writestring("  kill [-<sig>] <pid> - Send a signal to a process\n");
+    terminal_writestring("  kill -l            - List available signals\n");
     terminal_writestring("  regs      - Show CPU registers\n");
     terminal_writestring("  bt/backtrace - Show stack trace from current EBP\n");
     terminal_writestring("  runtests   - Run kernel test suite\n");
@@ -992,14 +993,35 @@ void execute_command() {
         task_list();
     }
     else if (strncmp(shell_buffer, "kill ", 5) == 0) {
-        char* pidstr = shell_buffer + 5;
-        int pid = atoi(pidstr);
-        if (pid == 1) {
-            terminal_writestring("kill: cannot kill init task\n");
-        } else if (task_kill(pid) < 0) {
-            terminal_writestring("kill: task not found\n");
+        char* args = shell_buffer + 5;
+        while (*args == ' ') args++;
+
+        if (strcmp(args, "-l") == 0) {
+            terminal_writestring(" 1 SIGHUP   2 SIGINT    9 SIGKILL\n");
+            terminal_writestring("15 SIGTERM 17 SIGCHLD\n");
+        } else if (args[0] == '-') {
+            /* kill -<sig> <pid> */
+            int sig = atoi(args + 1);
+            while (*args && *args != ' ') args++;
+            while (*args == ' ') args++;
+            int pid = atoi(args);
+            if (pid <= 0) {
+                terminal_writestring("usage: kill -<sig> <pid>\n");
+            } else if (pid == 1) {
+                terminal_writestring("kill: cannot send signal to init task\n");
+            } else if (sys_kill(pid, sig) < 0) {
+                terminal_writestring("kill: failed\n");
+            }
         } else {
-            terminal_writestring("Task marked for termination\n");
+            /* kill <pid> — default SIGTERM */
+            int pid = atoi(args);
+            if (pid == 1) {
+                terminal_writestring("kill: cannot kill init task\n");
+            } else if (task_kill(pid) < 0) {
+                terminal_writestring("kill: task not found\n");
+            } else {
+                terminal_writestring("Task terminated\n");
+            }
         }
     }
     else if (strcmp(shell_buffer, "regs") == 0) {
@@ -1246,6 +1268,12 @@ void shell_loop() {
     extern int is_serial_received(); extern char read_serial();
     while(1) {
         workqueue_run();
+        /* Poll keyboard ring buffer (PS/2 driver writes to ring buffer in ISR) */
+        while (keyboard_has_data()) {
+            int c = keyboard_read();
+            if (c != -1) shell_input((char)c);
+        }
+        /* Poll serial input for debug/remote access */
         while (is_serial_received()) {
             char c = read_serial(); if (c == '\r') c = '\n'; shell_input(c);
         }
@@ -1260,6 +1288,16 @@ void shell_loop() {
  */
 void shell_input(char key) {
     if (editor_running) { editor_input(key); return; }
+
+    /* Ctrl+L — clear screen and redraw prompt */
+    if (key == 0x0C) {
+        terminal_initialize();
+        print_logo();
+        print_prompt();
+        shell_refresh_line();
+        return;
+    }
+
     if (key == '\n') { execute_command(); return; }
     if (key == '\t') { shell_autocomplete(); return; }
     
