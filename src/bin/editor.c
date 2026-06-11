@@ -256,15 +256,15 @@ void editor_input(char key) {
     if (!editor_running) return;
     
     if (quit_confirm) {
-        if (key == 'y' || key == 'Y') { save_file_internal(); editor_running = 0; terminal_initialize(); shell_init(); }
-        else if (key == 'n' || key == 'N') { editor_running = 0; terminal_initialize(); shell_init(); }
+        if (key == 'y' || key == 'Y') { save_file_internal(); kfree(edit_buffer); edit_buffer = NULL; editor_running = 0; terminal_initialize(); shell_init(); }
+        else if (key == 'n' || key == 'N') { kfree(edit_buffer); edit_buffer = NULL; editor_running = 0; terminal_initialize(); shell_init(); }
         quit_confirm = 0; if (editor_running) render_text(); return;
     }
     
     /* Ctrl+Q (Quit) */
     if (key == 0x11) {
         if (is_dirty) { quit_confirm = 1; render_text(); } 
-        else { editor_running = 0; terminal_initialize(); shell_init(); }
+        else { kfree(edit_buffer); edit_buffer = NULL; editor_running = 0; terminal_initialize(); shell_init(); }
         return;
     }
     /* Ctrl+S (Save) */
