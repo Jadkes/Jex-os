@@ -1172,19 +1172,13 @@ void execute_command() {
     else if (strcmp(shell_buffer, "heapcheck") == 0) {
         char buf[16];
         uint32_t used = kheap_get_used();
-        uint32_t cur  = kheap_get_current();
-        terminal_writestring("Heap: bump allocator at 0x");
-        format_hex(kheap_get_start(), buf);
-        terminal_writestring(buf);
-        terminal_writestring("\n  Used:     ");
+        uint32_t free = kheap_get_free();
+        terminal_writestring("Heap: slab allocator\n");
+        terminal_writestring("  Committed: ");
         int_to_string((int)used, buf);
         terminal_writestring(buf);
-        terminal_writestring(" bytes\n  Current:  0x");
-        format_hex(cur, buf);
-        terminal_writestring(buf);
-        terminal_writestring("\n  Free (est): ");
-        /* Approx ~1 GB addressable above start (on i386 kernel mapping) */
-        int_to_string((int)(0x40000000 - used), buf);
+        terminal_writestring(" bytes\n  Free:      ");
+        int_to_string((int)free, buf);
         terminal_writestring(buf);
         terminal_writestring(" bytes\n");
     }
