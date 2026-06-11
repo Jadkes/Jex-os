@@ -11,38 +11,45 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/**
- * @brief Allocate a block of memory from the kernel heap.
- * @param size Number of bytes to allocate.
- * @return Pointer to the allocated memory, or NULL if failed.
- */
+/* =============== Slab Allocator =============== */
+
+#define SLAB_MAGIC      0x534C4142  /* "SLAB" */
+#define LARGE_MAGIC     0x4C524700  /* "LRG\0" */
+#define SLAB_PAGE_SIZE  4096
+#define SLAB_MAX_SIZE   4096
+#define SLAB_CACHE_COUNT 9
+
+typedef struct slab {
+    uint32_t        magic;      /* SLAB_MAGIC or LARGE_MAGIC */
+    struct slab*    next;       /* Next slab in cache's linked list */
+    uint32_t        obj_size;   /* Size of each object in bytes */
+    uint32_t        obj_count;  /* Total objects in this slab */
+    uint32_t        free_count; /* Number of free objects remaining */
+    uint32_t        free_head;  /* Index of first free object (0xFFFFFFFF = empty) */
+    uint32_t        pad;        /* Align to 32 bytes */
+} __attribute__((packed)) slab_t;
+
+typedef struct {
+    slab_t*     slab_list;      /* Linked list of all slabs in this cache */
+    uint32_t    obj_size;       /* Object size for this cache */
+    uint32_t    objs_per_slab;  /* Precomputed: (4096 - sizeof(slab_t)) / obj_size */
+} slab_cache_t;
+
+typedef struct {
+    uint32_t magic;             /* LARGE_MAGIC */
+    uint32_t pages;             /* Number of 4KB pages allocated */
+} large_hdr_t;
+
+/* Heap API */
+void init_kheap(void);
+uint32_t kheap_get_free(void);
+void     kheap_reclaim(void);
+
+/* Legacy API */
 void *kmalloc(size_t size);
-
-/**
- * @brief Free a block of memory previously allocated by kmalloc.
- * @param p Pointer to the block to free.
- */
 void kfree(void *p);
-
-/**
- * @brief Initialize the kernel heap.
- * @param start_addr Starting physical address for the heap.
- */
-void init_kheap(uint32_t start_addr);
-
-/**
- * @brief Return number of bytes allocated from the heap so far.
- */
 uint32_t kheap_get_used(void);
-
-/**
- * @brief Return the total heap range start address.
- */
 uint32_t kheap_get_start(void);
-
-/**
- * @brief Return the current heap bump pointer (next free address).
- */
 uint32_t kheap_get_current(void);
 
 /* Standard Library Utility Functions */
