@@ -33,6 +33,7 @@ docs/
 
 # Claude Code
 .claude/
+/CLAUDE.md
 
 # References and temp files
 linux 0.11/
