@@ -2,9 +2,9 @@
  * @file kheap.c
  * @brief Kernel Heap — power-of-2 slab allocator with PMM fallback.
  *
- * 9 size classes (16B–4096B). Intra-slab free list for O(1) alloc/free.
+ * 8 size classes (16B–2048B). Intra-slab free list for O(1) alloc/free.
  * Slab header at page start for O(1) kfree via page-mask + magic check.
- * Allocations > 4096 bytes go to PMM with LARGE_MAGIC header.
+ * Allocations > 2048 bytes go to PMM with LARGE_MAGIC header.
  * String utilities in the second half of the file are kept for linking.
  */
 
@@ -17,7 +17,7 @@
 /* =============== Slab Allocator Core =============== */
 
 static const uint32_t slab_sizes[SLAB_CACHE_COUNT] = {
-    16, 32, 64, 128, 256, 512, 1024, 2048, 4096
+    16, 32, 64, 128, 256, 512, 1024, 2048
 };
 
 static slab_cache_t caches[SLAB_CACHE_COUNT];
