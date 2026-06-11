@@ -36,6 +36,7 @@ typedef struct task {
     uint32_t kstack;                    /**< Kernel stack base for this task. */
     task_state_t state;                 /**< Current execution state. */
     char name[16];                      /**< Human-readable task name */
+    uint32_t cpu_ticks;                 /**< CPU ticks consumed (for top command). */
     struct task* next;                  /**< Next task in the linked scheduler list. */
 } task_t;
 
@@ -76,5 +77,11 @@ void task_list();
  * @return 0 on success, -1 if not found.
  */
 int task_kill(int pid);
+
+/**
+ * @brief Global current-task and ready-queue pointers (defined in task.c).
+ */
+extern volatile task_t* current_task;
+extern volatile task_t* ready_queue;
 
 #endif // TASK_H

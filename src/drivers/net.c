@@ -1,12 +1,6 @@
 /**
  * @file net.c
  * @brief Network stack — ARP, IP, ICMP, UDP, DNS.
- *
- * FIXME: reply_buf double-DMA race in ISR batch processing.
- * DONE:   strict-aliasing violations in DNS RX path (read_be16 helper).
- * DONE:   udp_checksum 1512-byte buffer moved off the IRQ stack.
- * DONE:   DNS handler minimum-valid-length check (was < 2, now < 12).
- * DONE:   ARP timeout increased for QEMU slirp compatibility.
  */
 
 #define pr_fmt(fmt) "[NET] " fmt
@@ -29,7 +23,6 @@ extern void int_to_string(int n, char* str);
 
 static uint8_t send_buf[PACKET_BUF_SIZE];       /* shell-initiated transmits */
 static uint8_t reply_buf[PACKET_BUF_SIZE];      /* IRQ reply path */
-/* FIXME: reply_buf double-DMA race when ISR processes >1 packet needing a reply */
 
 #define ARP_CACHE_SIZE 4
 
@@ -66,10 +59,6 @@ void netlog_set_flags(int flags)
 
 /*
  * checksum - 16-bit one's complement checksum over len bytes.
- *
- * WHY: Standard Internet checksum used by IP, ICMP, UDP (with pseudo-header).
- *      Accumulates 16-bit words, folds carry bits, and returns the complement.
- *
  * @param buf  Data viewed as 16-bit words.
  * @param len  Length in bytes (odd length folds the trailing byte).
  * @return     The one's complement checksum.
@@ -94,11 +83,6 @@ uint16_t checksum(uint16_t* buf, uint32_t len)
 
 /*
  * read_be16 - Read a 16-bit big-endian value via memcpy (strict-aliasing safe).
- *
- * WHY: Casting uint8_t* to uint16_t* violates C99 §6.5 effective-type rules.
- *      memcpy is the standard-compliant way to type-pun; the compiler
- *      optimises the call to a single load on any half-decent arch.
- *
  * @param p  Pointer (need not be aligned).
  * @return    Big-endian value converted to host byte order.
  */
@@ -495,15 +479,6 @@ static udp_handler_entry_t udp_handlers[UDP_MAX_HANDLERS];
 
 /*
  * udp_checksum - Compute UDP checksum with the pseudo-header.
- *
- * WHY: RFC 768 requires a 12-byte pseudo-header (src IP, dest IP,
- *      protocol, UDP length) to be prepended to the UDP datagram
- *      for checksum calculation.  We build it on the stack, compute
- *      the combined checksum, and discard the pseudo-header.
- *
- * DONE: Buffer moved from stack to static; was 1512 bytes on stack in ISR.
- *       Single-core design means no re-entrancy concern.
- *
  * @param src_ip    Source IP (network order).
  * @param dest_ip   Destination IP (network order).
  * @param udp_hdr   Pointer to the UDP header.
@@ -726,11 +701,7 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
     /* Compute UDP checksum with pseudo-header (RFC 768).
      * The checksum field was zeroed above before payload copy.
      * RFC 768: if computed checksum is 0, send 0xFFFF (0 means "no checksum").
-     *
-     * WHY cli/sti: udp_checksum uses a static scratch buffer shared with
-     * handle_udp (ISR context).  Disabling interrupts prevents the ISR
-     * from clobbering the buffer mid-computation.  The window is < 100 us
-     * so the risk of missed Rx is negligible. */
+     */
     {
         __asm__ volatile("cli");
         uint16_t csum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
@@ -792,14 +763,14 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
         /* Copy the incoming IP datagram (including payload) */
         memcpy(p, data, ip_tot);
 
-        /* Fix IP header: swap src↔dest, recalculate checksum */
+        /* IP header: swap src↔dest, recalculate checksum */
         ip_header_t* rip = (ip_header_t*)p;
         rip->dest_ip  = ip->src_ip;
         rip->src_ip   = OUR_IP;
         rip->checksum = 0;
         rip->checksum = checksum((uint16_t*)rip, ip_hdr);
 
-        /* Fix ICMP: Echo Request → Echo Reply */
+        /* ICMP: Echo Request → Echo Reply */
         icmp_header_t* ricmp = (icmp_header_t*)(p + ip_hdr);
         ricmp->type    = ICMP_ECHO_REPLY;
         ricmp->code    = 0;
@@ -1121,9 +1092,6 @@ void tcpdump_print(void)
  *
  * Called from handle_udp (IRQ context).  Validates the transaction ID,
  * then stashes the raw response and signals the waiter.
- *
- * DONE: Minimum-length check raised to 12 bytes (full DNS header).
- * DONE: XID read uses read_be16() to avoid strict-aliasing UB.
  */
 static void dns_handler(uint32_t src_ip, uint16_t src_port,
                          const uint8_t* data, uint32_t len, void* userdata)

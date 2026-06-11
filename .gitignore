@@ -31,6 +31,9 @@ docs/
 *.swo
 *~
 
+# Claude Code
+.claude/
+
 # References and temp files
 linux 0.11/
 Linux-0.11/

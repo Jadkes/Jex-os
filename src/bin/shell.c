@@ -1233,9 +1233,6 @@ void shell_init() {
     print_logo();
     terminal_writestring("\nWelcome to JexOS v0.5 Peak UX Release!\nType 'help' for a list of commands.\n\n");
     print_prompt();
-    log_serial("Btw, if you read this, this an staging version!\n");
-    log_serial("And cuz no one can try the staging unless your a dev\n");
-    log_serial("You're a pretty cute dev, *pat, pat*");
 }
 
 /**
