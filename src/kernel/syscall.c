@@ -7,6 +7,7 @@
  */
 
 #include "syscall.h"
+#include "task.h"
 #include "idt.h"
 #include "shell.h"
 #include "init.h"
@@ -124,6 +125,16 @@ void syscall_handler(registers_t *regs)
         char c = (char)regs->ebx;
         char str[2] = {c, '\0'};
         terminal_writestring(str);
+    }
+    else if (regs->eax == SYS_SIGNAL)
+    {
+        /* EBX = sig, ECX = handler */
+        regs->eax = (uint32_t)sys_signal((int)regs->ebx, (void*)regs->ecx);
+    }
+    else if (regs->eax == SYS_KILL)
+    {
+        /* EBX = pid, ECX = sig */
+        regs->eax = (uint32_t)sys_kill((int)regs->ebx, (int)regs->ecx);
     }
 }
 
