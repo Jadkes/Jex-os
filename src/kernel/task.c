@@ -44,6 +44,10 @@ void init_tasking() {
     current_task->cpu_ticks = 0;
     current_task->next = NULL;
     current_task->state = STATE_RUNNING;
+    current_task->signal_pending = 0;
+    current_task->signal_blocked = 0;
+    for (int i = 0; i < 32; i++)
+        current_task->signal_handlers[i] = NULL;
     strcpy((char*)current_task->name, "shell");
 
     __asm__ volatile("sti");
@@ -103,6 +107,10 @@ int fork() {
     child->state = STATE_READY;
     child->next = NULL;
     strcpy(child->name, parent->name);
+    child->signal_pending = 0;
+    child->signal_blocked = parent->signal_blocked;
+    for (int i = 0; i < 32; i++)
+        child->signal_handlers[i] = parent->signal_handlers[i];
 
     /* Allocate kernel stack with a guard page below it */
     /* Allocate 12KB total — 8KB stack + 4KB guard page */
@@ -217,18 +225,44 @@ int getpid() {
  */
 device_init(init_tasking);
 
-int task_kill(int pid)
-{
-    /* Kernel-level guard: never kill the init/shell task */
-    if (pid == 1)
-        return -1;
+/**
+ * @brief Register a signal handler for the current task.
+ * @param sig Signal number (1-31).
+ * @param handler SIG_IGN (1), SIG_DFL (0), or a function pointer.
+ * @return Previous handler, or SIG_ERR on invalid sig.
+ */
+void* sys_signal(int sig, void* handler) {
+    if (sig < 1 || sig > 31 || sig == SIGKILL) {
+        return SIG_ERR;
+    }
+    void* prev = current_task->signal_handlers[sig];
+    current_task->signal_handlers[sig] = handler;
+    return prev;
+}
+
+/**
+ * @brief Send a signal to a process.
+ * @param pid Target process ID.
+ * @param sig Signal number (1-31).
+ * @return 0 on success, -1 if PID not found or sig invalid.
+ */
+int sys_kill(int pid, int sig) {
+    if (sig < 1 || sig > 31) return -1;
+
+    /* Never kill PID 1 (the shell/init) */
+    if (pid == 1) return -1;
+
     task_t* t = (task_t*)ready_queue;
     while (t) {
         if (t->id == pid) {
-            t->state = STATE_ZOMBIE;
+            t->signal_pending |= (1 << sig);
             return 0;
         }
         t = t->next;
     }
     return -1;
+}
+
+int task_kill(int pid) {
+    return sys_kill(pid, SIGTERM);
 }
