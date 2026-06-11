@@ -4,6 +4,13 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## ✅ Completed Milestones
 
+### v0.6.0 — Slab Allocator, Signals, Keyboard Buffer
+- [x] **Slab Allocator**: 8 power-of-2 size classes (16B–2048B), O(1) kfree
+- [x] **PMM Fallback**: Handles missing multiboot memory map
+- [x] **Signal Handling**: 32 signal slots per task, sys_signal/sys_kill
+- [x] **Keyboard Ring Buffer**: ISR decoupled from shell, no dropped keys
+- [x] **Ctrl+L**: Clear screen shortcut
+
 ### Shell & UX
 - [x] **Tab Completion**: Auto-complete filenames and commands
 - [x] **Persistent Command History**: `.history` survives reboots
@@ -11,6 +18,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **Uptime**: System uptime command
 - [x] **Top**: Per-task CPU usage monitor
 - [x] **Boot Banner**: Build info + device listing on startup
+- [x] **Ctrl+L**: Clear screen shortcut
 
 ### Debug Suite
 - [x] **Panic Handler**: Crash screen, register dump, stack trace, page fault decode
@@ -71,14 +79,14 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [ ] **Environment Variables**: `PATH` support
 
 ### System Improvements
-- [ ] **Dynamic Memory**: Replace bump allocator with proper slab/free-list
-- [ ] **Keyboard Buffering**: Don't drop keys under load
-- [ ] **Signal Handling**: Basic Unix signal delivery
+- [x] **Slab Allocator**: Power-of-2 size classes, O(1) kfree, PMM fallback
+- [x] **Keyboard Buffering**: Ring buffer, no dropped keys under load
+- [x] **Signal Handling**: sys_signal/sys_kill, delivery in scheduler
 - [ ] **SMP / Multi-core**: Because one CPU is boring
 - [ ] **AHCI / SATA**: Faster disk I/O
 - [ ] **USB Keyboard/Mouse**: Beyond PS/2
 
 ### Polish
-- [ ] **Ctrl+L**: Clear screen shortcut
+- [x] **Ctrl+L**: Clear screen shortcut
 - [ ] **Scrollback**: Terminal history buffer
 - [ ] **Color Themes**: Customizable palette

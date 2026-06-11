@@ -17,7 +17,13 @@ rootfs/
 
 # QEMU / debug
 serial.log
+serial_*.log
 core
+
+# Test artifacts
+vga_*.bin
+slowloris_test.*
+test_cmd.*
 
 # Generated docs
 Doxyfile
