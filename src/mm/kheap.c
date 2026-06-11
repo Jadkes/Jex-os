@@ -105,7 +105,7 @@ static slab_t* ptr_to_slab(void* ptr) {
 /**
  * @brief Allocate kernel memory.
  *
- * Routes to slab cache for sizes <= 4096 bytes, PMM large alloc for larger.
+ * Routes to slab cache for sizes <= SLAB_MAX_SIZE (2048), PMM large alloc for larger.
  * Returns NULL for size == 0 or allocation failure.
  *
  * @param size Number of bytes to allocate.
@@ -114,7 +114,7 @@ static slab_t* ptr_to_slab(void* ptr) {
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
 
-    /* Large allocation via PMM (> 4096 bytes) */
+    /* Large allocation via PMM (> SLAB_MAX_SIZE) */
     if (size > SLAB_MAX_SIZE) {
         uint32_t total = size + sizeof(large_hdr_t);
         uint32_t pages = (total + SLAB_PAGE_SIZE - 1) / SLAB_PAGE_SIZE;
@@ -163,7 +163,7 @@ void kfree(void* ptr) {
 /**
  * @brief Initialize the kernel heap slab allocator.
  *
- * Pre-computes object counts for all 9 caches.
+ * Pre-computes object counts for all 8 caches.
  * No pre-allocation — slabs are allocated on first kmalloc.
  */
 void init_kheap(void) {
