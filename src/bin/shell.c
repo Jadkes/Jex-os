@@ -71,7 +71,7 @@ char shell_cwd[128] = "/home/user";
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "history", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "history", "top", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
 };
 
 /**
@@ -793,6 +793,7 @@ void help_command() {
     terminal_writestring("  stackcheck - Show current stack pointer\n");
     terminal_writestring("  ftrace <action> - Function tracer (start|stop|add <f>|clear|dump)\n");
     terminal_writestring("  history    - Show command history\n");
+    terminal_writestring("  top        - Show per-task CPU usage\n");
 }
 
 /**
@@ -1040,6 +1041,43 @@ void execute_command() {
             terminal_write(line, (size_t)n);
             terminal_writestring(history[idx]);
             terminal_putchar('\n');
+        }
+    }
+    else if (strcmp(shell_buffer, "top") == 0) {
+        uint32_t total = 0;
+        task_t* task = (task_t*)ready_queue;
+
+        while (task) {
+            total += task->cpu_ticks;
+            task = task->next;
+        }
+        if (current_task)
+            total += current_task->cpu_ticks;
+
+        if (total == 0) total = 1;
+
+        terminal_writestring("PID  NAME       CPU%  STATE\n");
+        task = (task_t*)ready_queue;
+        while (task) {
+            uint32_t pct = (task->cpu_ticks * 100) / total;
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%-3d  %-10s %-4u  %s\n",
+                     task->id, task->name, pct, "RUNNING");
+            terminal_writestring(buf);
+            task = task->next;
+        }
+        /* Also show current_task if not in ready_queue */
+        if (current_task) {
+            int found = 0;
+            task = (task_t*)ready_queue;
+            while (task) { if (task == current_task) { found = 1; break; } task = task->next; }
+            if (!found) {
+                uint32_t pct = (current_task->cpu_ticks * 100) / total;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%-3d  %-10s %-4u  %s\n",
+                         current_task->id, current_task->name, pct, "RUNNING");
+                terminal_writestring(buf);
+            }
         }
     }
     else if (strncmp(shell_buffer, "tcpdump", 7) == 0) {
