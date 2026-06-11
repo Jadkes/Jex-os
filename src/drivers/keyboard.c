@@ -10,7 +10,6 @@
 #include "irq.h"
 #include "init.h"
 #include "ports.h"
-#include "shell.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -90,6 +89,11 @@ unsigned char kbdus_shifted[128] = {
 bool shift_held = false;
 bool ctrl_held = false;
 
+/* Keyboard ring buffer — ISR writes, shell reads */
+static volatile char kbd_buffer[KBD_BUF_SIZE];
+static volatile uint16_t kbd_head = 0;   /* Written by ISR */
+static volatile uint16_t kbd_tail = 0;   /* Written by shell consumer */
+
 /**
  * @brief Keyboard Interrupt Callback (IRQ1).
  * Reads the scancode from port 0x60 and processes key presses/releases.
@@ -125,8 +129,13 @@ void keyboard_callback(registers_t *regs) {
         }
 
         if (c != 0) {
-            /* Send character to the interactive shell input buffer */
-            shell_input(c);
+            /* Write to ring buffer (ISR producer, shell consumer) */
+            uint16_t next_head = (kbd_head + 1) % KBD_BUF_SIZE;
+            if (next_head != kbd_tail) {  /* Buffer not full */
+                kbd_buffer[kbd_head] = c;
+                kbd_head = next_head;
+            }
+            /* If buffer full, character is dropped silently */
         }
     }
     (void)regs;
@@ -138,6 +147,36 @@ void keyboard_callback(registers_t *regs) {
  */
 void init_keyboard() {
     register_interrupt_handler(1, keyboard_callback);
+}
+
+/**
+ * @brief Read the next character from the keyboard ring buffer (non-blocking).
+ * @return The character (0-255), or -1 if buffer is empty.
+ */
+int keyboard_read(void)
+{
+    if (kbd_head == kbd_tail) return -1;  /* Empty */
+    char c = kbd_buffer[kbd_tail];
+    kbd_tail = (kbd_tail + 1) % KBD_BUF_SIZE;
+    return c;
+}
+
+/**
+ * @brief Check if keyboard data is available (non-blocking).
+ * @return 1 if data available, 0 otherwise.
+ */
+int keyboard_has_data(void)
+{
+    return (kbd_head != kbd_tail) ? 1 : 0;
+}
+
+/**
+ * @brief Flush all pending keyboard input by resetting the buffer.
+ */
+void keyboard_flush(void)
+{
+    kbd_head = 0;
+    kbd_tail = 0;
 }
 
 early_init(init_keyboard);
