@@ -5,9 +5,29 @@ JexOS is a from-scratch, x86 hobby operating system with a full network stack, m
 
 ---
 
-## 🚀 Current State: Network Stack + Debug Suite
+## 🚀 Current State: v0.6.0 — Slab Allocator, Signals, Keyboard Buffer
 
-The OS has grown far beyond a basic toy kernel. It now boots on real hardware, talks to the network, runs user-mode processes, and has a comprehensive debug infrastructure.
+The OS has grown far beyond a basic toy kernel. It now boots on real hardware, talks to the network, runs user-mode processes, has a comprehensive debug infrastructure, and a proper memory allocator.
+
+### 🧠 Memory Management
+- **Slab Allocator**: Power-of-2 size classes (16B–2048B) with O(1) `kfree`
+- **PMM Fallback**: Handles missing multiboot memory map (QEMU `-kernel` boot)
+- **Large Allocation Fallback**: `pmm_alloc_blocks()` for requests > 2048B
+- **Heap Inspection**: `heapcheck` shows slab committed/free stats
+
+### ⚡ Process Control
+- **Signal Handling**: `sys_signal()` / `sys_kill()` syscalls with 32 signal slots
+- **Signal Delivery**: Pending signal check in `task_switch()` scheduler
+- **`kill` Command**: `kill <pid>` (SIGTERM), `kill -9 <pid>` (SIGKILL), `kill -l`
+
+### ⌨️ Shell & UX
+- **Keyboard Ring Buffer**: ISR stores scancodes — no more dropped keys under load
+- **Ctrl+L**: Clear screen shortcut
+- **Tab Completion**: Commands and filenames
+- **Persistent Command History**: Survives reboots (`.history`)
+- **Dynamic Prompt**: Color-coded, directory-aware (`root@jexos:/path> `)
+- **Process Management**: `ps`, `kill`, `uptime`, `top` commands
+- **Editor**: Vix 3.0 IDE with syntax highlighting and `Ctrl+B` build
 
 ### 🌐 Networking
 - **RTL8139 NIC Driver**: DMA-based ring buffer, interrupt-driven RX/TX, auto-probe via PCI
@@ -29,13 +49,6 @@ The OS has grown far beyond a basic toy kernel. It now boots on real hardware, t
 - **WARN_ON / BUG_ON**: Kernel warning infrastructure
 - **Lockdep**: Lock ordering validator
 
-### ⌨️ Shell & UX
-- **Tab Completion**: Commands and filenames
-- **Persistent Command History**: Survives reboots (`.history`)
-- **Dynamic Prompt**: Color-coded, directory-aware (`root@jexos:/path> `)
-- **Process Management**: `ps`, `kill`, `uptime`, `top` commands
-- **Editor**: Vix 3.0 IDE with syntax highlighting and `Ctrl+B` build
-
 ### 📂 Storage & Filesystem
 - **JexFS**: Custom persistent filesystem on 1.44MB floppy image
 - **VFS Layer**: Mount point dispatch (JexFS, devtmpfs, sysfs)
@@ -48,8 +61,11 @@ The OS has grown far beyond a basic toy kernel. It now boots on real hardware, t
 
 | Feature | Description |
 | :--- | :--- |
+| **Slab Allocator** | Power-of-2 size classes, O(1) kfree, PMM fallback |
 | **Full Network Stack** | ARP/IP/ICMP/UDP/TCP from scratch |
 | **RTL8139 Driver** | DMA ring buffer, interrupt-driven |
+| **Signal Handling** | sys_signal/sys_kill, 32 signal slots |
+| **Keyboard Buffer** | Ring buffer, no dropped keys under load |
 | **Panic Handler** | Crash screen + stack trace + register dump |
 | **Tab Completion** | Commands and filenames |
 | **Persistence** | Files and history survive reboots |
@@ -61,6 +77,10 @@ The OS has grown far beyond a basic toy kernel. It now boots on real hardware, t
 
 ## 🗺️ Roadmap
 
+- [x] **Slab Allocator**: Power-of-2 size classes, O(1) kfree
+- [x] **Keyboard Buffering**: Ring buffer, no dropped keys under load
+- [x] **Signal Handling**: sys_signal/sys_kill, delivery in scheduler
+- [x] **Ctrl+L**: Clear screen shortcut
 - [ ] **JexSnake**: Terminal game
 - [ ] **Pipes & Redirection**: Shell IPC (`|`, `>`, `<`)
 - [ ] **DHCP Client**: Automatic IP configuration
