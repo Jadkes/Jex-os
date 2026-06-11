@@ -83,7 +83,7 @@ $(ISO): $(KERNEL) $(IMG)
 	@echo "ISO built: $(ISO)"
 
 run: $(KERNEL) $(IMG)
-	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0 -device rtl8139,netdev=net0
+	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0,hostfwd=tcp::8080-:80 -device rtl8139,netdev=net0
 
 clean:
 	rm -f $(OBJECTS) $(KERNEL) $(IMG) $(ISO) tools/mkjexfs tools/gen_kallsyms src/kernel/kallsyms_data.S src/kernel/kallsyms_data.o
