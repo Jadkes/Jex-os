@@ -41,6 +41,7 @@ void init_tasking() {
     current_task->eip = 0;
     current_task->page_directory = &kernel_directory;
     current_task->kstack = 0; /* Shell uses the initial boot stack */
+    current_task->cpu_ticks = 0;
     current_task->next = NULL;
     current_task->state = STATE_RUNNING;
     strcpy((char*)current_task->name, "shell");
@@ -98,6 +99,7 @@ int fork() {
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
     child->id = next_pid++;
     child->page_directory = parent->page_directory;
+    child->cpu_ticks = 0;
     child->state = STATE_READY;
     child->next = NULL;
     strcpy(child->name, parent->name);
