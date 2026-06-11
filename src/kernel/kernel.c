@@ -41,6 +41,7 @@
 #include "kernel/kallsyms.h"
 #include "init.h"
 #include "kernel/lockdep.h"
+#include "kernel/vsnprintf.h"
 #include "devtmpfs.h"
 #include "jexfs.h"
 
@@ -50,6 +51,41 @@ uint32_t kernel_stack_top;
 // Globals for initcall parameter passing (e.g. pmm_init needs mboot info)
 uint32_t g_mboot_magic;
 multiboot_info_t* g_mboot_info;
+
+/**
+ * @brief Display boot banner with version, build date, RAM, NIC, and FS info.
+ */
+static void print_banner(void)
+{
+    char buf[128];
+
+    terminal_writestring("\n");
+    terminal_writestring("JexOS v0.1 \x97 i386 \x97 Monolithic\n");
+    terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
+
+    /* RAM size from BIOS int 0x12 */
+    uint16_t ram_kb = 0;
+    __asm__ volatile("int $0x12" : "=a"(ram_kb) : "a"(0x1200) : "ebx", "ecx", "edx");
+    snprintf(buf, sizeof(buf), "RAM: %u KB\n", (uint32_t)ram_kb);
+    terminal_writestring(buf);
+
+    /* RTL8139 MAC address — check if driver is initialized */
+    if (rtl8139_is_initialized()) {
+        uint8_t mac[6];
+        rtl8139_get_mac(mac);
+        terminal_writestring("NIC: RTL8139 (");
+        for (int i = 0; i < 6; i++) {
+            snprintf(buf, 3, "%02x", mac[i]);
+            terminal_writestring(buf);
+            if (i < 5)
+                terminal_putchar(':');
+        }
+        terminal_writestring(")\n");
+    }
+
+    terminal_writestring("FS: JexFS v1, 1.44 MB\n");
+    terminal_writestring("\n");
+}
 
 /**
  * @brief Kernel Entry Point
@@ -124,7 +160,8 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     
     pr_info("Starting Shell...\n");
 
-    /* 13. Enter the Shell. */
+    /* 13. Print boot banner then Enter the Shell. */
+    print_banner();
     shell_main();
     
     /* 14. Shutdown/Halt. */
