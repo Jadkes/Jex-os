@@ -38,7 +38,24 @@ typedef struct task {
     char name[16];                      /**< Human-readable task name */
     uint32_t cpu_ticks;                 /**< CPU ticks consumed (for top command). */
     struct task* next;                  /**< Next task in the linked scheduler list. */
+
+    /* Signal handling */
+    uint32_t signal_pending;            /**< Bitmask: pending signals (set by kill, cleared by delivery) */
+    uint32_t signal_blocked;            /**< Bitmask: blocked signals */
+    void*    signal_handlers[32];       /**< Per-signal handlers (NULL = SIG_DFL) */
 } task_t;
+
+/* Signal numbers */
+#define SIGHUP    1
+#define SIGINT    2
+#define SIGKILL   9
+#define SIGTERM  15
+#define SIGCHLD  17
+
+/* Signal actions */
+#define SIG_DFL ((void*)0)
+#define SIG_IGN ((void*)1)
+#define SIG_ERR ((void*)-1)
 
 /**
  * @brief Initialize the multitasking system.
@@ -77,6 +94,10 @@ void task_list();
  * @return 0 on success, -1 if not found.
  */
 int task_kill(int pid);
+
+/* Signal syscalls */
+void* sys_signal(int sig, void* handler);
+int   sys_kill(int pid, int sig);
 
 /**
  * @brief Global current-task and ready-queue pointers (defined in task.c).
