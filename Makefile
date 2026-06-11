@@ -82,11 +82,6 @@ $(ISO): $(KERNEL) $(IMG)
 	@grub2-mkrescue -o $(ISO) iso || (echo "grub2-mkrescue failed" && exit 1)
 	@echo "ISO built: $(ISO)"
 
-# Run with GRUB ISO (full PCI access!)
-run-iso: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -m 128 -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0 -device rtl8139,netdev=net0
-
-# Original run (kernel mode)
 run: $(KERNEL) $(IMG)
 	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0 -device rtl8139,netdev=net0
 
@@ -94,4 +89,4 @@ clean:
 	rm -f $(OBJECTS) $(KERNEL) $(IMG) $(ISO) tools/mkjexfs tools/gen_kallsyms src/kernel/kallsyms_data.S src/kernel/kallsyms_data.o
 	rm -rf iso/
 
-.PHONY: all run run-iso clean jexos.iso
+.PHONY: all run clean jexos.iso

@@ -74,10 +74,9 @@ The OS has grown far beyond a basic toy kernel. It now boots on real hardware, t
 ```bash
 make          # Build kernel + disk image
 make run      # Launch in QEMU
-make run-iso  # Boot from GRUB ISO
 ```
 
-Requires: `gcc` (i386 cross), `nasm`, `qemu-system-i386`, `grub-mkrescue` (for ISO).
+Requires: `gcc` (i386 cross), `nasm`, `qemu-system-i386`.
 
 ---
 
