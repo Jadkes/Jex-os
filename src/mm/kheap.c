@@ -14,8 +14,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* =============== Slab Allocator Core =============== */
-
 static const uint32_t slab_sizes[SLAB_CACHE_COUNT] = {
     16, 32, 64, 128, 256, 512, 1024, 2048
 };

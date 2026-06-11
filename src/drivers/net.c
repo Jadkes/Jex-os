@@ -6,6 +6,7 @@
 #define pr_fmt(fmt) "[NET] " fmt
 #include "kernel/printk.h"
 #include "net.h"
+#include "dhcp.h"
 #include "rtl8139.h"
 #include "terminal.h"
 #include "init.h"
@@ -18,6 +19,11 @@
 
 /* Forward: int_to_string is defined in shell.c */
 extern void int_to_string(int n, char* str);
+
+/* Runtime-configurable network addresses (default QEMU slirp) */
+uint32_t our_ip     = IP4(10, 0, 2, 15);
+uint32_t gateway_ip = IP4(10, 0, 2, 2);
+uint32_t dns_server = IP4(10, 0, 2, 3);
 
 /* TX Buffers */
 
@@ -1381,6 +1387,335 @@ uint32_t net_dns_resolve(const char* hostname)
         pr_debug("all retries exhausted\n");
 
     return result;
+}
+
+/* ================================================================
+ * DHCP Client — DORA cycle via UDP broadcast
+ * ================================================================ */
+
+static volatile int dhcp_pending = 0;
+static uint32_t     dhcp_xid     = 0;
+
+/* Scratch buffer for the raw DHCP reply (UDP payload) */
+static uint8_t      dhcp_reply[512];
+static uint32_t     dhcp_reply_len = 0;
+
+/*
+ * dhcp_handler - UDP callback for DHCP replies on port 68.
+ *
+ * Validates the transaction ID and magic cookie, then stashes
+ * the reply for the shell-side waiter.
+ */
+static void dhcp_handler(uint32_t src_ip, uint16_t src_port,
+                          const uint8_t* data, uint32_t len, void* userdata)
+{
+    (void)src_ip;
+    (void)src_port;
+    (void)userdata;
+
+    if (len < DHCP_BASE_SIZE)
+        return;
+
+    const dhcp_packet_t* pkt = (const dhcp_packet_t*)data;
+    if (ntohl(pkt->xid) != dhcp_xid)
+        return;
+    if (ntohl(pkt->magic) != DHCP_MAGIC_COOKIE)
+        return;
+
+    /* Stash the raw response for the shell context */
+    uint32_t copy = len > sizeof(dhcp_reply) ? sizeof(dhcp_reply) : len;
+    memcpy(dhcp_reply, data, copy);
+    dhcp_reply_len = copy;
+    /* Barrier: reply written before flag is visible */
+    __asm__ volatile("" ::: "memory");
+    dhcp_pending = 1;
+}
+
+/*
+ * dhcp_find_option - Walk DHCP options TLV to find a given tag.
+ *
+ * @param pkt  Pointer to a full DHCP packet (UDP payload).
+ * @param len  Total length of the DHCP payload.
+ * @param tag  The option tag to find (e.g. DHCP_OPT_GATEWAY).
+ * @return     Pointer to the option VALUE (not tag/len), or NULL.
+ */
+static const uint8_t* dhcp_find_option(const dhcp_packet_t* pkt,
+                                        uint32_t len, uint8_t tag)
+{
+    /* Options start right after the fixed BOOTP fields */
+    const uint8_t* opts = (const uint8_t*)(pkt) + DHCP_BASE_SIZE;
+    uint32_t remain = len;
+    if (remain < DHCP_BASE_SIZE)
+        return NULL;
+    remain -= DHCP_BASE_SIZE;
+
+    uint32_t pos = 0;
+    while (pos < remain) {
+        uint8_t t = opts[pos];
+        if (t == DHCP_OPT_END)
+            break;
+        if (t == DHCP_OPT_PAD) {
+            pos++;
+            continue;
+        }
+        if (pos + 1 >= remain)
+            break;
+        uint8_t opt_len = opts[pos + 1];
+        if (pos + 2 + opt_len > remain)
+            break;
+        if (t == tag)
+            return &opts[pos + 2];  /* Skip tag + length */
+        pos += 2 + opt_len;
+    }
+    return NULL;
+}
+
+/*
+ * dhcp_send_msg - Build and send a DHCP message over UDP broadcast.
+ *
+ * Constructs the full Ethernet + IP + UDP + DHCP packet.  Source IP
+ * in the IP header is 0.0.0.0 (the client hasn't been assigned one yet).
+ * Sends to Ethernet broadcast (ff:ff:ff:ff:ff:ff).
+ */
+static void dhcp_send_msg(uint8_t msg_type, const uint8_t* our_mac,
+                           uint32_t requested_ip, uint32_t server_id)
+{
+    uint8_t broadcast_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    uint32_t broadcast_ip     = 0xFFFFFFFFu;   /* 255.255.255.255 */
+
+    /* Options budget: up to 64 bytes of options (more than enough) */
+    uint8_t  opt_buf[64];
+    uint32_t opt_len = 0;
+
+    /* Option 53: DHCP message type */
+    opt_buf[opt_len++] = DHCP_OPT_MSG_TYPE;
+    opt_buf[opt_len++] = 1;
+    opt_buf[opt_len++] = msg_type;
+
+    if (msg_type == DHCP_REQUEST) {
+        /* Option 50: Requested IP address */
+        opt_buf[opt_len++] = DHCP_OPT_REQUESTED_IP;
+        opt_buf[opt_len++] = 4;
+        memcpy(opt_buf + opt_len, &requested_ip, 4);
+        opt_len += 4;
+
+        /* Option 54: Server identifier */
+        opt_buf[opt_len++] = DHCP_OPT_SERVER_ID;
+        opt_buf[opt_len++] = 4;
+        memcpy(opt_buf + opt_len, &server_id, 4);
+        opt_len += 4;
+    }
+
+    /* Option 55: Parameter request list */
+    opt_buf[opt_len++] = DHCP_OPT_PARAM_REQ;
+    opt_buf[opt_len++] = 3;
+    opt_buf[opt_len++] = DHCP_OPT_SUBNET;    /* 1  */
+    opt_buf[opt_len++] = DHCP_OPT_GATEWAY;   /* 3  */
+    opt_buf[opt_len++] = DHCP_OPT_DNS;       /* 6  */
+
+    /* Option 255: END */
+    opt_buf[opt_len++] = DHCP_OPT_END;
+
+    /* ---- Build the packet ---- */
+    uint8_t* buf = send_buf;
+    uint8_t* p   = buf;
+
+    p = build_ether_header(p, broadcast_mac, our_mac, ETHERTYPE_IP);
+
+    uint32_t dhcp_len = DHCP_BASE_SIZE + opt_len;
+    uint32_t udp_len  = sizeof(udp_header_t) + dhcp_len;
+    p = build_ip_header(p, IP_PROTO_UDP, 0, broadcast_ip, udp_len);
+
+    udp_header_t* udp = (udp_header_t*)p;
+    udp->src_port  = htons(DHCP_CLIENT_PORT);
+    udp->dest_port = htons(DHCP_SERVER_PORT);
+    udp->length    = htons((uint16_t)udp_len);
+    udp->checksum  = 0;
+    p += sizeof(udp_header_t);
+
+    dhcp_packet_t* dhcp = (dhcp_packet_t*)p;
+    memset(dhcp, 0, DHCP_BASE_SIZE);
+    dhcp->op    = 1;              /* BOOTREQUEST */
+    dhcp->htype = 1;              /* Ethernet    */
+    dhcp->hlen  = 6;
+    dhcp->xid   = htonl(dhcp_xid);
+    dhcp->flags = htons(0x8000);  /* Broadcast flag */
+    memcpy(dhcp->chaddr, our_mac, 6);
+    dhcp->magic = htonl(DHCP_MAGIC_COOKIE);
+    p += DHCP_BASE_SIZE;
+
+    memcpy(p, opt_buf, opt_len);
+    p += opt_len;
+
+    /* Recompute IP total_len now that we know the exact DHCP size */
+    {
+        ip_header_t* ip_hdr = (ip_header_t*)(buf + sizeof(eth_header_t));
+        uint16_t actual_total = IP_HEADER_LEN + (uint16_t)udp_len;
+        ip_hdr->total_len = htons(actual_total);
+        ip_hdr->checksum = 0;
+        ip_hdr->checksum = checksum((uint16_t*)ip_hdr, IP_HEADER_LEN);
+    }
+
+    /* UDP checksum (RFC 768).  Zero source IP in pseudo-header is
+     * valid per RFC 2131 for clients without an IP yet. */
+    {
+        __asm__ volatile("cli");
+        uint16_t csum = udp_checksum(0, broadcast_ip,
+                                       (const uint16_t*)udp, udp_len);
+        __asm__ volatile("sti");
+        udp->checksum = (csum == 0) ? 0xFFFF : csum;
+    }
+
+    uint32_t total = sizeof(eth_header_t) + IP_HEADER_LEN + udp_len;
+    net_send_ether(buf, total);
+
+    pr_debug("DHCP %s sent (xid=0x%x)\n",
+             msg_type == DHCP_DISCOVER ? "DISCOVER" : "REQUEST",
+             dhcp_xid);
+}
+
+/*
+ * dhcp_start - Run the DHCP DORA cycle to auto-configure networking.
+ *
+ * Broadcasts DISCOVER, waits for OFFER, sends REQUEST, waits for ACK.
+ * On success, updates our_ip, gateway_ip, and dns_server.
+ *
+ * @return 0 on success (IP configured), -1 on timeout.
+ */
+int dhcp_start(void)
+{
+    uint8_t our_mac[6];
+    rtl8139_get_mac(our_mac);
+
+    if (dhcp_xid == 0)
+        dhcp_xid = get_ticks() ^ 0x12345678;
+
+    pr_debug("starting DHCP\n");
+    terminal_writestring("DHCP: Starting DORA cycle...\n");
+
+    /* Register the UDP handler on port 68 */
+    net_udp_register(DHCP_CLIENT_PORT, dhcp_handler, NULL);
+
+    /*
+     * Outer retry loop — the full DORA can be retried up to 3 times.
+     * Each attempt: DISCOVER → wait for OFFER → REQUEST → wait for ACK.
+     */
+    uint32_t offered_ip  = 0;
+    uint32_t server_id   = 0;
+    int      configured  = 0;
+
+    for (int attempt = 0; attempt < 3 && !configured; attempt++) {
+        if (attempt > 0) {
+            terminal_writestring("DHCP: Retrying...\n");
+            pr_debug("retry %d\n", attempt + 1);
+        }
+
+        /* ---- Step 1: DISCOVER ---- */
+        dhcp_pending = 0;
+        dhcp_xid++;
+        dhcp_send_msg(DHCP_DISCOVER, our_mac, 0, 0);
+
+        /* Wait up to ~6 seconds for an OFFER */
+        {
+            int timeout = 600;
+            while (timeout-- > 0 && !dhcp_pending) {
+                rtl8139_poll_rx();
+                sleep(10);
+            }
+        }
+
+        if (!dhcp_pending) {
+            pr_debug("DISCOVER timeout\n");
+            continue;   /* Retry outer loop */
+        }
+
+        /* ---- Parse OFFER ---- */
+        {
+            __asm__ volatile("" ::: "memory");
+            dhcp_pending = 0;
+            dhcp_packet_t* offer = (dhcp_packet_t*)dhcp_reply;
+            offered_ip = offer->yiaddr;  /* Network byte order already */
+
+            const uint8_t* sid = dhcp_find_option(offer, dhcp_reply_len,
+                                                    DHCP_OPT_SERVER_ID);
+            if (!sid || offered_ip == 0) {
+                pr_debug("invalid OFFER\n");
+                continue;
+            }
+            memcpy(&server_id, sid, 4);
+
+            pr_debug("OFFER: IP=0x%x server=0x%x\n", offered_ip, server_id);
+        }
+
+        /* ---- Step 2: REQUEST ---- */
+        dhcp_pending = 0;
+        dhcp_send_msg(DHCP_REQUEST, our_mac, offered_ip, server_id);
+
+        /* Wait up to ~6 seconds for ACK */
+        {
+            int timeout = 600;
+            while (timeout-- > 0 && !dhcp_pending) {
+                rtl8139_poll_rx();
+                sleep(10);
+            }
+        }
+
+        if (!dhcp_pending) {
+            pr_debug("REQUEST timeout\n");
+            continue;   /* Retry outer loop */
+        }
+
+        /* ---- Parse ACK ---- */
+        {
+            __asm__ volatile("" ::: "memory");
+            dhcp_packet_t* ack = (dhcp_packet_t*)dhcp_reply;
+
+            /* Verify ACK (could be NAK — check yiaddr) */
+            if (ack->yiaddr == 0) {
+                pr_debug("NAK received\n");
+                continue;
+            }
+
+            /* Apply the configuration */
+            our_ip      = ack->yiaddr;
+            gateway_ip  = our_ip;  /* Default: gateway = same network */
+
+            const uint8_t* gw = dhcp_find_option(ack, dhcp_reply_len,
+                                                   DHCP_OPT_GATEWAY);
+            if (gw)
+                memcpy(&gateway_ip, gw, 4);
+
+            const uint8_t* dns = dhcp_find_option(ack, dhcp_reply_len,
+                                                    DHCP_OPT_DNS);
+            if (dns)
+                memcpy(&dns_server, dns, 4);
+            /* If no DNS option provided, keep the default (QEMU slirp) */
+
+            uint8_t* ipb = (uint8_t*)&our_ip;
+            char     buf[16];
+            terminal_writestring("DHCP: IP ");
+            int_to_string(ipb[0], buf); terminal_writestring(buf); terminal_putchar('.');
+            int_to_string(ipb[1], buf); terminal_writestring(buf); terminal_putchar('.');
+            int_to_string(ipb[2], buf); terminal_writestring(buf); terminal_putchar('.');
+            int_to_string(ipb[3], buf); terminal_writestring(buf);
+            terminal_writestring("\n");
+
+            pr_debug("DHCP configured: IP=0x%x GW=0x%x DNS=0x%x\n",
+                     our_ip, gateway_ip, dns_server);
+
+            configured = 1;
+        }
+    }
+
+    net_udp_unregister(DHCP_CLIENT_PORT);
+
+    if (!configured) {
+        terminal_writestring("DHCP: Failed (no DHCP server found)\n");
+        pr_debug("DHCP failed after 3 attempts\n");
+        return -1;
+    }
+
+    return 0;
 }
 
 device_init(net_init);

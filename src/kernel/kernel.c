@@ -60,7 +60,7 @@ static void print_banner(void)
     char buf[128];
 
     terminal_writestring("\n");
-    terminal_writestring("JexOS v0.1 \x97 i386 \x97 Monolithic\n");
+    terminal_writestring("JexOS v0.6.0 \x97 i386 \x97 Monolithic\n");
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
 
     /* RAM size from Multiboot info (safe in protected mode) */
