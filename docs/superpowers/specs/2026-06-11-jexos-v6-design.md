@@ -4,7 +4,7 @@
 
 **Goal:** Replace the bump allocator with a power-of-2 slab allocator that can actually free memory, add signal handling, add keyboard buffering, and fix bugs that were impossible to fix under the old allocator.
 
-**Architecture:** Implement a slab allocator with 9 fixed-size classes (16B–4096B), slab metadata embedded at page boundaries for O(1) kfree, and PMM fallback for allocations > 4096 bytes. On top of this, add minimal Unix-style signals (SIGHUP/SIGINT/SIGTERM/SIGKILL/SIGCHLD) and a 256-byte keyboard ring buffer.
+**Architecture:** Implement a slab allocator with 8 fixed-size classes (16B–2048B), slab metadata embedded at page boundaries for O(1) kfree, and PMM fallback for allocations > 2048 bytes. On top of this, add minimal Unix-style signals (SIGHUP/SIGINT/SIGTERM/SIGKILL/SIGCHLD) and a 256-byte keyboard ring buffer.
 
 **Tech Stack:** Freestanding C (gnu99), target i386, runs in QEMU. No libc — all string functions are in kheap.c and stay there.
 
@@ -13,6 +13,8 @@
 ## 1. Slab Allocator
 
 ### Size Classes
+
+8 fixed-size classes. Requests > 2048 bytes go to PMM directly.
 
 | Class | Size | Objects/slab | Typical uses |
 |-------|------|--------------|-------------|
@@ -24,7 +26,8 @@
 | 5 | 512 | 8 | Medium strings, path buffers |
 | 6 | 1024 | 4 | File data chunks |
 | 7 | 2048 | 2 | `PACKET_BUF_SIZE` (2048) |
-| 8 | 4096 | 1 | Source code buffers, ram_disk (via PMM) |
+
+Requests > 2048 bytes go directly to PMM (large alloc path). This avoids the header-overhead problem where a single 4096-byte object can't fit in one page alongside the slab header.
 
 ### Slab Header (at page start, 4KB-aligned)
 
@@ -76,11 +79,11 @@ typedef struct {
 } slab_cache_t;
 ```
 
-9 `slab_cache_t` instances, statically allocated in `kheap.c`.
+8 `slab_cache_t` instances, statically allocated in `kheap.c`.
 
-### Large Allocation Path (> 4096 bytes)
+### Large Allocation Path (> 2048 bytes)
 
-Requests > 4096 bytes go to PMM directly:
+Requests > 2048 bytes go to PMM directly:
 
 ```
 kmalloc(8192):
@@ -317,6 +320,8 @@ Sub-projects must be built in this order. Dependencies flow downward.
 
 4. **The string functions in kheap.c are not allocator code.** They share the file for historical reasons. Do not move them — the build system expects them there.
 
-5. **`kheap_get_used()` semantics change.** Old: "bytes consumed from bump pointer." New: "total committed memory across all caches + PMM large allocs." The number will be higher for the same workload because slabs pre-allocate full pages. This is expected.
+3. **`kheap_get_used()` semantics change.** Old: "bytes consumed from bump pointer." New: "total committed memory across all caches + PMM large allocs." The number will be higher for the same workload because slabs pre-allocate full pages. This is expected.
 
-6. **`kheap_get_current()` kept for compatibility** but the concept of "current pointer" no longer exists. It now returns `kheap_get_used()`.
+4. **`kheap_get_current()` kept for compatibility** but the concept of "current pointer" no longer exists. It now returns `kheap_get_used()`.
+
+5. **The 4096-byte slab class is impossible.** A slab header (28 bytes) plus a 4096-byte object doesn't fit in a single 4KB page. The 2048-byte class is the largest. Any `kmalloc` request > 2048 bytes automatically routes to the PMM large alloc path, which handles it correctly with a LARGE_MAGIC header.
