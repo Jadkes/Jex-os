@@ -1,71 +1,239 @@
 /**
  * @file kheap.c
- * @brief Kernel Heap and Standard C Library string/memory functions.
+ * @brief Kernel Heap — power-of-2 slab allocator with PMM fallback.
  *
- * Provides basic dynamic memory allocation and common utility functions
- * for manipulating strings and memory blocks.
+ * 9 size classes (16B–4096B). Intra-slab free list for O(1) alloc/free.
+ * Slab header at page start for O(1) kfree via page-mask + magic check.
+ * Allocations > 4096 bytes go to PMM with LARGE_MAGIC header.
+ * String utilities in the second half of the file are kept for linking.
  */
 
 #include "kheap.h"
-#include "paging.h"
+#include "pmm.h"
 #include "init.h"
 #include <stddef.h>
+#include <stdint.h>
 
-/* Kernel heap — simple bump allocator starting at 16 MB */
-#define KHEAP_START 0x1000000
+/* =============== Slab Allocator Core =============== */
 
-static uint32_t heap_ptr = KHEAP_START;
+static const uint32_t slab_sizes[SLAB_CACHE_COUNT] = {
+    16, 32, 64, 128, 256, 512, 1024, 2048, 4096
+};
 
-/**
- * @brief Allocate a block of memory from the kernel heap.
- *
- * @param size Number of bytes to allocate.
- * @return Pointer to the allocated block.
- */
-void* kmalloc(size_t size) {
-    uint32_t old_ptr = heap_ptr;
-    heap_ptr += size;
-    return (void*)old_ptr;
+static slab_cache_t caches[SLAB_CACHE_COUNT];
+static uint32_t total_committed = 0;   /* All slab pages + PMM large allocs */
+
+static void init_caches(void) {
+    for (int i = 0; i < SLAB_CACHE_COUNT; i++) {
+        caches[i].obj_size = slab_sizes[i];
+        caches[i].slab_list = NULL;
+        caches[i].objs_per_slab =
+            (SLAB_PAGE_SIZE - sizeof(slab_t)) / slab_sizes[i];
+    }
+}
+
+static slab_t* slab_create(int cache_idx) {
+    slab_cache_t* cache = &caches[cache_idx];
+
+    slab_t* slab = (slab_t*)pmm_alloc_blocks(1);
+    if (!slab) return NULL;
+
+    slab->magic = SLAB_MAGIC;
+    slab->next = NULL;
+    slab->obj_size = cache->obj_size;
+    slab->obj_count = cache->objs_per_slab;
+    slab->free_count = cache->objs_per_slab;
+    slab->free_head = 0;
+
+    /* Build intra-slab free list via indices stored in free object memory */
+    uint8_t* data = (uint8_t*)((uint32_t)slab + sizeof(slab_t));
+    for (uint32_t i = 0; i < slab->obj_count; i++) {
+        uint32_t* next_idx = (uint32_t*)(data + i * slab->obj_size);
+        *next_idx = (i == slab->obj_count - 1) ? 0xFFFFFFFF : (i + 1);
+    }
+
+    total_committed += SLAB_PAGE_SIZE;
+    return slab;
+}
+
+static void* slab_alloc(int cache_idx) {
+    slab_cache_t* cache = &caches[cache_idx];
+    slab_t* slab = cache->slab_list;
+
+    /* Walk the list to find a slab with free objects */
+    while (slab && slab->free_count == 0) {
+        slab = slab->next;
+    }
+
+    /* No space — allocate a new slab from PMM */
+    if (!slab) {
+        slab = slab_create(cache_idx);
+        if (!slab) return NULL;
+        slab->next = cache->slab_list;
+        cache->slab_list = slab;
+    }
+
+    /* Pop from free list: object stores index of next free object */
+    uint8_t* data = (uint8_t*)((uint32_t)slab + sizeof(slab_t));
+    uint32_t idx = slab->free_head;
+    uint32_t* obj = (uint32_t*)(data + idx * slab->obj_size);
+    slab->free_head = *obj;
+    slab->free_count--;
+
+    return (void*)obj;
+}
+
+static void slab_free(slab_t* slab, void* ptr) {
+    uint8_t* data = (uint8_t*)((uint32_t)slab + sizeof(slab_t));
+    uint32_t offset = (uint32_t)ptr - (uint32_t)data;
+    uint32_t idx = offset / slab->obj_size;
+
+    /* Push onto free list */
+    uint32_t* obj = (uint32_t*)(data + idx * slab->obj_size);
+    *obj = slab->free_head;
+    slab->free_head = idx;
+    slab->free_count++;
+}
+
+static slab_t* ptr_to_slab(void* ptr) {
+    slab_t* slab = (slab_t*)((uint32_t)ptr & ~0xFFF);
+    if (slab->magic == SLAB_MAGIC || slab->magic == LARGE_MAGIC)
+        return slab;
+    return NULL;
 }
 
 /**
- * @brief Placeholder for kfree.
+ * @brief Allocate kernel memory.
+ *
+ * Routes to slab cache for sizes <= 4096 bytes, PMM large alloc for larger.
+ * Returns NULL for size == 0 or allocation failure.
+ *
+ * @param size Number of bytes to allocate.
+ * @return Pointer to allocated memory, or NULL.
  */
-void kfree(void *p) { (void)p; }
+void* kmalloc(size_t size) {
+    if (size == 0) return NULL;
+
+    /* Large allocation via PMM (> 4096 bytes) */
+    if (size > SLAB_MAX_SIZE) {
+        uint32_t total = size + sizeof(large_hdr_t);
+        uint32_t pages = (total + SLAB_PAGE_SIZE - 1) / SLAB_PAGE_SIZE;
+        large_hdr_t* hdr = (large_hdr_t*)pmm_alloc_blocks(pages);
+        if (!hdr) return NULL;
+
+        hdr->magic = LARGE_MAGIC;
+        hdr->pages = pages;
+        total_committed += pages * SLAB_PAGE_SIZE;
+        return (void*)((uint32_t)hdr + sizeof(large_hdr_t));
+    }
+
+    /* Find the smallest cache class that fits this size */
+    int idx = 0;
+    while (idx < SLAB_CACHE_COUNT - 1 && slab_sizes[idx] < size) {
+        idx++;
+    }
+    return slab_alloc(idx);
+}
 
 /**
- * @brief Initialize the kernel heap.
+ * @brief Free kernel memory previously allocated by kmalloc.
+ *
+ * Uses magic number at the page boundary to determine type:
+ * - SLAB_MAGIC: standard slab free
+ * - LARGE_MAGIC: PMM-backed large alloc
+ * - Neither: silent no-op (defensive, corrupted or invalid pointer)
+ *
+ * @param ptr Pointer to free, or NULL (no-op).
  */
-void init_kheap(uint32_t start_addr) { (void)start_addr; }
+void kfree(void* ptr) {
+    if (!ptr) return;
 
-/* Initcall wrapper: init_kheap takes a start address parameter */
+    slab_t* slab = ptr_to_slab(ptr);
+    if (!slab) return;
+
+    if (slab->magic == SLAB_MAGIC) {
+        slab_free(slab, ptr);
+    } else if (slab->magic == LARGE_MAGIC) {
+        large_hdr_t* hdr = (large_hdr_t*)slab;
+        total_committed -= hdr->pages * SLAB_PAGE_SIZE;
+        pmm_free_blocks(hdr, hdr->pages);
+    }
+}
+
+/**
+ * @brief Initialize the kernel heap slab allocator.
+ *
+ * Pre-computes object counts for all 9 caches.
+ * No pre-allocation — slabs are allocated on first kmalloc.
+ */
+void init_kheap(void) {
+    init_caches();
+}
+
+/* Initcall: runs early in boot (before tasking, after PMM) */
 static void init_kheap_wrapper(void) {
-    init_kheap(KHEAP_START);
+    init_kheap();
 }
 early_init(init_kheap_wrapper);
 
-/**
- * @brief Return number of bytes allocated from the heap so far.
- */
 uint32_t kheap_get_used(void) {
-    return heap_ptr - KHEAP_START;
+    return total_committed;
+}
+
+uint32_t kheap_get_free(void) {
+    uint32_t free_bytes = 0;
+    for (int i = 0; i < SLAB_CACHE_COUNT; i++) {
+        slab_t* slab = caches[i].slab_list;
+        while (slab) {
+            free_bytes += slab->free_count * slab->obj_size;
+            slab = slab->next;
+        }
+    }
+    return free_bytes;
 }
 
 /**
- * @brief Return the total heap range start address (for informational use).
- */
-uint32_t kheap_get_start(void) {
-    return KHEAP_START;
-}
-
-/**
- * @brief Return the current heap bump pointer (next free address).
+ * @brief Return kheap_get_used() for backward compatibility.
+ * The old "current pointer" concept no longer exists.
  */
 uint32_t kheap_get_current(void) {
-    return heap_ptr;
+    return kheap_get_used();
 }
 
-/* Memory Utilities */
+uint32_t kheap_get_start(void) {
+    return 0;  /* No longer applicable with slab allocator */
+}
+
+/**
+ * @brief Free completely empty slabs back to PMM.
+ *
+ * Uses a prev pointer instead of &slab->next to avoid
+ * -Waddress-of-packed-member on the packed slab_t struct.
+ */
+void kheap_reclaim(void) {
+    for (int i = 0; i < SLAB_CACHE_COUNT; i++) {
+        slab_cache_t* cache = &caches[i];
+        slab_t* prev = NULL;
+        slab_t* slab = cache->slab_list;
+
+        while (slab) {
+            slab_t* next = slab->next;
+            if (slab->free_count == slab->obj_count && slab->obj_count > 0) {
+                if (prev)
+                    prev->next = slab->next;
+                else
+                    cache->slab_list = slab->next;
+                total_committed -= SLAB_PAGE_SIZE;
+                pmm_free_blocks(slab, 1);
+            } else {
+                prev = slab;
+            }
+            slab = next;
+        }
+    }
+}
+
+/* =============== Memory Utilities =============== */
 
 void* memcpy(void* dest, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dest;
@@ -85,7 +253,7 @@ void* memset(void* s, int c, size_t n) {
     return s;
 }
 
-/* String Utilities */
+/* =============== String Utilities =============== */
 
 size_t strlen(const char* s) {
     size_t len = 0;
