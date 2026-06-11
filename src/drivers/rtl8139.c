@@ -41,7 +41,7 @@ static uint8_t mac_addr[6];
 /*
  * Minimum gap between CAPR and the card's internal write pointer.
  *
- * WHY: When the driver processes received packets (in the ISR or poll_rx),
+ *      When the driver processes received packets (in the ISR or poll_rx),
  *      it must tell the card how far it has read by writing CAPR.  If CAPR
  *      is set too close to the card's write pointer, the next incoming
  *      packet may not fit and the card raises RX OVF (receive overflow).

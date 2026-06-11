@@ -63,10 +63,9 @@ static void print_banner(void)
     terminal_writestring("JexOS v0.1 \x97 i386 \x97 Monolithic\n");
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
 
-    /* RAM size from BIOS int 0x12 */
-    uint16_t ram_kb = 0;
-    __asm__ volatile("int $0x12" : "=a"(ram_kb) : "a"(0x1200) : "ebx", "ecx", "edx");
-    snprintf(buf, sizeof(buf), "RAM: %u KB\n", (uint32_t)ram_kb);
+    /* RAM size from Multiboot info (safe in protected mode) */
+    uint32_t ram_kb = g_mboot_info->mem_lower + g_mboot_info->mem_upper;
+    snprintf(buf, sizeof(buf), "RAM: %u KB\n", ram_kb);
     terminal_writestring(buf);
 
     /* RTL8139 MAC address — check if driver is initialized */

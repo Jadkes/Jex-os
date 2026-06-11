@@ -27,10 +27,14 @@ volatile uint32_t system_ticks = 0;
 void timer_callback(registers_t *regs)
 {
     system_ticks++;
-    
+
+    /* Track per-task CPU usage for the top command */
+    if (current_task)
+        current_task->cpu_ticks++;
+
     /* Trigger the scheduler to possibly switch tasks */
     task_switch();
-    
+
     (void)regs;
 }
 
