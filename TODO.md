@@ -1,37 +1,84 @@
-# JexOS 0.5 Roadmap: Peak UX & Games
+# JexOS Roadmap
 
-The goal of version 0.5 is to make JexOS fun and highly usable. We've built the foundations (multitasking, persistence, isolation); now we build the experience.
+The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
-## 🛠️ Core Objectives
+## ✅ Completed Milestones
 
-### 1. Shell & User Experience (UX)
-Make the shell feel like a professional Linux terminal.
-- [ ] **Tab Completion**: Auto-complete filenames and commands when pressing TAB.
-- [ ] **Command Aliases**: Support `alias ll='ls -l'`.
-- [ ] **Top**: A real-time process monitor showing CPU and memory usage per PID.
-- [ ] **Uptime**: A command to see how long JexOS has been "alive".
+### Shell & UX
+- [x] **Tab Completion**: Auto-complete filenames and commands
+- [x] **Persistent Command History**: `.history` survives reboots
+- [x] **Dynamic Prompt**: Color-coded, directory-aware
+- [x] **Uptime**: System uptime command
+- [x] **Top**: Per-task CPU usage monitor
+- [x] **Boot Banner**: Build info + device listing on startup
 
-### 2. BSD-inspired Terminal Games
-Bringing entertainment to the kernel.
-- [ ] **JexSnake**: A classic snake game built specifically for the JexOS terminal.
-- [ ] **2048**: A terminal port of the popular puzzle game.
-- [ ] **Worm**: A vintage BSD-style game.
+### Debug Suite
+- [x] **Panic Handler**: Crash screen, register dump, stack trace, page fault decode
+- [x] **Kernel Ring Buffer** (`dmesg`): Structured logging with severity
+- [x] **Backtrace** (`bt`): Live stack unwinding
+- [x] **Hexdump** (`dump`): Memory inspection
+- [x] **ASSERT / WARN_ON**: Runtime assertion checking
+- [x] **Test Framework** (`runtests`): In-kernel unit tests
+- [x] **Heap/Stack Inspector** (`heapcheck`, `stackcheck`)
+- [x] **lockdep**: Lock ordering validator
+- [x] **ftrace-lite**: Dynamic function tracing
+- [x] **GDB Stub**: Remote debugging over serial
 
-### 3. Power Utilities
-- [ ] **Grep**: Search for strings within files (`cat file.c | grep printf`).
-- [ ] **Find**: Locate files by name across the directory tree.
-- [ ] **Clear Improved**: Add `Ctrl+L` shortcut to clear the screen.
+### Network Stack
+- [x] **RTL8139 Driver**: DMA ring buffer, interrupt-driven
+- [x] **ARP Cache**: Address resolution with timeout
+- [x] **IP + ICMP**: Ping responder and originator
+- [x] **UDP**: Send and receive with port registration
+- [x] **TCP Client**: Connection, HTTP GET (`fetch`)
+- [x] **DNS Resolver**: Hostname lookup with retry
+- [x] **Gateway Routing**: Non-local traffic via 10.0.2.2
+- [x] **PCI Driver Model**: Auto-probe with initcall registration
+- [x] **arp/netlog/tcpdump/nicregs**: Network diagnostics
 
-### 4. System Stability (v0.5 Under-the-Hood)
-- [ ] **Keyboard Buffering**: Improve the driver so typing during high-load (like during compilation) doesn't drop keys.
-- [ ] **Dynamic Environment**: A basic `env` system for `PATH` support.
+### Storage
+- [x] **JexFS**: Persistent filesystem with hierarchy
+- [x] **VFS Layer**: Mount point dispatch
+- [x] **devtmpfs/sysfs**: Virtual filesystems
+- [x] **IDE PIO Driver**: ATA disk access
+- [x] **Standard commands**: `cp`, `mv`, `rm`, `ls`, `cat`, `mkdir`, `cd`
 
-## 🗓️ Execution Plan
+### Kernel Infrastructure
+- [x] **Initcall Framework**: Automatic driver/subsystem initialization
+- [x] **Multitasking**: Round-robin scheduler
+- [x] **Memory Isolation**: Private page directories per process
+- [x] **Stack Guard Pages**: Overflow detection
+- [x] **kallsyms**: Symbol table for backtraces
+- [x] **vsnprintf/snprintf**: Safe formatted output
+- [x] **Workqueue**: Deferred execution
 
-1.  **Step 1**: Implement Tab Completion in the shell.
-2.  **Step 2**: Build the `uptime` and `top` commands.
-3.  **Step 3**: Port or create JexSnake.
-4.  **Step 4**: Implement `grep` for basic text searching.
+---
 
-## 🚀 Target
-**"Play Snake while my C code compiles in the background."**
+## 🎯 Current Goals
+
+### Networking Hardening
+- [ ] **DHCP Client**: Automatic IP configuration
+- [ ] **TCP Retransmit**: Handle packet loss gracefully
+- [ ] **TCP Connection Close**: Proper FIN handshake
+- [ ] **Checksum Validation**: Verify on receive, not just on send
+- [ ] **Concurrent Connections**: Multiple sockets
+
+### Shell & Utilities
+- [ ] **JexSnake**: Terminal snake game
+- [ ] **Pipes & Redirection**: `|`, `>`, `<` operators
+- [ ] **Command Aliases**: `alias ll='ls -l'`
+- [ ] **Grep**: Text search within files
+- [ ] **Find**: File search by name
+- [ ] **Environment Variables**: `PATH` support
+
+### System Improvements
+- [ ] **Dynamic Memory**: Replace bump allocator with proper slab/free-list
+- [ ] **Keyboard Buffering**: Don't drop keys under load
+- [ ] **Signal Handling**: Basic Unix signal delivery
+- [ ] **SMP / Multi-core**: Because one CPU is boring
+- [ ] **AHCI / SATA**: Faster disk I/O
+- [ ] **USB Keyboard/Mouse**: Beyond PS/2
+
+### Polish
+- [ ] **Ctrl+L**: Clear screen shortcut
+- [ ] **Scrollback**: Terminal history buffer
+- [ ] **Color Themes**: Customizable palette
