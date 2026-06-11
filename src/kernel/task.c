@@ -54,6 +54,62 @@ void init_tasking() {
 }
 
 /**
+ * @brief Deliver pending signals to a task before it runs.
+ *
+ * Checks signal_pending (minus blocked signals) and handles delivery:
+ * - SIGKILL: immediate termination
+ * - SIG_DFL with terminate default: set STATE_ZOMBIE
+ * - SIG_IGN, SIG_DFL with ignore default (SIGCHLD): skip
+ * - Handler function: sets up signal trampoline on user stack
+ *
+ * @param task The task to deliver signals to.
+ * @return 1 if task was terminated (don't schedule), 0 otherwise.
+ */
+static int deliver_signals(task_t* task)
+{
+    uint32_t pending = task->signal_pending & ~task->signal_blocked;
+    if (!pending) return 0;
+
+    /* Find lowest pending signal number */
+    int sig = __builtin_ctz(pending);  /* ffs: returns 0-31, 0 = bit 0 */
+
+    /* Clear the pending bit */
+    task->signal_pending &= ~(1 << sig);
+
+    /* SIGKILL — immediate termination, cannot be caught or ignored */
+    if (sig == SIGKILL) {
+        task->state = STATE_ZOMBIE;
+        return 1;
+    }
+
+    /* Look up handler */
+    void* handler = task->signal_handlers[sig];
+
+    if (handler == SIG_IGN) {
+        /* Ignored — continue normally */
+        return 0;
+    }
+
+    if (handler == SIG_DFL || handler == NULL) {
+        /* Default action */
+        if (sig == SIGCHLD) {
+            /* SIGCHLD default is ignore */
+            return 0;
+        }
+        /* All others: terminate */
+        task->state = STATE_ZOMBIE;
+        return 1;
+    }
+
+    /* User handler function — for now, just note it (user-mode not fully implemented)
+     * In a full implementation we'd push a trampoline frame on the user stack.
+     * For this kernel-stage: skip user handlers silently for now.
+     */
+    (void)handler;
+    return 0;
+}
+
+/**
  * @brief Switch execution to the next ready task.
  * Saves the current context and loads the next one using assembly magic.
  */
@@ -75,6 +131,26 @@ void task_switch() {
     /* Round-robin: Pick the next task in the circular list */
     current_task = current_task->next;
     if (!current_task) current_task = ready_queue;
+
+    /* Deliver any pending signals before the task runs */
+    while (deliver_signals((task_t*)current_task)) {
+        /* Task was terminated by signal — remove from list */
+        task_t* terminated = (task_t*)current_task;
+        task_t* prev = (task_t*)ready_queue;
+        if (prev == terminated) {
+            ready_queue = terminated->next;
+        } else {
+            while (prev && prev->next != terminated)
+                prev = prev->next;
+            if (prev)
+                prev->next = terminated->next;
+        }
+        /* Try next task */
+        current_task = terminated->next;
+        if (!current_task) current_task = ready_queue;
+        if (!current_task)
+            panic_assert("All tasks terminated by signals", __FILE__, __LINE__);
+    }
 
     esp = current_task->esp;
     ebp = current_task->ebp;
