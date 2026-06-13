@@ -56,6 +56,8 @@ int expr_get_precedence(token_type_t type) {
         case TOK_STAR:
         case TOK_SLASH:
         case TOK_PERCENT: return PREC_MUL;
+        case TOK_SHL:
+        case TOK_SHR:    return PREC_SHIFT;
         case TOK_LT:
         case TOK_GT:
         case TOK_LE:
@@ -690,6 +692,23 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
 
         /* Apply binary operator: left in ebx, right in eax, result in eax */
         switch (op) {
+        case TOK_SHL:   /* ebx << eax -> result in eax */
+            /* mov ecx, eax (shift count); mov eax, ebx (value); shl eax, cl */
+            output[(*out_pos)++] = 0x89; /* mov ecx, eax */
+            output[(*out_pos)++] = 0xC1;
+            output[(*out_pos)++] = 0x89; /* mov eax, ebx */
+            output[(*out_pos)++] = 0xD8;
+            output[(*out_pos)++] = 0xD3; /* shl eax, cl */
+            output[(*out_pos)++] = 0xE0;
+            break;
+        case TOK_SHR:   /* ebx >> eax -> result in eax */
+            output[(*out_pos)++] = 0x89; /* mov ecx, eax */
+            output[(*out_pos)++] = 0xC1;
+            output[(*out_pos)++] = 0x89; /* mov eax, ebx */
+            output[(*out_pos)++] = 0xD8;
+            output[(*out_pos)++] = 0xD3; /* shr eax, cl */
+            output[(*out_pos)++] = 0xE8;
+            break;
         case TOK_PLUS:   /* eax = left + right = ebx + eax */
             /* Check for pointer arithmetic: pointer + int */
             if (left_is_pointer) {
@@ -701,6 +720,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 left_is_pointer = 0; /* Reset flag */
             } else {
                 output[(*out_pos)++] = 0x03; /* add eax, ebx */
+                output[(*out_pos)++] = 0xC3; /* ModRM: eax, ebx */
             }
             break;
             case TOK_MINUS:  /* eax = left - right = ebx - eax */

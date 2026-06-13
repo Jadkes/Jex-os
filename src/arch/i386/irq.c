@@ -97,6 +97,20 @@ void irq_handler(registers_t regs)
     extern volatile int in_isr;
     in_isr = 1;
 
+    /*
+     * Send End of Interrupt (EOI) to the PICs BEFORE calling the handler.
+     *
+     * Critical: the handler (e.g. timer_callback) may call task_switch(),
+     *  which switches to a different task and NEVER returns to this function.
+     *  If EOI was after the handler, the PIC's In-Service Register bit would
+     *  stay set forever, blocking ALL further interrupts (timer, keyboard, etc.).
+     */
+    if (regs.int_no >= 40)
+    {
+        outb(0xA0, 0x20); /* Slave PIC EOI */
+    }
+    outb(0x20, 0x20); /* Master PIC EOI */
+
     /* Execute custom handler if one is registered */
     void (*handler)(registers_t*);
     handler = irq_routines[regs.int_no - 32];
@@ -104,13 +118,6 @@ void irq_handler(registers_t regs)
     {
         handler(&regs);
     }
-
-    /* Send End of Interrupt (EOI) signal to the PICs */
-    if (regs.int_no >= 40)
-    {
-        outb(0xA0, 0x20); /* Slave PIC EOI */
-    }
-    outb(0x20, 0x20); /* Master PIC EOI */
 
     /* Restore ISR context flag */
     in_isr = 0;

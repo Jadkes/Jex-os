@@ -29,6 +29,7 @@ void init_syscalls();
 #define SYS_WAITPID  10
 #define SYS_PRINT_INT 11
 #define SYS_PRINT_CHAR 12
+#define SYS_GETPID   15
 #define SYS_SIGNAL   13
 #define SYS_KILL     14
 

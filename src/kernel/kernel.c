@@ -146,7 +146,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     }
 
     /* 13. System Timer — needs explicit frequency parameter, kept manual */
-    pr_info("Init Timer...\n");
+    pr_info("Initializing Timer...\n");
     init_timer(100);
 
     /* 14. User-mode stack setup */

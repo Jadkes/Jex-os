@@ -15,6 +15,29 @@
 #include "serial.h"
 #include <stddef.h>
 
+/* ELF segment flags */
+#define PF_X 1
+#define PF_W 2
+#define PF_R 4
+
+/**
+ * @brief Convert ELF segment p_flags to x86 page table entry flags.
+ *
+ * On 32-bit x86 without PAE, all pages are executable (no NX bit),
+ * so PF_X is ignored. The mapping:
+ *   PF_R               → User + Present (no write)
+ *   PF_R | PF_W        → User + RW + Present
+ *   PF_R | PF_W | PF_X → User + RW + Present
+ *   No flags           → Supervisor + Present (kernel-only mapping)
+ */
+static uint32_t phdr_flags_to_pte(uint32_t phdr_flags)
+{
+    uint32_t flags = 0x1; /* Present */
+    if (phdr_flags & PF_R) flags |= 0x4; /* User-accessible */
+    if (phdr_flags & PF_W) flags |= 0x2; /* Writable */
+    return flags;
+}
+
 /**
  * @brief Apply a relocation to a specific address in the loaded binary.
  * 
@@ -108,16 +131,19 @@ uint32_t elf_load_with_args(uint8_t* elf_data, int argc, char** argv) {
         Elf32_Phdr* phdr = (Elf32_Phdr*)(elf_data + header->e_phoff + (i * header->e_phentsize));
 
         if (phdr->p_type == PT_LOAD) {
+            /* Convert ELF segment flags to x86 page-table flags */
+            uint32_t page_flags = phdr_flags_to_pte(phdr->p_flags);
+
             /* Allocate and map virtual pages for this segment */
             uint32_t start_page = phdr->p_vaddr & 0xFFFFF000;
             uint32_t end_page = (phdr->p_vaddr + phdr->p_memsz + 4095) & 0xFFFFF000;
-            
+
             for (uint32_t addr = start_page; addr < end_page; addr += 4096) {
                 void* frame = pmm_alloc_block();
                 if (!frame) return 0;
-                map_page(frame, (void*)addr, 7); /* User + RW + Present */
+                map_page(frame, (void*)addr, page_flags);
             }
-            
+
             /* Copy segment data from the ELF image to its virtual address */
             memcpy((void*)phdr->p_vaddr, elf_data + phdr->p_offset, phdr->p_filesz);
 

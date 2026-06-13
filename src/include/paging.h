@@ -78,6 +78,17 @@ void init_paging();
 void map_page(void* physaddr, void* virtualaddr, unsigned int flags);
 
 /**
+ * @brief Map a page in a specific page directory (for fork/clone).
+ */
+void map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsigned int flags);
+
+/**
+ * @brief Clone a page directory, deep-copying user pages.
+ * @return New page directory with independent user frames.
+ */
+page_directory_t* clone_page_directory(page_directory_t* src);
+
+/**
  * @brief Unmap a virtual page (mark as not present).
  *
  * @param virtualaddr The virtual address of the page to unmap.
