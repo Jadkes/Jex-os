@@ -4,7 +4,7 @@ LD = ld
 
 # Compiler flags for 32-bit C code, freestanding (no stdlib)
 # Added -Isrc/include to find headers
-CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie -Isrc/include -Isrc/tests
+CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -std=gnu99 -fno-pie -fno-omit-frame-pointer -Isrc/include -Isrc/tests
 
 # Optional profiling for ftrace (-finstrument-functions)
 CFLAGS_DEBUG = -finstrument-functions
@@ -84,6 +84,10 @@ $(ISO): $(KERNEL) $(IMG)
 
 run: $(KERNEL) $(IMG)
 	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -serial stdio -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 -netdev user,id=net0,hostfwd=tcp::8080-:80 -device rtl8139,netdev=net0
+
+# Run entirely in the terminal — no VGA window needed
+run-nographic: $(KERNEL) $(IMG)
+	qemu-system-i386 -kernel $(KERNEL) -hda $(IMG) -nographic -netdev user,id=net0,hostfwd=tcp::8080-:80 -device rtl8139,netdev=net0
 
 clean:
 	rm -f $(OBJECTS) $(KERNEL) $(IMG) $(ISO) tools/mkjexfs tools/gen_kallsyms src/kernel/kallsyms_data.S src/kernel/kallsyms_data.o

@@ -9,9 +9,7 @@
 #include "syscall.h"
 #include "task.h"
 #include "idt.h"
-#include "shell.h"
 #include "init.h"
-#include "ports.h"
 #include "fs.h"
 #include <stdint.h>
 
@@ -32,17 +30,10 @@ void syscall_handler(registers_t *regs)
         /* EBX = Pointer to string */
         terminal_writestring((const char*)regs->ebx);
     }
-    else if (regs->eax == SYS_EXIT) 
+    else if (regs->eax == SYS_EXIT)
     {
-        /* Simple exit: jump back to the shell loop */
-        /* In a full OS, this would destroy the process and switch tasks */
-        outb(0x20, 0x20); /* Send EOI to PIC */
-        asm volatile (
-            "mov $0x10000, %%esp \n"
-            "sti                 \n"
-            "jmp shell_loop      \n"
-            : : : "memory"
-        );
+        /* EBX = exit code. _task_exit marks this task ZOMBIE and switches. */
+        _task_exit((int)regs->ebx);
     }
     else if (regs->eax == SYS_OPEN) 
     {
@@ -86,13 +77,19 @@ void syscall_handler(registers_t *regs)
         extern int execve_file(const char* filename, char** argv, char** envp);
         regs->eax = execve_file(filename, argv, envp);
     }
-    else if (regs->eax == SYS_FORK) 
+    else if (regs->eax == SYS_FORK)
     {
-        regs->eax = -1; /* Not fully implemented */
+        terminal_writestring("[SYSCALL] calling fork()\n");
+        regs->eax = fork(regs);
     }
-    else if (regs->eax == SYS_WAITPID) 
+    else if (regs->eax == SYS_WAITPID)
     {
-        regs->eax = -1; /* Not fully implemented */
+        /* EBX = pid, ECX = status ptr, EDX = options */
+        regs->eax = waitpid((int)regs->ebx, (int*)regs->ecx, (int)regs->edx);
+    }
+    else if (regs->eax == SYS_GETPID)
+    {
+        regs->eax = getpid();
     }
     else if (regs->eax == SYS_PRINT_INT)
     {

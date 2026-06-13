@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include "paging.h"
+#include "isr.h"
 
 /**
  * @enum task_state_t
@@ -38,6 +39,9 @@ typedef struct task {
     char name[16];                      /**< Human-readable task name */
     uint32_t cpu_ticks;                 /**< CPU ticks consumed (for top command). */
     struct task* next;                  /**< Next task in the linked scheduler list. */
+
+    int parent_pid;                     /**< PID of the parent process (0 for init). */
+    int exit_code;                      /**< Exit code set by task_exit (valid in ZOMBIE state). */
 
     /* Signal handling */
     uint32_t signal_pending;            /**< Bitmask: pending signals (set by kill, cleared by delivery) */
@@ -69,9 +73,25 @@ void task_switch();
 
 /**
  * @brief Create a new process by duplicating the current one.
- * @return 0 in the child, child PID in the parent.
+ *
+ * @param regs The user-mode register state from the syscall entry, used to
+ *             build the child's synthetic iret frame.
+ * @return 0 in the child, child PID in the parent, -1 on error.
  */
-int fork();
+int fork(registers_t* regs);
+
+/**
+ * @brief Create a new kernel task that executes func(arg).
+ *
+ * Unlike fork(), this does not take a user-mode registers_t frame and does not
+ * build a synthetic iret frame.  The child starts at a trampoline
+ * that calls func(arg) then task_exit(0).
+ *
+ * @param func Function to execute in the child (takes one void* arg).
+ * @param arg  Opaque argument to pass to func.
+ * @return Child PID on success, -1 on allocation failure.
+ */
+int kernel_fork(void (*func)(void*), void* arg);
 
 /**
  * @brief Get the PID of the currently running task.
@@ -79,9 +99,24 @@ int fork();
 int getpid();
 
 /**
+ * @brief Exit the current task with an exit code and mark it as a zombie.
+ * @param exit_code The exit status to pass to the parent via waitpid().
+ */
+void _task_exit(int exit_code);
+
+/**
  * @brief Exit the current task and mark it as a zombie.
  */
 void task_exit();
+
+/**
+ * @brief Wait for a child process to exit.
+ * @param pid Child PID, or -1 for any child.
+ * @param status If non-NULL, stores the exit code.
+ * @param options Flags (must be 0 for now).
+ * @return PID of reaped child, or -1 on error.
+ */
+int waitpid(int pid, int* status, int options);
 
 /**
  * @brief List all active tasks to the terminal (for debugging).
