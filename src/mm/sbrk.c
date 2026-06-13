@@ -53,7 +53,7 @@ void* sbrk(intptr_t increment) {
             /* Flags: User-mode (3), Read/Write (2), Present (1) = 7 or 3? 
                Wait, map_page uses bitwise flags, but code used '3'. 
                Usually 1=Present, 2=RW, 4=User. 3=Present+RW. 7=Present+RW+User. */
-            map_page(new_frame, heap_end, 3); 
+            map_page(new_frame, heap_end, 7); /* Present + RW + User */
             heap_end = (void*)((uint32_t)heap_end + 4096);
         }
         

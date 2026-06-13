@@ -171,6 +171,21 @@ void panic_handler(registers_t* regs)
     log_serial("*** JEXOS PANIC ***\n");
     log_serial("Exception: ");
     log_serial(ex_name);
+    log_serial("  int=");
+    log_hex_serial(regs->int_no);
+    log_serial("  err=");
+    log_hex_serial(regs->err_code);
+    log_serial("\n");
+    log_serial("EIP=");
+    log_hex_serial(regs->eip);
+    log_serial(" CS=");
+    log_hex_serial(regs->cs);
+    log_serial(" ESP=");
+    log_hex_serial(regs->esp);
+    log_serial(" EAX=");
+    log_hex_serial(regs->eax);
+    log_serial(" EFLAGS=");
+    log_hex_serial(regs->eflags);
     log_serial("\n");
 
     terminal_setcolor(0x07);

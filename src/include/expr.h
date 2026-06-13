@@ -17,9 +17,10 @@
 #define PREC_LOGAND    3   /* && */
 #define PREC_EQ        4   /* == != */
 #define PREC_REL       5   /* < > <= >= */
-#define PREC_ADD       6   /* + - */
-#define PREC_MUL       7   /* * / % */
-#define PREC_PREFIX    8   /* unary + - ! ~ & * (deref) */
+#define PREC_SHIFT     6   /* << >> */
+#define PREC_ADD       7   /* + - */
+#define PREC_MUL       8   /* * / % */
+#define PREC_PREFIX    9   /* unary + - ! ~ & * (deref) */
 
 /**
  * expr_parse - Parse and generate code for an expression.

@@ -893,6 +893,45 @@ void help_command() {
 }
 
 /**
+ * @brief Wrapper for executing a file via kernel_fork (./ handler).
+ *
+ * Called in a forked task's context.  Runs execve_file with the filename
+ * as the sole argument.  The trampoline calls task_exit upon return.
+ */
+static void exec_wrapper(void* arg)
+{
+    char* filename = (char*)arg;
+    char* argv[] = {filename, NULL};
+    extern int execve_file(const char* filename, char** argv, char** envp);
+    execve_file(filename, argv, NULL);
+}
+
+/**
+ * @brief Wrapper for compiling and running C code via TCC in a forked task.
+ *
+ * Called in a forked task's context.  Opens the source file, compiles
+ * and executes it with TCC, then returns (triggering task_exit via the
+ * trampoline).
+ */
+static void tcc_wrapper(void* arg)
+{
+    char* filename = (char*)arg;
+    int fd = fs_open(filename, 0);
+    if (fd < 0) {
+        terminal_writestring("Failed to open file\n");
+        return;
+    }
+    char* source = (char*)kmalloc(4096);
+    int bytes = fs_read(fd, source, 4095);
+    source[bytes] = '\0';
+    fs_close(fd);
+    char* argv[] = {filename, NULL};
+    extern int exec_c_code(const char* c_source, char** argv);
+    exec_c_code(source, argv);
+    kfree(source);
+}
+
+/**
  * @brief Parse and run the current command in the shell buffer.
  */
 void execute_command() {
@@ -989,13 +1028,12 @@ void execute_command() {
     }
     else if (strncmp(shell_buffer, "tcc ", 4) == 0) {
         char* filename = shell_buffer + 4; while (*filename == ' ') filename++;
-        int fd = fs_open(filename, 0);
-        if (fd < 0) terminal_writestring("Failed to open file\n");
-        else {
-            char* source = (char*)kmalloc(4096); int bytes = fs_read(fd, source, 4095);
-            source[bytes] = '\0'; fs_close(fd);
-            char* argv[] = {filename, NULL}; extern int exec_c_code(const char* c_source, char** argv);
-            exec_c_code(source, argv); kfree(source);
+        int pid = kernel_fork(tcc_wrapper, (void*)filename);
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
+        } else {
+            terminal_writestring("fork failed\n");
         }
     }
     else if (strncmp(shell_buffer, "cc ", 3) == 0) {
@@ -1028,9 +1066,15 @@ void execute_command() {
         }
     }
     else if (strncmp(shell_buffer, "./", 2) == 0) {
-        char* filename = shell_buffer + 2; char* argv[] = {filename, NULL};
-        extern int execve_file(const char* filename, char** argv, char** envp);
-        execve_file(filename, argv, NULL);
+        char* filename = shell_buffer + 2;
+        int pid = kernel_fork(exec_wrapper, (void*)filename);
+        if (pid > 0) {
+            /* Parent — wait for the child to exit */
+            int status;
+            waitpid(pid, &status, 0);
+        } else {
+            terminal_writestring("fork failed\n");
+        }
     }
     else if (strcmp(shell_buffer, "free") == 0) {
         char buf[32];
@@ -1378,7 +1422,7 @@ void shell_loop() {
         while (is_serial_received()) {
             char c = read_serial(); if (c == '\r') c = '\n'; shell_input(c);
         }
-        __asm__ volatile("hlt");
+        __asm__ volatile("sti; hlt");  /* ensure interrupts enabled before halt */
     }
 }
 
