@@ -304,8 +304,11 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 
             /* Copy to RX buffer (guard from ISR vs shell) */
             __asm__ volatile("cli");
+            /* Clamp rx_len to buffer size to avoid underflow in subtraction */
+            if (rx_len > TCP_RX_BUF_SIZE)
+                rx_len = TCP_RX_BUF_SIZE;
             uint32_t copy = tcp_payload_len;
-            if (rx_len + copy > TCP_RX_BUF_SIZE)
+            if (rx_len + copy > TCP_RX_BUF_SIZE || rx_len + copy < rx_len)
                 copy = TCP_RX_BUF_SIZE - rx_len;
             memcpy(rx_buf + rx_len, tcp_data, copy);
             rx_len += copy;

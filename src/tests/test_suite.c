@@ -50,7 +50,8 @@ void test_fail(const char* msg)
 {
     failed++;
     if (msg) {
-        strcpy(fail_msg, msg);
+        strncpy(fail_msg, msg, sizeof(fail_msg) - 1);
+        fail_msg[sizeof(fail_msg) - 1] = '\0';
     }
     terminal_writestring("  [FAIL] ");
     terminal_writestring(msg);

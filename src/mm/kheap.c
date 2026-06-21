@@ -321,6 +321,7 @@ char* strrchr(const char* s, int c) {
 char* strncpy(char* dest, const char* src, size_t n) {
     char* d = dest;
     while (n-- && (*d++ = *src++));
-    if (n) *d = '\0';
+    /* Null-pad the remainder (standard strncpy behavior) */
+    while (n-- > 0) *d++ = '\0';
     return dest;
 }

@@ -26,7 +26,12 @@ static void print_dec(char** p, char* end, uint32_t val, int sign,
 
     if (sign && (int32_t)val < 0) {
         neg = 1;
-        val = (uint32_t)-(int32_t)val;
+        /* INT_MIN: -(-2^31) overflows 32-bit signed; handle as unsigned 2^31 */
+        if ((int32_t)val == (int32_t)0x80000000) {
+            val = 0x80000000;
+        } else {
+            val = (uint32_t)-(int32_t)val;
+        }
     }
 
     do {

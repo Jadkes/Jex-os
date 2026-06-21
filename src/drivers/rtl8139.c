@@ -119,7 +119,17 @@ void rtl8139_handler(registers_t* regs)
                 break;
 
             /* The Ethernet frame starts after the 4-byte header */
-            uint8_t* frame = rx_buffer + offset + 4;
+            uint8_t* frame;
+            uint8_t frame_copy[2048]; /* Max frame size for linearized copy */
+            if (offset + 4 + rx_len > RX_BUF_SIZE) {
+                /* Frame wraps around ring buffer — copy to linear buffer */
+                uint32_t first_chunk = RX_BUF_SIZE - (offset + 4);
+                memcpy(frame_copy, rx_buffer + offset + 4, first_chunk);
+                memcpy(frame_copy + first_chunk, rx_buffer, rx_len - first_chunk);
+                frame = frame_copy;
+            } else {
+                frame = rx_buffer + offset + 4;
+            }
             net_process_packet(frame, rx_len);
 
             /* Advance past 4-byte header + payload, aligned to 4 bytes */
@@ -294,7 +304,17 @@ int rtl8139_poll_rx(void)
         if (rx_len > RX_BUF_SIZE || rx_len < 4)
             break;
 
-        uint8_t* frame = rx_buffer + offset + 4;
+        uint8_t* frame;
+        uint8_t frame_copy[2048]; /* Max frame size for linearized copy */
+        if (offset + 4 + rx_len > RX_BUF_SIZE) {
+            /* Frame wraps around ring buffer — copy to linear buffer */
+            uint32_t first_chunk = RX_BUF_SIZE - (offset + 4);
+            memcpy(frame_copy, rx_buffer + offset + 4, first_chunk);
+            memcpy(frame_copy + first_chunk, rx_buffer, rx_len - first_chunk);
+            frame = frame_copy;
+        } else {
+            frame = rx_buffer + offset + 4;
+        }
         net_process_packet(frame, rx_len);
 
         /* Advance past 4-byte header + payload, aligned to 4 bytes */

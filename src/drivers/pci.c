@@ -121,45 +121,49 @@ uint16_t pci_config_read_word(uint8_t bus, uint8_t slot, uint8_t func, uint8_t o
  * @param device PCI device (slot) number.
  */
 static void pci_check_device(uint8_t bus, uint8_t device) {
-    uint8_t function = 0;
+    /* Read offset 0x0C for header type (multifunction bit is bit 7) */
+    uint32_t regC = pci_config_read_dword(bus, device, 0, 0x0C);
+    uint8_t max_func = ((regC >> 16) & 0x80) ? 8 : 1;
 
-    /* Offset 0: Vendor ID (bits 0-15) and Device ID (bits 16-31) */
-    uint32_t reg0 = pci_config_read_dword(bus, device, function, 0);
-    uint16_t vendor_id = reg0 & 0xFFFF;
-    if (vendor_id == 0xFFFF) return; // Slot is empty
+    for (uint8_t function = 0; function < max_func; function++) {
+        /* Offset 0: Vendor ID (bits 0-15) and Device ID (bits 16-31) */
+        uint32_t reg0 = pci_config_read_dword(bus, device, function, 0);
+        uint16_t vendor_id = reg0 & 0xFFFF;
+        if (vendor_id == 0xFFFF) continue;
 
-    pci_device_t dev;
-    dev.bus = bus;
-    dev.device = device;
-    dev.function = function;
-    dev.vendor_id = vendor_id;
-    dev.device_id = (reg0 >> 16) & 0xFFFF;
+        pci_device_t dev;
+        dev.bus = bus;
+        dev.device = device;
+        dev.function = function;
+        dev.vendor_id = vendor_id;
+        dev.device_id = (reg0 >> 16) & 0xFFFF;
 
-    /* Offset 8: Revision ID, Prog IF, Subclass, Class Code */
-    uint32_t reg8 = pci_config_read_dword(bus, device, function, 8);
-    dev.revision_id = reg8 & 0xFF;
-    dev.prog_if = (reg8 >> 8) & 0xFF;
-    dev.subclass = (reg8 >> 16) & 0xFF;
-    dev.class_code = (reg8 >> 24) & 0xFF;
+        /* Offset 8: Revision ID, Prog IF, Subclass, Class Code */
+        uint32_t reg8 = pci_config_read_dword(bus, device, function, 8);
+        dev.revision_id = reg8 & 0xFF;
+        dev.prog_if = (reg8 >> 8) & 0xFF;
+        dev.subclass = (reg8 >> 16) & 0xFF;
+        dev.class_code = (reg8 >> 24) & 0xFF;
 
-    /* Base Address Registers (BARs) tell us where the device's I/O or Memory is mapped */
-    dev.bar0 = pci_config_read_dword(bus, device, function, 0x10);
-    dev.bar1 = pci_config_read_dword(bus, device, function, 0x14);
-    dev.bar2 = pci_config_read_dword(bus, device, function, 0x18);
-    dev.bar3 = pci_config_read_dword(bus, device, function, 0x1C);
-    dev.bar4 = pci_config_read_dword(bus, device, function, 0x20);
-    dev.bar5 = pci_config_read_dword(bus, device, function, 0x24);
+        /* Base Address Registers (BARs) tell us where the device's I/O or Memory is mapped */
+        dev.bar0 = pci_config_read_dword(bus, device, function, 0x10);
+        dev.bar1 = pci_config_read_dword(bus, device, function, 0x14);
+        dev.bar2 = pci_config_read_dword(bus, device, function, 0x18);
+        dev.bar3 = pci_config_read_dword(bus, device, function, 0x1C);
+        dev.bar4 = pci_config_read_dword(bus, device, function, 0x20);
+        dev.bar5 = pci_config_read_dword(bus, device, function, 0x24);
 
-    /* Offset 0x3C: Interrupt Line (bits 0-7) */
-    uint32_t reg3C = pci_config_read_dword(bus, device, function, 0x3C);
-    dev.irq_line = reg3C & 0xFF;
+        /* Offset 0x3C: Interrupt Line (bits 0-7) */
+        uint32_t reg3C = pci_config_read_dword(bus, device, function, 0x3C);
+        dev.irq_line = reg3C & 0xFF;
 
-    /* Log found device for debugging */
-    pr_debug("vendor=0x%x device=0x%x class=0x%x\n", vendor_id, dev.device_id, dev.class_code);
+        /* Log found device for debugging */
+        pr_debug("vendor=0x%x device=0x%x class=0x%x func=%d\n", vendor_id, dev.device_id, dev.class_code, function);
 
-    /* Add the valid device to our system-wide list */
-    if (pci_device_count < 32) {
-        pci_devices[pci_device_count++] = dev;
+        /* Add the valid device to our system-wide list */
+        if (pci_device_count < 32) {
+            pci_devices[pci_device_count++] = dev;
+        }
     }
 }
 

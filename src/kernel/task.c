@@ -9,8 +9,6 @@
 #include "kheap.h"
 #include "pmm.h"
 
-/* 8 KB per-process kernel stack */
-#define KSTACK_SIZE  8192
 #include "paging.h"
 #include "init.h"
 #include "string.h"
@@ -48,7 +46,7 @@ void init_tasking() {
     current_task->esp = current_task->ebp = 0;
     current_task->eip = 0;
     current_task->page_directory = &kernel_directory;
-    current_task->kstack = 0; /* Shell uses the initial boot stack */
+    current_task->kstack = alloc_kernel_stack(current_task->id);
     current_task->cpu_ticks = 0;
     current_task->next = NULL;
     current_task->state = STATE_RUNNING;
@@ -138,20 +136,22 @@ void task_switch() {
     current_task->esp = esp;
     current_task->ebp = ebp;
 
-    /* Round-robin: Pick the next task in the circular list */
+    /* Round-robin: Pick the next task in the ready queue */
+    volatile task_t* start = current_task;
     current_task = current_task->next;
     if (!current_task) current_task = ready_queue;
 
     /* Skip zombie tasks — they stay around for the parent to reap */
     {
-        int safety = 0;
         while (current_task->state == STATE_ZOMBIE) {
             current_task = current_task->next;
             if (!current_task) current_task = ready_queue;
-            if (++safety > 100) {
+            /* If we wrapped around and the ONLY non-zombie task is start
+             * itself, the while-loop check re-evaluates start's state on the
+             * next iteration.  But if start is ALSO zombie, every task is
+             * zombie and there's nothing to schedule. */
+            if (current_task == start && current_task->state == STATE_ZOMBIE) {
                 /* All tasks are zombies — nothing to run */
-                extern void log_serial(const char* str);
-                log_serial("[SCHED] all tasks zombie — HLT\n");
                 for (;;) asm volatile("hlt");
             }
         }
@@ -183,7 +183,8 @@ void task_switch() {
         set_kernel_stack(current_task->kstack + 8192);
     }
 
-    __asm__ volatile("         \n      mov %0, %%ebx;           \n      mov %1, %%esp;           \n      mov %2, %%ebp;           \n      mov %3, %%cr3;           \n      mov $0x12345, %%eax;     \n      sti;                     \n      jmp *%%ebx;              \n  " : : "r"(eip), "r"(esp), "r"(ebp), "r"(current_task->page_directory) : "ebx", "eax");
+
+    __asm__ volatile("         \n      mov %0, %%ebx;           \n      mov %1, %%esp;           \n      mov %2, %%ebp;           \n      mov %3, %%cr3;           \n      mov $0x12345, %%eax;     \n      sti;                     \n      jmp *%%ebx;              \n  " : : "b"(eip), "r"(esp), "r"(ebp), "r"(current_task->page_directory) : "eax");
 }
 
 /**
@@ -212,6 +213,7 @@ typedef struct {
 static void fork_child_entry(void* arg) {
     fork_save_t* save = (fork_save_t*)arg;
 
+
     /* Load into C locals — iret-frame values use "m" constraint so they
      * live in memory.  This guarantees that restoring all GPRs below
      * cannot clobber eip / useresp / eflags before we push them. */
@@ -225,33 +227,19 @@ static void fork_child_entry(void* arg) {
     uint32_t edi_val = save->edi;
     uint32_t ebp_val = save->ebp;
 
-    /* Diagnostic: log EBP value before iret */
-    {
-        extern void log_serial(const char* s);
-        extern void log_hex_serial(uint32_t n);
-        log_serial("[FORK_CHILD] pid=");
-        log_hex_serial(current_task->id);
-        log_serial(" ebp_val=");
-        log_hex_serial(ebp_val);
-        log_serial(" eip=");
-        log_hex_serial(eip);
-        log_serial(" uesp=");
-        log_hex_serial(uesp);
-        log_serial("\n");
-    }
-
     __asm__ volatile(
-        /* Restore user registers — everything EXCEPT EBP, which we defer
-         * because %0/%1/%2 are "m" constraints that generate EBP-relative
-         * memory addresses.  Restoring EBP too early would make those
-         * reads fetch from the user stack instead of the kernel stack. */
+        /* Restore user registers — everything EXCEPT EBP, which we defer.
+         * All operands use "m" (kernel-stack memory via EBP) so the register
+         * clobber list can be exhaustive.  GCC must not assign ANY input to
+         * a register we clobber before reading it — the "m" constraint avoids
+         * this problem entirely. */
         "mov  %3, %%ecx\n"
         "mov  %4, %%edx\n"
         "mov  %5, %%ebx\n"
         "mov  %6, %%esi\n"
         "mov  %7, %%edi\n"
 
-        /* Switch to user-mode segment selectors (uses AX, not integer register) */
+        /* Switch to user-mode segment selectors */
         "mov  $0x23, %%ax\n"
         "mov  %%ax, %%ds\n"
         "mov  %%ax, %%es\n"
@@ -276,9 +264,9 @@ static void fork_child_entry(void* arg) {
         "iret\n"
         :
         : "m"(eip), "m"(uesp), "m"(eflags),
-          "r"(ecx_val), "r"(edx_val), "r"(ebx_val),
-          "r"(esi_val), "r"(edi_val), "r"(ebp_val)
-        : "memory"
+          "m"(ecx_val), "m"(edx_val), "m"(ebx_val),
+          "m"(esi_val), "m"(edi_val), "m"(ebp_val)
+        : "eax", "ecx", "edx", "ebx", "esi", "edi", "memory"
     );
 
     /* Unreachable — iret never returns */
@@ -327,13 +315,12 @@ int fork(registers_t* regs) {
     for (int i = 0; i < 32; i++)
         child->signal_handlers[i] = parent->signal_handlers[i];
 
-    /* Allocate 8 KB kernel stack for the child */
-    uint32_t stack_alloc = (uint32_t)pmm_alloc_blocks(2);
-    if (!stack_alloc) {
+    /* Allocate kernel stack for the child via PDE 1023 — no identity collision */
+    child->kstack = alloc_kernel_stack(child->id);
+    if (!child->kstack) {
         __asm__ volatile("sti");
         return -1;
     }
-    child->kstack = stack_alloc;
 
     /*
      * Place a fork_save_t on the child's kernel stack (at a HIGHER address
@@ -345,9 +332,13 @@ int fork(registers_t* regs) {
      *   [save ]   ┐   fork_save_t (9 × 4 = 36 bytes)
      *   [...]    ┘   referenced by save pointer above
      *
+     * NOTE: The child's kernel stack lives in PDE 1023 (shared page table,
+     * visible from all CR3 values).  Writes via child->kstack reach the
+     * correct physical pages directly — no CR3 switch needed.
+     *
      * kernel_fork_trampoline: pop EBX(=func) / pop EAX(=save) / push EAX / call *EBX
      */
-    uint32_t* cp = (uint32_t*)(stack_alloc + KSTACK_SIZE);
+    uint32_t* cp = (uint32_t*)(child->kstack + KSTACK_SIZE);
 
     /* Write the fork_save_t */
     cp -= sizeof(fork_save_t) / 4;
@@ -370,35 +361,11 @@ int fork(registers_t* regs) {
     child->ebp = (uint32_t)cp;
     child->eip = (uint32_t)kernel_fork_trampoline;
 
-    /* Serial diagnostics */
-    {
-        extern void log_serial(const char* str);
-        extern void log_hex_serial(uint32_t n);
-        log_serial("[FORK] parent=");
-        log_hex_serial(parent->id);
-        log_serial(" child=");
-        log_hex_serial(child->id);
-        log_serial(" eip=");
-        log_hex_serial(regs->eip);
-        log_serial(" esp=");
-        log_hex_serial(regs->useresp);
-        log_serial("\n");
-    }
 
     /* Add child to end of ready queue */
     task_t* tmp = (task_t*)ready_queue;
     while (tmp->next) tmp = tmp->next;
     tmp->next = child;
-
-    {
-        extern void log_serial(const char* str);
-        extern void log_hex_serial(uint32_t n);
-        log_serial("[KERN_FORK] parent=");
-        log_hex_serial(parent->id);
-        log_serial(" child=");
-        log_hex_serial(child->id);
-        log_serial("\n");
-    }
 
     __asm__ volatile("sti");
     return child->id;
@@ -417,7 +384,6 @@ __asm__(
     "    pop %ebx\n"
     "    pop %eax\n"
     "    push %eax\n"
-    "    sti\n"
     "    call *%ebx\n"
     "    push $0\n"
     "    call task_exit\n"
@@ -466,21 +432,20 @@ int kernel_fork(void (*func)(void*), void* arg)
     for (int i = 0; i < 32; i++)
         child->signal_handlers[i] = parent->signal_handlers[i];
 
-    /* Allocate kernel stack for the child */
-    uint32_t stack_alloc = (uint32_t)kmalloc(KSTACK_SIZE);
-    if (!stack_alloc) {
+    /* Allocate kernel stack for the child via PDE 1023 — no identity collision */
+    child->kstack = alloc_kernel_stack(child->id);
+    if (!child->kstack) {
         kfree(child);
         __asm__ volatile("sti");
         return -1;
     }
-    child->kstack = stack_alloc;
 
     /*
      * Set up the child's initial stack for the trampoline.
      * Push arg first, then func on top — the trampoline pops func first (ebx),
      * then arg (eax), then pushes arg back and calls *ebx (func(arg)).
      */
-    uint32_t* cp = (uint32_t*)(stack_alloc + KSTACK_SIZE);
+    uint32_t* cp = (uint32_t*)(child->kstack + KSTACK_SIZE);
     *--cp = (uint32_t)arg;   /* arg — popped second */
     *--cp = (uint32_t)func;  /* func — popped first */
 
@@ -591,9 +556,9 @@ int waitpid(int pid, int* status, int options) {
                     log_serial("\n");
                 }
 
-                /* Free kernel stack — kstack is the direct kmalloc return address */
+                /* Free kernel stack — PDE 1023 shared page table */
                 if (scan->kstack)
-                    kfree((void*)scan->kstack);
+                    free_kernel_stack(scan->id);
 
                 /* Remove from ready queue */
                 if (prev)

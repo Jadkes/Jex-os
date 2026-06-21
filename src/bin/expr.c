@@ -104,9 +104,16 @@ static void emit_pop_ebx(uint8_t* buf, uint32_t* pos) {
  * Load variable value from stack (32-bit).
  */
 static void emit_mov_eax_mem_ebp(uint8_t* buf, uint32_t* pos, int offset) {
-    buf[(*pos)++] = 0x8B; /* mov r32, r/m32 */
-    buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
-    buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x8B; /* mov r32, r/m32 */
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x8B; /* mov r32, r/m32 */
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    }
 }
 
 /**
@@ -116,8 +123,14 @@ static void emit_mov_eax_mem_ebp(uint8_t* buf, uint32_t* pos, int offset) {
 static void emit_movsx_eax_mem8_ebp(uint8_t* buf, uint32_t* pos, int offset) {
     buf[(*pos)++] = 0x0F; /* movsx prefix */
     buf[(*pos)++] = 0xBE; /* movsx r32, r/m8 */
-    buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
-    buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset);
+    }
 }
 
 /**
@@ -126,8 +139,14 @@ static void emit_movsx_eax_mem8_ebp(uint8_t* buf, uint32_t* pos, int offset) {
  */
 static void emit_lea_eax_ebp(uint8_t* buf, uint32_t* pos, int offset) {
     buf[(*pos)++] = 0x8D; /* lea r32, m */
-    buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
-    buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset);
+    }
 }
 
 /**
@@ -159,10 +178,16 @@ static void emit_neg_eax(uint8_t* buf, uint32_t* pos) {
  * Emit add dword [ebp-offset], 1 instruction.
  * Increment a variable on the stack by 1.
  */
-static void emit_add_mem_ebp_1(uint8_t* buf, uint32_t* pos, int offset) {
+static void __attribute__((unused)) emit_add_mem_ebp_1(uint8_t* buf, uint32_t* pos, int offset) {
     buf[(*pos)++] = 0x83; /* add r/m32, imm8 */
-    buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
-    buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset);
+    }
     buf[(*pos)++] = 0x01; /* imm8 = 1 */
 }
 
@@ -170,17 +195,23 @@ static void emit_add_mem_ebp_1(uint8_t* buf, uint32_t* pos, int offset) {
  * Emit sub dword [ebp-offset], 1 instruction.
  * Decrement a variable on the stack by 1.
  */
-static void emit_sub_mem_ebp_1(uint8_t* buf, uint32_t* pos, int offset) {
+static void __attribute__((unused)) emit_sub_mem_ebp_1(uint8_t* buf, uint32_t* pos, int offset) {
     buf[(*pos)++] = 0x83; /* sub r/m32, imm8 */
-    buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
-    buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset);
+    }
     buf[(*pos)++] = 0x01; /* imm8 = 1 */
 }
 
 /**
  * Emit mov ebx, eax instruction.
  */
-static void emit_mov_ebx_eax(uint8_t* buf, uint32_t* pos) {
+static void __attribute__((unused)) emit_mov_ebx_eax(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0x89; /* mov r32, r32 */
     buf[(*pos)++] = 0xC3; /* modrm: ebx, eax */
 }
@@ -221,8 +252,29 @@ static void emit_add_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
  */
 static void emit_mov_mem_ebp_eax(uint8_t* buf, uint32_t* pos, int offset) {
     buf[(*pos)++] = 0x89; /* mov r/m32, r32 */
-    buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
-    buf[(*pos)++] = (uint8_t)(offset); /* negative offset (already negative) */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset);
+    }
+}
+
+/**
+ * Emit mov [ebp-offset], al instruction (8-bit store for char).
+ */
+static void emit_mov_mem_ebp_al(uint8_t* buf, uint32_t* pos, int offset) {
+    buf[(*pos)++] = 0x88; /* mov r/m8, r8 */
+    if (offset < -128 || offset > 127) {
+        buf[(*pos)++] = 0x85; /* modrm: [ebp+disp32] */
+        *(int32_t*)(buf + *pos) = offset;
+        *pos += 4;
+    } else {
+        buf[(*pos)++] = 0x45; /* modrm: [ebp+disp8] */
+        buf[(*pos)++] = (uint8_t)(offset);
+    }
 }
 
 /**
@@ -340,10 +392,12 @@ static int parse_primary(token_t* tokens, int* pos, symtab_t* tab,
 
             if (tokens[*pos].type != TOK_RPAREN) {
                 /* Collect arguments first (to push right-to-left) */
-                int arg_positions[32];
+#define MAX_FUNC_ARGS 32
+                int arg_positions[MAX_FUNC_ARGS];
                 int arg_count_temp = 0;
 
                 while (tokens[*pos].type != TOK_RPAREN && tokens[*pos].type != TOK_EOF) {
+                    if (arg_count_temp >= MAX_FUNC_ARGS) return -1; /* Too many args */
                     arg_positions[arg_count_temp++] = *pos;
 
                     /* Skip until next comma or ')' */
@@ -421,12 +475,17 @@ static int parse_primary(token_t* tokens, int* pos, symtab_t* tab,
 
             output[(*out_pos)++] = 0x5B;
 
-            int elem_size = sym_type_size(sym->type);
+            int elem_size = sym_type_size(sym->base_type);
             if (elem_size == 4) {
                 output[(*out_pos)++] = 0xC1;
                 output[(*out_pos)++] = 0xE3;
-                output[(*out_pos)++] = 0x02;
+                output[(*out_pos)++] = 0x02; /* shl ebx, 2 */
+            } else if (elem_size == 2) {
+                output[(*out_pos)++] = 0xD1;
+                output[(*out_pos)++] = 0xE3;
+                output[(*out_pos)++] = 0x01; /* shl ebx, 1 */
             }
+            /* elem_size == 1 (char): no shift needed */
 
             output[(*out_pos)++] = 0x01;
             output[(*out_pos)++] = 0xD8;
@@ -463,41 +522,52 @@ static int parse_primary(token_t* tokens, int* pos, symtab_t* tab,
         /* Check for post-increment (i++) or post-decrement (i--) */
         if (tokens[*pos].type == TOK_PLUSPLUS) {
             /* Post-increment: return old value, then increment */
-            emit_push_eax(output, out_pos); /* push old value */
-            /* Increment variable based on type */
-            emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
-            if (sym->type == SYM_PTR && sym->base_type) {
-                /* Pointer: add sizeof(base_type) */
-                int size = sym_type_size(sym->base_type);
-                emit_add_eax_imm(output, out_pos, size);
-            } else {
-                /* Regular: add 1 */
+            if (sym->type == SYM_CHAR) {
+                /* char: load sign-extended, push, add 1, store byte */
+                emit_movsx_eax_mem8_ebp(output, out_pos, sym->offset);
+                emit_push_eax(output, out_pos);
                 emit_add_eax_imm(output, out_pos, 1);
+                emit_mov_mem_ebp_al(output, out_pos, sym->offset);
+            } else {
+                emit_push_eax(output, out_pos); /* push old value */
+                emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
+                if (sym->type == SYM_PTR && sym->base_type) {
+                    int size = sym_type_size(sym->base_type);
+                    emit_add_eax_imm(output, out_pos, size);
+                } else {
+                    emit_add_eax_imm(output, out_pos, 1);
+                }
+                emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
             }
-            emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
             /* Pop old value into eax (this is the result) */
             output[(*out_pos)++] = 0x58; /* pop eax */
             (*pos)++;
         } else if (tokens[*pos].type == TOK_MINUSMINUS) {
             /* Post-decrement: return old value, then decrement */
-            emit_push_eax(output, out_pos); /* push old value */
-            /* Decrement variable based on type */
-            emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
-            if (sym->type == SYM_PTR && sym->base_type) {
-                /* Pointer: sub sizeof(base_type) */
-                int size = sym_type_size(sym->base_type);
-                /* Use neg to subtract: eax = eax - size */
-                output[(*out_pos)++] = 0x81; /* sub eax, imm32 */
-                output[(*out_pos)++] = 0xE8; /* modrm: eax */
-                *(uint32_t*)(output + *out_pos) = size;
-                *out_pos += 4;
-            } else {
-                /* Regular: sub 1 */
+            if (sym->type == SYM_CHAR) {
+                /* char: load sign-extended, push, sub 1, store byte */
+                emit_movsx_eax_mem8_ebp(output, out_pos, sym->offset);
+                emit_push_eax(output, out_pos);
                 output[(*out_pos)++] = 0x83; /* sub eax, imm8 */
-                output[(*out_pos)++] = 0xE8; /* modrm: eax */
+                output[(*out_pos)++] = 0xE8;
                 output[(*out_pos)++] = 0x01;
+                emit_mov_mem_ebp_al(output, out_pos, sym->offset);
+            } else {
+                emit_push_eax(output, out_pos); /* push old value */
+                emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
+                if (sym->type == SYM_PTR && sym->base_type) {
+                    int size = sym_type_size(sym->base_type);
+                    output[(*out_pos)++] = 0x81; /* sub eax, imm32 */
+                    output[(*out_pos)++] = 0xE8;
+                    *(uint32_t*)(output + *out_pos) = size;
+                    *out_pos += 4;
+                } else {
+                    output[(*out_pos)++] = 0x83; /* sub eax, imm8 */
+                    output[(*out_pos)++] = 0xE8;
+                    output[(*out_pos)++] = 0x01;
+                }
+                emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
             }
-            emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
             /* Pop old value into eax (this is the result) */
             output[(*out_pos)++] = 0x58; /* pop eax */
             (*pos)++;
@@ -542,21 +612,21 @@ static int parse_primary(token_t* tokens, int* pos, symtab_t* tab,
             if (tokens[*pos].type != TOK_IDENT) return -1;
             symbol_t* sym = symtab_lookup(tab, tokens[*pos].str);
             if (!sym) return -1;
-            /* Increment variable based on type */
-            emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
-            if (sym->type == SYM_PTR && sym->base_type) {
-                /* Pointer: add sizeof(base_type) */
-                int size = sym_type_size(sym->base_type);
-                emit_add_eax_imm(output, out_pos, size);
-            } else {
-                /* Regular: add 1 */
-                emit_add_eax_imm(output, out_pos, 1);
-            }
-            emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
-            /* Load new value into eax (result) */
             if (sym->type == SYM_CHAR) {
+                /* char: load, add 1, store byte, load sign-extended */
+                emit_movsx_eax_mem8_ebp(output, out_pos, sym->offset);
+                emit_add_eax_imm(output, out_pos, 1);
+                emit_mov_mem_ebp_al(output, out_pos, sym->offset);
                 emit_movsx_eax_mem8_ebp(output, out_pos, sym->offset);
             } else {
+                emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
+                if (sym->type == SYM_PTR && sym->base_type) {
+                    int size = sym_type_size(sym->base_type);
+                    emit_add_eax_imm(output, out_pos, size);
+                } else {
+                    emit_add_eax_imm(output, out_pos, 1);
+                }
+                emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
                 emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
             }
             (*pos)++;
@@ -568,26 +638,28 @@ static int parse_primary(token_t* tokens, int* pos, symtab_t* tab,
             if (tokens[*pos].type != TOK_IDENT) return -1;
             symbol_t* sym = symtab_lookup(tab, tokens[*pos].str);
             if (!sym) return -1;
-            /* Decrement variable based on type */
-            emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
-            if (sym->type == SYM_PTR && sym->base_type) {
-                /* Pointer: sub sizeof(base_type) */
-                int size = sym_type_size(sym->base_type);
-                output[(*out_pos)++] = 0x81; /* sub eax, imm32 */
-                output[(*out_pos)++] = 0xE8; /* modrm: eax */
-                *(uint32_t*)(output + *out_pos) = size;
-                *out_pos += 4;
-            } else {
-                /* Regular: sub 1 */
-                output[(*out_pos)++] = 0x83; /* sub eax, imm8 */
-                output[(*out_pos)++] = 0xE8; /* modrm: eax */
-                output[(*out_pos)++] = 0x01;
-            }
-            emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
-            /* Load new value into eax (result) */
             if (sym->type == SYM_CHAR) {
+                /* char: load, sub 1, store byte, load sign-extended */
+                emit_movsx_eax_mem8_ebp(output, out_pos, sym->offset);
+                output[(*out_pos)++] = 0x83; /* sub eax, imm8 */
+                output[(*out_pos)++] = 0xE8;
+                output[(*out_pos)++] = 0x01;
+                emit_mov_mem_ebp_al(output, out_pos, sym->offset);
                 emit_movsx_eax_mem8_ebp(output, out_pos, sym->offset);
             } else {
+                emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
+                if (sym->type == SYM_PTR && sym->base_type) {
+                    int size = sym_type_size(sym->base_type);
+                    output[(*out_pos)++] = 0x81; /* sub eax, imm32 */
+                    output[(*out_pos)++] = 0xE8; /* modrm: eax */
+                    *(uint32_t*)(output + *out_pos) = size;
+                    *out_pos += 4;
+                } else {
+                    output[(*out_pos)++] = 0x83; /* sub eax, imm8 */
+                    output[(*out_pos)++] = 0xE8; /* modrm: eax */
+                    output[(*out_pos)++] = 0x01;
+                }
+                emit_mov_mem_ebp_eax(output, out_pos, sym->offset);
                 emit_mov_eax_mem_ebp(output, out_pos, sym->offset);
             }
             (*pos)++;

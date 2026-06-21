@@ -79,6 +79,11 @@ struct tss_entry_struct
 typedef struct tss_entry_struct tss_entry_t;
 
 /**
+ * @brief The Task State Segment instance used for ring transitions.
+ */
+extern tss_entry_t tss_entry;
+
+/**
  * @brief Initialize the GDT and load it into the CPU.
  */
 void init_gdt();

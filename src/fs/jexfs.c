@@ -37,8 +37,15 @@ void write_block(uint32_t block, const uint8_t* buffer) {
 
 /**
  * @brief Read an inode from the inode table on disk.
+ *
+ * @param idx Inode index. Returns zeroed inode if idx >= total_inodes.
+ * @param inode Pointer to the inode structure to fill.
  */
 void jexfs_read_inode(uint32_t idx, struct jex_inode* inode) {
+    if (idx >= sb.total_inodes) {
+        memset(inode, 0, sizeof(struct jex_inode));
+        return;
+    }
     uint8_t buf[BLOCK_SIZE];
     uint32_t block = sb.inode_table_start + (idx * sizeof(struct jex_inode)) / BLOCK_SIZE;
     uint32_t offset = (idx * sizeof(struct jex_inode)) % BLOCK_SIZE;
@@ -48,8 +55,11 @@ void jexfs_read_inode(uint32_t idx, struct jex_inode* inode) {
 
 /**
  * @brief Write an inode back to disk.
+ *
+ * @param idx Inode index. No-op if idx >= total_inodes.
  */
 void jexfs_write_inode(uint32_t idx, struct jex_inode* inode) {
+    if (idx >= sb.total_inodes) return;
     uint8_t buf[BLOCK_SIZE];
     uint32_t block = sb.inode_table_start + (idx * sizeof(struct jex_inode)) / BLOCK_SIZE;
     uint32_t offset = (idx * sizeof(struct jex_inode)) % BLOCK_SIZE;
@@ -193,8 +203,10 @@ int jexfs_write(int inode_idx, const void* buffer, uint32_t size, uint32_t offse
  * @brief Create a new file in the current directory.
  */
 int jexfs_create(const char* name) {
+    if (!name || name[0] == '\0') return -1;
+    if (strlen(name) >= 14) return -1;  /* dir_entry name buffer is 14 bytes */
     if (jexfs_open(name) != -1) return jexfs_open(name);
-    
+
     uint8_t bitmap[BLOCK_SIZE];
     read_block(sb.inode_bitmap_start, bitmap);
     int inode_idx = -1;
@@ -235,6 +247,8 @@ int jexfs_create(const char* name) {
  * @brief Create a new directory.
  */
 int jexfs_mkdir(const char* name) {
+    if (!name || name[0] == '\0') return -1;
+    if (strlen(name) >= 14) return -1;  /* dir_entry name buffer is 14 bytes */
     uint8_t bitmap[BLOCK_SIZE];
     read_block(sb.inode_bitmap_start, bitmap);
     int inode_idx = -1;

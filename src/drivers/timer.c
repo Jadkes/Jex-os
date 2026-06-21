@@ -45,15 +45,17 @@ void timer_callback(registers_t *regs)
  */
 void init_timer(uint32_t frequency)
 {
+    if (frequency == 0) frequency = 100;  /* Guard against div-by-zero */
+
     /* Register IRQ0 handler */
     register_interrupt_handler(0, timer_callback);
 
     /* PIT base frequency is 1.193182 MHz */
     uint32_t divisor = 1193180 / frequency;
-    
+
     /* Send control byte: Channel 0, access lo/hi byte, square wave mode, 16-bit binary */
     outb(0x43, 0x36);
-    
+
     /* Send divisor bytes */
     uint8_t l = (uint8_t)(divisor & 0xFF);
     uint8_t h = (uint8_t)((divisor >> 8) & 0xFF);
@@ -69,9 +71,11 @@ void init_timer(uint32_t frequency)
 void sleep(uint32_t ms)
 {
     uint32_t start_ticks = system_ticks;
-    /* Assumes 100Hz frequency (10ms per tick) */
-    uint32_t ticks_to_wait = ms / 10;
-    
+    /* Assumes 100Hz frequency (10ms per tick). Ceiling division ensures
+     * non-zero wait for small requests (e.g., 5ms → 1 tick). */
+    uint32_t ticks_to_wait = (ms + 9) / 10;
+    if (ticks_to_wait == 0) ticks_to_wait = 1;
+
     /* Ensure interrupts are enabled so the timer continues to tick */
     __asm__ volatile("sti");
 

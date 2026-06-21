@@ -107,6 +107,27 @@ typedef struct {
 #define PT_SHLIB 5
 #define PT_PHDR 6
 
+/* Symbol Table Entry */
+typedef struct {
+    uint32_t st_name;     /**< Index into symbol string table. */
+    Elf32_Addr st_value;  /**< Symbol value (address or offset). */
+    uint32_t st_size;     /**< Symbol size. */
+    unsigned char st_info; /**< Symbol type and binding. */
+    unsigned char st_other; /**< Symbol visibility. */
+    Elf32_Half st_shndx;  /**< Section header index. */
+} __attribute__((packed)) Elf32_Sym;
+
+/* Symbol bindings (ELF_ST_BIND) */
+#define STB_LOCAL  0
+#define STB_GLOBAL 1
+#define STB_WEAK   2
+
+/* Symbol types (ELF_ST_TYPE) */
+#define STT_NOTYPE  0
+#define STT_OBJECT  1
+#define STT_FUNC    2
+#define STT_SECTION 3
+
 /* x86 Relocation Types */
 #define R_386_32   1  /**< Direct absolute. */
 #define R_386_PC32 2  /**< PC relative. */

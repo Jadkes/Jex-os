@@ -967,8 +967,19 @@ void execute_command() {
                 struct jex_inode ci; jexfs_read_inode(inode, &ci);
                 if (ci.mode == 2) {
                     cwd_inode = inode;
-                    if (path[0] == '/') strcpy(shell_cwd, path);
-                    else { if (strcmp(shell_cwd, "/") != 0) strcat(shell_cwd, "/"); strcat(shell_cwd, path); }
+                    if (path[0] == '/') {
+                        strncpy(shell_cwd, path, sizeof(shell_cwd) - 1);
+                        shell_cwd[sizeof(shell_cwd) - 1] = '\0';
+                    } else {
+                        size_t cur_len = strlen(shell_cwd);
+                        size_t path_len = strlen(path);
+                        /* Guard: only append if path + '/' + null fits */
+                        if (cur_len + 1 + path_len < sizeof(shell_cwd)) {
+                            if (strcmp(shell_cwd, "/") != 0)
+                                strcat(shell_cwd, "/");
+                            strcat(shell_cwd, path);
+                        }
+                    }
                 } else terminal_writestring("Not a directory.\n");
             } else terminal_writestring("Directory not found.\n");
         }
