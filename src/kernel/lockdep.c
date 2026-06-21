@@ -138,8 +138,12 @@ void lockdep_acquire(struct lockdep_lock* l, uint32_t ip)
         }
     }
 
-    /* Push onto lock stack */
+    /* Push onto lock stack — clear stale edges for reused index */
     if (new_idx < LOCKDEP_MAX_LOCKS) {
+        for (i = 0; i < LOCKDEP_MAX_LOCKS; i++) {
+            edges[new_idx][i] = 0;
+            edges[i][new_idx] = 0;
+        }
         lock_stack[new_idx].lock  = l;
         lock_stack[new_idx].depth = 1;
         lock_stack_depth++;
@@ -169,8 +173,21 @@ void lockdep_release(struct lockdep_lock* l)
     } else {
         /* Remove this entry and shift everything down */
         int i;
-        for (i = idx; i < lock_stack_depth - 1; i++)
+        for (i = idx; i < lock_stack_depth - 1; i++) {
             lock_stack[i] = lock_stack[i + 1];
+            /* Copy edges from the moved entry */
+            int j;
+            for (j = 0; j < LOCKDEP_MAX_LOCKS; j++) {
+                edges[i][j] = edges[i + 1][j];
+                edges[j][i] = edges[j][i + 1];
+            }
+        }
+        /* Clear the now-unused last row/column */
+        int last = lock_stack_depth - 1;
+        for (i = 0; i < LOCKDEP_MAX_LOCKS; i++) {
+            edges[last][i] = 0;
+            edges[i][last] = 0;
+        }
         lock_stack_depth--;
     }
 

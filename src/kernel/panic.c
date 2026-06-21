@@ -17,6 +17,9 @@
 #include "fs.h"
 #include <string.h>
 
+#include "task.h"
+#include "gdt.h"
+
 /* PS/2 scancode set 1 */
 #define KEY_R      0x13
 #define KEY_D      0x20
@@ -44,7 +47,7 @@ static void print_hex_val(uint32_t val)
 void decode_page_fault_err(uint32_t err, char* buf, int buf_len)
 {
     buf[0] = '\0';
-    const char* parts[5];
+    const char* parts[7];
     int count = 0;
 
     if (!(err & PF_ERR_PRESENT)) parts[count++] = "non-present";
@@ -58,8 +61,9 @@ void decode_page_fault_err(uint32_t err, char* buf, int buf_len)
 
     int pos = 0;
     for (int i = 0; i < count && pos < buf_len - 2; i++) {
-        while (*parts[i] && pos < buf_len - 2)
-            buf[pos++] = *parts[i]++;
+        int ci = 0;
+        while (parts[i][ci] && pos < buf_len - 2)
+            buf[pos++] = parts[i][ci++];
         if (i < count - 1 && pos < buf_len - 2) {
             buf[pos++] = ',';
             buf[pos++] = ' ';
@@ -186,6 +190,35 @@ void panic_handler(registers_t* regs)
     log_hex_serial(regs->eax);
     log_serial(" EFLAGS=");
     log_hex_serial(regs->eflags);
+    log_serial("\n");
+
+    /* Crash debug: TSS.ESP0, current task, ready queue */
+    log_serial("TSS.ESP0=");
+    log_hex_serial(tss_entry.esp0);
+    log_serial(" ");
+    if (current_task) {
+        log_serial("pid=");
+        log_hex_serial(current_task->id);
+        log_serial(" kstack=0x");
+        log_hex_serial(current_task->kstack);
+        log_serial(" eip=0x");
+        log_hex_serial(current_task->eip);
+        log_serial(" state=");
+        log_hex_serial(current_task->state);
+        log_serial(" queue:");
+        task_t* scan = (task_t*)ready_queue;
+        int qc = 0;
+        while (scan && qc < 4) {
+            log_serial(scan == current_task ? "[" : "");
+            log_hex_serial(scan->id);
+            log_serial(scan->state == STATE_ZOMBIE ? "Z" : scan->state == STATE_READY ? "R" : "?");
+            log_serial(scan == current_task ? "]" : "");
+            scan = scan->next;
+            qc++;
+        }
+    } else {
+        log_serial("no current task");
+    }
     log_serial("\n");
 
     terminal_setcolor(0x07);

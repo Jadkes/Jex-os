@@ -166,17 +166,21 @@ int tokenize_c_code(const char* source, token_t* tokens, int max_tokens) {
                 if (is_digit(source[pos])) {
                     int val = 0;
                     while (is_digit(source[pos])) {
+                        /* Check for overflow before multiplying */
+                        if (val > 214748364) break; /* INT_MAX/10 */
                         val = val * 10 + (source[pos] - '0');
                         pos++;
                     }
+                    /* Skip remaining digits */
+                    while (is_digit(source[pos])) pos++;
                     tok->type = TOK_NUMBER;
                     tok->int_val = val;
                 }
                 else if (source[pos] == '"') {
                     pos++; /* Skip opening quote */
-                    char str_val[256];
+                    char str_val[1024];
                     int i = 0;
-                    while (source[pos] != '"' && source[pos] != '\0' && i < 255) {
+                    while (source[pos] != '"' && source[pos] != '\0' && i < 1023) {
                         if (source[pos] == '\\' && source[pos+1] != '\0') {
                             pos++;
                             if (source[pos] == 'n') str_val[i++] = '\n';
@@ -198,10 +202,10 @@ int tokenize_c_code(const char* source, token_t* tokens, int max_tokens) {
                     strcpy(tok->str, str_val);
                 }
                 else if (is_alpha(source[pos])) {
-                    char ident[64];
+                    char ident[256];
                     int i = 0;
                     while (is_alpha(source[pos]) || is_digit(source[pos])) {
-                        if (i < 63) ident[i++] = source[pos];
+                        if (i < 255) ident[i++] = source[pos];
                         pos++;
                     }
                     ident[i] = '\0';
@@ -296,6 +300,10 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             
             uint32_t str_offset = string_pos;
             int len = strlen(tokens[i+2].str) + 1;
+            if (string_pos + len > sizeof(string_table)) {
+                len = sizeof(string_table) - string_pos;
+                if (len < 1) continue; /* String table full, skip this print */
+            }
             memcpy(string_table + string_pos, tokens[i+2].str, len);
             string_pos += len;
             
@@ -409,9 +417,16 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             }
             /* Push RHS value, load LHS, pop RHS into ebx, apply op, store */
             output[pos++] = 0x50;                               /* push eax (RHS) */
-            output[pos++] = 0x8B;                               /* mov eax, [ebp+offset] */
-            output[pos++] = 0x45;
-            output[pos++] = (uint8_t)(sym->offset);
+            if (sym->offset < -128 || sym->offset > 127) {
+                output[pos++] = 0x8B;                           /* mov eax, [ebp+disp32] */
+                output[pos++] = 0x85;
+                *(int32_t*)(output + pos) = sym->offset;
+                pos += 4;
+            } else {
+                output[pos++] = 0x8B;                           /* mov eax, [ebp+disp8] */
+                output[pos++] = 0x45;
+                output[pos++] = (uint8_t)(sym->offset);
+            }
             output[pos++] = 0x5B;                               /* pop ebx (RHS) */
             switch (op) {
             case TOK_PLUSEQ:
@@ -436,9 +451,16 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             default:
                 break;
             }
-            output[pos++] = 0x89;                               /* mov [ebp+offset], eax */
-            output[pos++] = 0x45;
-            output[pos++] = (uint8_t)(sym->offset);
+            if (sym->offset < -128 || sym->offset > 127) {
+                output[pos++] = 0x89;                           /* mov [ebp+disp32], eax */
+                output[pos++] = 0x85;
+                *(int32_t*)(output + pos) = sym->offset;
+                pos += 4;
+            } else {
+                output[pos++] = 0x89;                           /* mov [ebp+disp8], eax */
+                output[pos++] = 0x45;
+                output[pos++] = (uint8_t)(sym->offset);
+            }
             i = rhs_pos;
             while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
             if (tokens[i].type == TOK_SEMICOLON) i++;
@@ -465,8 +487,15 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
                 if (strcmp(tokens[rhs].str, "fork") == 0 && tokens[rhs+2].type == TOK_RPAREN) {
                     emit_mov_eax_imm(output, &pos, 9);          /* SYS_FORK */
                     output[pos++] = 0xCD; output[pos++] = 0x80; /* int 0x80 */
-                    output[pos++] = 0x89; output[pos++] = 0x45; /* mov [ebp+offset], eax */
-                    output[pos++] = (uint8_t)(sym->offset);
+                    if (sym->offset < -128 || sym->offset > 127) {
+                        output[pos++] = 0x89;                   /* mov [ebp+disp32], eax */
+                        output[pos++] = 0x85;
+                        *(int32_t*)(output + pos) = sym->offset;
+                        pos += 4;
+                    } else {
+                        output[pos++] = 0x89; output[pos++] = 0x45; /* mov [ebp+disp8], eax */
+                        output[pos++] = (uint8_t)(sym->offset);
+                    }
                     i = rhs + 3;
                     if (tokens[i].type == TOK_SEMICOLON) i++;
                     continue;
@@ -474,8 +503,15 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
                 if (strcmp(tokens[rhs].str, "getpid") == 0 && tokens[rhs+2].type == TOK_RPAREN) {
                     emit_mov_eax_imm(output, &pos, 15);         /* SYS_GETPID */
                     output[pos++] = 0xCD; output[pos++] = 0x80; /* int 0x80 */
-                    output[pos++] = 0x89; output[pos++] = 0x45; /* mov [ebp+offset], eax */
-                    output[pos++] = (uint8_t)(sym->offset);
+                    if (sym->offset < -128 || sym->offset > 127) {
+                        output[pos++] = 0x89;                   /* mov [ebp+disp32], eax */
+                        output[pos++] = 0x85;
+                        *(int32_t*)(output + pos) = sym->offset;
+                        pos += 4;
+                    } else {
+                        output[pos++] = 0x89; output[pos++] = 0x45; /* mov [ebp+disp8], eax */
+                        output[pos++] = (uint8_t)(sym->offset);
+                    }
                     i = rhs + 3;
                     if (tokens[i].type == TOK_SEMICOLON) i++;
                     continue;
@@ -493,8 +529,15 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
                 if (tokens[i].type == TOK_SEMICOLON) i++;
                 continue;
             }
-            output[pos++] = 0x89; output[pos++] = 0x45;         /* mov [ebp+offset], eax */
-            output[pos++] = (uint8_t)(sym->offset);
+            if (sym->offset < -128 || sym->offset > 127) {
+                output[pos++] = 0x89;                           /* mov [ebp+disp32], eax */
+                output[pos++] = 0x85;
+                *(int32_t*)(output + pos) = sym->offset;
+                pos += 4;
+            } else {
+                output[pos++] = 0x89; output[pos++] = 0x45;     /* mov [ebp+disp8], eax */
+                output[pos++] = (uint8_t)(sym->offset);
+            }
             i = rhs_pos;
             while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
             if (tokens[i].type == TOK_SEMICOLON) i++;
@@ -710,22 +753,22 @@ int reloc_count =0;
  * @return Symbol index (1-based),0 on error.
  */
 uint32_t register_external_symbol(const char* name) {
-    if (!name || reloc_count >= MAX_RELOCS) return 0;
-    
+    if (!name || func_count >= MAX_FUNCS) return 0;
+
     /* Check if already registered */
-    for (int i = 0; i < reloc_count; i++) {
+    for (int i = 0; i < func_count; i++) {
         if (strcmp(func_table[i].name, name) == 0) {
             return i + 1; /* 1-based index */
         }
     }
-    
+
     /* Register new external symbol */
-    strncpy(func_table[reloc_count].name, name, 31);
-    func_table[reloc_count].name[31] = '\0';
-    func_table[reloc_count].offset = 0; /* External = offset 0 */
-    reloc_count++;
-    
-    return reloc_count; /* 1-based index */
+    strncpy(func_table[func_count].name, name, 31);
+    func_table[func_count].name[31] = '\0';
+    func_table[func_count].offset = 0; /* External = offset 0 */
+    func_count++;
+
+    return func_count; /* 1-based index */
 }
 
 /**

@@ -85,6 +85,7 @@ int symtab_add_array(symtab_t* tab, const char* name, sym_type_t type, int offse
         if (tab->entries[i].scope_level == scope_level &&
             strcmp(tab->entries[i].name, name) == 0) {
             tab->entries[i].array_size = array_size;
+            tab->entries[i].base_type = type; /* Store element type */
             break;
         }
     }

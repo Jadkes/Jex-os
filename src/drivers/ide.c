@@ -14,16 +14,34 @@
 
 /**
  * @brief Polling loop to wait for the BSY bit to clear.
+ *
+ * Returns 0 on success, -1 on timeout (~1 second).
  */
-static void ide_wait_busy() {
-    while (inb(IDE_STATUS) & IDE_STATUS_BSY);
+static int ide_wait_busy() {
+    int timeout = 10000000; /* ~1 second at typical port I/O speed */
+    while (inb(IDE_STATUS) & IDE_STATUS_BSY) {
+        if (--timeout <= 0) {
+            pr_debug("ide_wait_busy: timeout\n");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 /**
  * @brief Polling loop to wait for the DRQ (Data Request) bit to set.
+ *
+ * Returns 0 on success, -1 on timeout (~1 second).
  */
-static void ide_wait_drq() {
-    while (!(inb(IDE_STATUS) & IDE_STATUS_DRQ));
+static int ide_wait_drq() {
+    int timeout = 10000000;
+    while (!(inb(IDE_STATUS) & IDE_STATUS_DRQ)) {
+        if (--timeout <= 0) {
+            pr_debug("ide_wait_drq: timeout\n");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 /**

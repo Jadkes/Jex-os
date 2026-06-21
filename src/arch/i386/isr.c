@@ -92,7 +92,7 @@ void isr_handler(registers_t *regs)
 
     /* Handle Page Fault */
     if (regs->int_no == 14) {
-        page_fault_handler(*regs);
+        page_fault_handler(regs);
         return;
     }
 

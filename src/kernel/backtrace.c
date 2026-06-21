@@ -32,7 +32,7 @@ int unwind_stack(uint32_t ebp, uint32_t* eip_out, int max_frames)
         uint32_t* frame = (uint32_t*)ebp;
         uint32_t saved_ebp = frame[0];
         uint32_t saved_eip = frame[1];
-        if (saved_ebp <= ebp || saved_ebp > 0xFFFFF000)
+        if (saved_ebp <= ebp)
             break;
         eip_out[count++] = saved_eip;
         ebp = saved_ebp;

@@ -115,6 +115,7 @@ void keyboard_callback(registers_t *regs) {
         if (released_code == 29) ctrl_held = false;
     } else {
         /* Key press (Make code) */
+        if (scancode >= 128) return;  /* Defensive: OOB guard for kbdus[] */
         if (scancode == 42 || scancode == 54) { shift_held = true; return; }
         if (scancode == 29) { ctrl_held = true; return; }
 
@@ -172,11 +173,17 @@ int keyboard_has_data(void)
 
 /**
  * @brief Flush all pending keyboard input by resetting the buffer.
+ *
+ * Disables interrupts to prevent the ISR from modifying head/tail
+ * between the two writes — without this, a keypress in the ISR could
+ * set head non-zero after we reset it, corrupting the ring buffer.
  */
 void keyboard_flush(void)
 {
+    __asm__ volatile("cli");
     kbd_head = 0;
     kbd_tail = 0;
+    __asm__ volatile("sti");
 }
 
 early_init(init_keyboard);

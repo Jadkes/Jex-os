@@ -48,6 +48,30 @@ int is_dirty = 0;
 static const char* keywords[] = {"int", "void", "return", "if", "else", "for", "while", "char", "struct", "static", "extern", NULL};
 static const char* syscalls[] = {"print", "printf", "malloc", "free", "open", "read", "write", "close", NULL};
 
+/* Pre-computed syntax state: 0=normal, 1=line-comment, 2=string.
+ * Pre-computed in O(n) before each render call, avoiding O(n²) per-character scans. */
+static uint8_t syntax_state[MAX_FILE_SIZE];
+
+static void precompute_syntax_state(void)
+{
+    int in_comment = 0, in_string = 0;
+    for (int i = 0; i < edit_len && i < MAX_FILE_SIZE; i++) {
+        if (!in_comment && !in_string) {
+            if (i + 1 < edit_len && edit_buffer[i] == '/' && edit_buffer[i + 1] == '/')
+                in_comment = 1;
+            else if (edit_buffer[i] == '"')
+                in_string = 1;
+        } else if (in_comment) {
+            if (edit_buffer[i] == '\n')
+                in_comment = 0;
+        } else if (in_string) {
+            if (edit_buffer[i] == '"' && (i == 0 || edit_buffer[i - 1] != '\\'))
+                in_string = 0;
+        }
+        syntax_state[i] = in_comment ? 1 : (in_string ? 2 : 0);
+    }
+}
+
 /**
  * @brief Utility to check if a character is alphanumeric or underscore.
  */
@@ -68,21 +92,9 @@ int is_digit(char c) {
  * Implements basic state-based parsing for comments, strings, and keywords.
  */
 uint8_t get_char_color(int pos) {
-    /* Check for comments (//) */
-    int line_start = pos;
-    while (line_start > 0 && edit_buffer[line_start-1] != '\n') {
-        if (edit_buffer[line_start-1] == '/' && edit_buffer[line_start] == '/') return 0x08; /* Dark Grey */
-        line_start--;
-    }
-
-    /* Check for strings ("...") */
-    int in_string = 0;
-    for (int i = 0; i <= pos; i++) {
-        if (edit_buffer[i] == '"' && (i == 0 || edit_buffer[i-1] != '\\')) {
-            if (i < pos) in_string = !in_string;
-        }
-    }
-    if (in_string || edit_buffer[pos] == '"') return 0x06; /* Brown/Orange */
+    /* Use pre-computed syntax state (O(1) lookup instead of O(n) backward scan) */
+    if (syntax_state[pos] == 1) return 0x08; /* Dark Grey for line comments */
+    if (syntax_state[pos] == 2 || edit_buffer[pos] == '"') return 0x06; /* Brown/Orange for strings */
 
     /* Check for numbers */
     if (is_digit(edit_buffer[pos]) && (pos == 0 || !is_alpha_num(edit_buffer[pos-1]))) return 0x0E; /* Yellow */
@@ -164,7 +176,8 @@ void draw_status_bar() {
  * @brief Render the text buffer to the screen with syntax highlighting.
  */
 void render_text() {
-    terminal_initialize(); 
+    terminal_initialize();
+    precompute_syntax_state();
     draw_status_bar();
     
     /* Show confirmation dialog if quitting with unsaved changes */

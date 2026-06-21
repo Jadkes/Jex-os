@@ -18,11 +18,11 @@
 #include "terminal.h"
 #include "serial.h"
 #include "gdt.h"
+#include "task.h"
 #include <stddef.h>
 
 /* Forward declarations for architecture-specific assembly functions */
 extern void jump_to_user_mode(uint32_t entry, uint32_t stack);
-extern uint32_t kernel_stack_top;
 
 /* User stack configuration — 1 MB at 0x800000 */
 #define USER_STACK_BASE     0x800000
@@ -42,14 +42,21 @@ extern uint32_t kernel_stack_top;
  */
 static int map_user_stack(void)
 {
-    for (uint32_t page = USER_STACK_BASE - 0x1000;
-         page >= USER_STACK_LOW;
-         page -= 0x1000) {
+    int allocated = 0;
+    void* frames[USER_STACK_PAGES];
+
+    for (uint32_t page = USER_STACK_BASE - 0x1000, i = 0;
+         page >= USER_STACK_LOW && i < USER_STACK_PAGES;
+         page -= 0x1000, i++) {
         void* frame = pmm_alloc_block();
         if (!frame) {
+            /* OOM — free pages mapped so far */
+            for (int j = 0; j < allocated; j++)
+                pmm_free_block(frames[j]);
             terminal_writestring("exec: Failed to allocate stack frame\n");
             return -1;
         }
+        frames[allocated++] = frame;
         map_page(frame, (void*)page, USER_STACK_FLAGS);
     }
     return 0;
@@ -137,10 +144,8 @@ int exec_c_code(const char* c_source, char** argv)
     uint32_t new_esp;
     setup_user_stack(USER_STACK_BASE, argc, actual_argv, &new_esp);
 
-    /* Ensure the TSS is updated with the kernel stack for syscalls */
-    set_kernel_stack(kernel_stack_top);
-
-    /* Jump to user mode at the ELF entry point — never returns */
+    /* TSS.ESP0 is already set per-task by task_switch — no need to override.
+     * Jump to user mode at the ELF entry point — never returns */
     jump_to_user_mode(entry, new_esp);
 
     /* Not reached */
@@ -169,6 +174,18 @@ int execve_file(const char* filename, char** argv, char** envp)
     log_serial("execve: ");
     log_serial(filename);
     log_serial("\n");
+    /* Log current task's page directory vs CR3 */
+    log_serial("[EXEC] current_task pid=");
+    log_hex_serial(current_task->id);
+    log_serial(" page_directory=0x");
+    log_hex_serial((uint32_t)current_task->page_directory);
+    log_serial(" CR3=0x");
+    {
+        uint32_t cr3;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+        log_hex_serial(cr3);
+    }
+    log_serial("\n");
 
     char* dummy_argv[] = {(char*)filename, NULL};
     char** actual_argv = argv ? argv : dummy_argv;
@@ -189,8 +206,13 @@ int execve_file(const char* filename, char** argv, char** envp)
                 return -1;
             }
 
-            fs_read(fd, source, file_size);
-            source[file_size] = '\0';
+            int read_size = fs_read(fd, source, file_size);
+            if (read_size < 0 || (uint32_t)read_size != file_size) {
+                kfree(source);
+                fs_close(fd);
+                return -1;
+            }
+            source[read_size] = '\0';
             fs_close(fd);
 
             int result = exec_c_code(source, actual_argv);
@@ -217,7 +239,12 @@ int execve_file(const char* filename, char** argv, char** envp)
         return -1;
     }
 
-    fs_read(fd, file_data, file_size);
+    int bytes_read = fs_read(fd, file_data, file_size);
+    if (bytes_read < 0 || (uint32_t)bytes_read != file_size) {
+        kfree(file_data);
+        fs_close(fd);
+        return -1;
+    }
     fs_close(fd);
 
     /* Verify ELF Magic */
@@ -228,12 +255,16 @@ int execve_file(const char* filename, char** argv, char** envp)
         while (actual_argv[argc]) argc++;
 
         uint32_t entry = elf_load_with_args(file_data, argc, actual_argv);
+        log_serial("[EXEC] entry=0x");
+        log_hex_serial(entry);
+        log_serial("\n");
         if (entry == 0) {
             kfree(file_data);
             return -1;
         }
 
         /* Map user stack BEFORE writing to it */
+        log_serial("[EXEC] mapping user stack\n");
         if (map_user_stack() < 0) {
             kfree(file_data);
             return -1;
@@ -243,7 +274,24 @@ int execve_file(const char* filename, char** argv, char** envp)
         uint32_t new_esp;
         setup_user_stack(USER_STACK_BASE, argc, actual_argv, &new_esp);
 
-        set_kernel_stack(kernel_stack_top);
+        /* Print TSS.ESP0 and current task info for crash debugging */
+        {
+            extern tss_entry_t tss_entry;
+            extern volatile task_t* current_task;
+            log_serial("[EXEC] TSS.ESP0=0x");
+            log_hex_serial(tss_entry.esp0);
+            log_serial(" task.kstack_top=0x");
+            if (current_task && current_task->kstack)
+                log_hex_serial(current_task->kstack + 8192);
+            else
+                log_serial("NULL");
+            log_serial(" pid=");
+            log_hex_serial(current_task ? current_task->id : 0);
+            log_serial("\n");
+        }
+
+        /* TSS.ESP0 already set per-task by task_switch */
+        log_serial("[EXEC] jumping to user mode\n");
 
         /* Jump to user mode at the ELF entry point — never returns */
         jump_to_user_mode(entry, new_esp);

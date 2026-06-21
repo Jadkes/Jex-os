@@ -13,6 +13,25 @@
 #include "fs.h"
 #include <stdint.h>
 
+/**
+ * @brief Validate that a user-provided pointer lies in user-space memory.
+ *
+ * User-space is < 0xC0000000. Kernel-space starts at 0xC0000000.
+ * A NULL pointer (0) is also rejected as invalid for most operations.
+ *
+ * @param ptr User-provided pointer
+ * @param len Expected accessible length (for bounds check)
+ * @return 1 if valid, 0 if invalid
+ */
+static int is_valid_user_ptr(const void* ptr, uint32_t len) {
+    uint32_t addr = (uint32_t)ptr;
+    /* Reject NULL, kernel-space, and wrap-around */
+    if (addr == 0 || addr >= 0xC0000000) return 0;
+    if (addr + len < addr) return 0; /* Overflow/wrap-around */
+    if (addr + len > 0xC0000000) return 0; /* Crosses into kernel space */
+    return 1;
+}
+
 extern void terminal_writestring(const char* data);
 extern void isr128();
 
@@ -25,9 +44,11 @@ extern void isr128();
 void syscall_handler(registers_t *regs)
 {
     /* The syscall number is passed in EAX */
-    if (regs->eax == SYS_PRINT) 
+    if (regs->eax == SYS_PRINT)
     {
         /* EBX = Pointer to string */
+        if (!is_valid_user_ptr((const void*)regs->ebx, 1))
+            return;
         terminal_writestring((const char*)regs->ebx);
     }
     else if (regs->eax == SYS_EXIT)
@@ -35,45 +56,61 @@ void syscall_handler(registers_t *regs)
         /* EBX = exit code. _task_exit marks this task ZOMBIE and switches. */
         _task_exit((int)regs->ebx);
     }
-    else if (regs->eax == SYS_OPEN) 
+    else if (regs->eax == SYS_OPEN)
     {
         /* EBX = filename, ECX = flags */
+        if (!is_valid_user_ptr((const void*)regs->ebx, 1)) {
+            regs->eax = -1;
+            return;
+        }
         regs->eax = fs_open((const char*)regs->ebx, regs->ecx);
     }
-    else if (regs->eax == SYS_READ) 
+    else if (regs->eax == SYS_READ)
     {
         /* EBX = fd, ECX = buffer, EDX = size */
+        if (!is_valid_user_ptr((void*)regs->ecx, regs->edx)) {
+            regs->eax = -1;
+            return;
+        }
         regs->eax = fs_read(regs->ebx, (void*)regs->ecx, regs->edx);
     }
-    else if (regs->eax == SYS_WRITE) 
+    else if (regs->eax == SYS_WRITE)
     {
         /* EBX = fd, ECX = buffer, EDX = size */
+        if (!is_valid_user_ptr((const void*)regs->ecx, regs->edx)) {
+            regs->eax = -1;
+            return;
+        }
         regs->eax = fs_write(regs->ebx, (const void*)regs->ecx, regs->edx);
     }
-    else if (regs->eax == SYS_CLOSE) 
+    else if (regs->eax == SYS_CLOSE)
     {
         /* EBX = fd */
         fs_close(regs->ebx);
         regs->eax = 0;
     }
-    else if (regs->eax == SYS_SEEK) 
+    else if (regs->eax == SYS_SEEK)
     {
         /* EBX = fd, ECX = offset, EDX = whence */
         regs->eax = fs_seek(regs->ebx, regs->ecx, regs->edx);
     }
-    else if (regs->eax == SYS_SBRK) 
+    else if (regs->eax == SYS_SBRK)
     {
         /* EBX = increment */
         extern void* sbrk(intptr_t increment);
         regs->eax = (uint32_t)sbrk(regs->ebx);
     }
-    else if (regs->eax == SYS_EXECVE) 
+    else if (regs->eax == SYS_EXECVE)
     {
         /* EBX = filename, ECX = argv, EDX = envp */
+        if (!is_valid_user_ptr((const void*)regs->ebx, 1)) {
+            regs->eax = -1;
+            return;
+        }
         const char* filename = (const char*)regs->ebx;
         char** argv = (char**)regs->ecx;
         char** envp = (char**)regs->edx;
-        
+
         extern int execve_file(const char* filename, char** argv, char** envp);
         regs->eax = execve_file(filename, argv, envp);
     }
@@ -85,6 +122,10 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == SYS_WAITPID)
     {
         /* EBX = pid, ECX = status ptr, EDX = options */
+        if (!is_valid_user_ptr((void*)regs->ecx, sizeof(int))) {
+            regs->eax = -1;
+            return;
+        }
         regs->eax = waitpid((int)regs->ebx, (int*)regs->ecx, (int)regs->edx);
     }
     else if (regs->eax == SYS_GETPID)
@@ -97,6 +138,11 @@ void syscall_handler(registers_t *regs)
         char buf[32];
         int i = 0;
         int is_neg = 0;
+        /* Handle INT_MIN safely: negating INT_MIN is UB */
+        if ((unsigned int)val == 0x80000000) {
+            terminal_writestring("-2147483648");
+            return;
+        }
         if (val == 0) {
             terminal_writestring("0");
         } else {

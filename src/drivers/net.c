@@ -63,7 +63,7 @@ void netlog_set_flags(int flags)
 
 /* Checksum & helpers */
 
-/*
+/** 
  * checksum - 16-bit one's complement checksum over len bytes.
  * @param buf  Data viewed as 16-bit words.
  * @param len  Length in bytes (odd length folds the trailing byte).
@@ -87,7 +87,7 @@ uint16_t checksum(uint16_t* buf, uint32_t len)
     return ~(uint16_t)sum & 0xFFFF;
 }
 
-/*
+/** 
  * read_be16 - Read a 16-bit big-endian value via memcpy (strict-aliasing safe).
  * @param p  Pointer (need not be aligned).
  * @return    Big-endian value converted to host byte order.
@@ -99,7 +99,7 @@ static inline uint16_t read_be16(const uint8_t* p)
     return ntohs(v);
 }
 
-/*
+/** 
  * arp_find - Search the cache for a given IP.
  * @param ip  Target IP (network byte order).
  * @return    Index into arp_cache[], or -1 if not found.
@@ -115,7 +115,7 @@ static int arp_find(uint32_t ip)
     return -1;
 }
 
-/*
+/** 
  * arp_add - Insert or update a MAC<->IP mapping.
  *
  * If the IP already exists, update its MAC.  Otherwise fill the first
@@ -151,7 +151,7 @@ static void arp_add(uint32_t ip, const uint8_t* mac)
     arp_cache[ARP_CACHE_SIZE - 1].valid = 1;
 }
 
-/*
+/**
  * arp_lookup - Public: find cached MAC for an IP.
  *
  * @param ip  Target IP (network byte order).
@@ -223,7 +223,7 @@ void arp_dump(void)
 
 /* Routing */
 
-/*
+/** 
  * is_local_ip - Check if an IP is on the local subnet.
  *
  * QEMU slirp uses the 10.0.2.0/24 range by default.  Anything outside
@@ -238,7 +238,7 @@ int is_local_ip(uint32_t ip)
     return (ip & htonl(0xFFFFFF00)) == (OUR_IP & htonl(0xFFFFFF00));
 }
 
-/*
+/** 
  * resolve_mac - Get the MAC address to reach a destination IP.
  *
  * For local IPs: looks up the ARP cache for the destination directly.
@@ -266,7 +266,7 @@ int resolve_mac(uint32_t ip, uint8_t* mac_out)
     return 0;
 }
 
-/*
+/** 
  * net_arp_resolve - Broadcast an ARP request for the right target.
  *
  * For local destinations, ARPs for the IP directly.
@@ -316,9 +316,9 @@ void net_arp_resolve(uint32_t ip)
     pr_debug("ARP request sent\n");
 }
 
-/*
- * route_print - Display the routing table.
- */
+
+ // route_print - Display the routing table.
+
 void route_print(void)
 {
     char buf[16];
@@ -343,7 +343,7 @@ void route_print(void)
     pr_debug("routing table shown\n");
 }
 
-/*
+/** 
  * build_ether_header - Write an Ethernet header and advance past it.
  *
  * @param buf   Destination buffer.
@@ -362,7 +362,7 @@ uint8_t* build_ether_header(uint8_t* buf, const uint8_t* dest,
     return buf + sizeof(eth_header_t);
 }
 
-/*
+/** 
  * build_ip_header - Write an IP header, compute checksum, advance past it.
  *
  * Fills a standard 20-byte IP header (no options) with TTL=64 and an
@@ -411,7 +411,7 @@ void net_send_ether(void* data, uint32_t len)
     rtl8139_send_packet(data, len);
 }
 
-/*
+/** 
  * handle_arp - Process an incoming ARP packet.
  *
  * Learns the sender's MAC address.  If the packet is a request for
@@ -475,7 +475,7 @@ static void handle_arp(uint8_t* data, uint32_t len)
 #define UDP_MAX_HANDLERS 8
 
 typedef struct {
-    uint16_t        port;           /* Host byte order               */
+    uint16_t        port;           /* Host byte order */
     udp_callback_t  handler;
     void*           userdata;
     int             active;
@@ -483,7 +483,7 @@ typedef struct {
 
 static udp_handler_entry_t udp_handlers[UDP_MAX_HANDLERS];
 
-/*
+/** 
  * udp_checksum - Compute UDP checksum with the pseudo-header.
  * @param src_ip    Source IP (network order).
  * @param dest_ip   Destination IP (network order).
@@ -501,7 +501,7 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dest_ip,
     pseudo.protocol = IP_PROTO_UDP;
     pseudo.udp_len  = htons(udp_len);
 
-    /*
+    /** 
      * We need to checksum pseudo-header + UDP datagram as one contiguous
      * block.  Static buffer avoids a 1500-byte stack allocation.
      *
@@ -523,7 +523,7 @@ static uint16_t udp_checksum(uint32_t src_ip, uint32_t dest_ip,
     return sum ? sum : 0xFFFF;
 }
 
-/*
+/** 
  * handle_udp - Process an incoming UDP datagram.
  *
  * Validates length, optionally verifies the checksum, looks up the
@@ -597,7 +597,7 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
     __asm__ volatile("sti");
 }
 
-/*
+/** 
  * net_udp_register - Register a handler for an incoming UDP port.
  *
  * @param port     Port in host byte order.
@@ -636,7 +636,7 @@ int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
     return -1;      /* Table full */
 }
 
-/*
+/**
  * net_udp_unregister - Remove a UDP handler.
  *
  * @param port  Port in host byte order.
@@ -654,7 +654,7 @@ void net_udp_unregister(uint16_t port)
     __asm__ volatile("sti");
 }
 
-/*
+/** 
  * net_send_udp - Build and send a UDP datagram.
  *
  * Resolves the destination via ARP.  If the IP is not cached, returns
@@ -720,7 +720,7 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
     return 0;
 }
 
-/*
+/**
  * handle_icmp - Process an ICMP message inside an IP datagram.
  *
  * On Echo Request addressed to us: swap src/dest in the IP header,
@@ -752,7 +752,7 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     icmp_header_t* icmp = (icmp_header_t*)(data + ip_hdr);
     uint32_t icmp_len   = ip_tot - ip_hdr;
 
-    /* ---- Echo Request: send reply ---- */
+    // Echo Request: send reply 
     if (icmp->type == ICMP_ECHO_REQUEST && ip->dest_ip == OUR_IP) {
         uint8_t our_mac[6];
         rtl8139_get_mac(our_mac);
@@ -787,7 +787,7 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
         pr_debug("echo reply sent\n");
     }
 
-    /* ---- Echo Reply: count it ---- */
+    // Echo Reply: count it 
     if (icmp->type == ICMP_ECHO_REPLY && ip->dest_ip == OUR_IP) {
         if (verbose_net_flags & NETLOG_ICMP) {
             netlog_write("ICMP", "echo reply received");
@@ -797,7 +797,7 @@ static void handle_icmp(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     }
 }
 
-/*
+/**  
  * handle_ip - Process an incoming IP datagram.
  *
  * Validates length and header checksum, learns the sender's MAC via
@@ -857,7 +857,7 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
 /* Forward declaration for static capture function used here */
 static void tcpdump_capture(uint8_t* data, uint32_t len, uint16_t ethertype);
 
-/*
+/**  
  * net_process_packet - Demux an incoming Ethernet frame.
  *
  * Called from the RTL8139 interrupt handler for every received packet.
@@ -894,7 +894,7 @@ void net_process_packet(uint8_t* data, uint32_t len)
     }
 }
 
-/*
+/** 
  * net_ping - Send an ICMP Echo Request to a given IP.
  *
  * If the destination is not in the ARP cache, sends an ARP request
@@ -909,7 +909,7 @@ int net_ping(uint32_t dest_ip)
     uint8_t our_mac[6];
     rtl8139_get_mac(our_mac);
 
-    /* ---- Resolve destination MAC (local or via gateway) ---- */
+    // Resolve destination MAC (local or via gateway)
     uint8_t dest_mac[6];
     if (resolve_mac(dest_ip, dest_mac) < 0) {
         /* MAC not cached — broadcast ARP request for the right target */
@@ -917,7 +917,7 @@ int net_ping(uint32_t dest_ip)
         return -1;
     }
 
-    /* ---- MAC resolved: build ICMP echo request ---- */
+    // MAC resolved: build ICMP echo request
     uint8_t*      buf    = send_buf;
     uint8_t*      p      = buf;
     uint32_t      icmp_data_len = 32;
@@ -1131,7 +1131,7 @@ static void dns_handler(uint32_t src_ip, uint16_t src_port,
     dns_pending = 1;
 }
 
-/*
+/** 
  * dns_encode_name - Encode a hostname into DNS label format.
  *
  * "www.google.com" → "\x03www\x06google\x03com\x00"
@@ -1184,7 +1184,7 @@ static int dns_skip_name(const uint8_t* msg, uint32_t msg_len, uint32_t offset)
     return -1;
 }
 
-/*
+/** 
  * dns_parse_response - Extract the first A-record IP from a DNS response.
  *
  * Skips the header, question section, then walks answer records looking
@@ -1247,7 +1247,7 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
     return 0;   /* No A record found */
 }
 
-/*
+/** 
  * net_dns_resolve - Resolve a hostname to an IP address via DNS.
  *
  * Sends a standard DNS query (type A, class IN) to the configured
@@ -1389,10 +1389,6 @@ uint32_t net_dns_resolve(const char* hostname)
     return result;
 }
 
-/* ================================================================
- * DHCP Client — DORA cycle via UDP broadcast
- * ================================================================ */
-
 static volatile int dhcp_pending = 0;
 static uint32_t     dhcp_xid     = 0;
 
@@ -1431,7 +1427,7 @@ static void dhcp_handler(uint32_t src_ip, uint16_t src_port,
     dhcp_pending = 1;
 }
 
-/*
+/** 
  * dhcp_find_option - Walk DHCP options TLV to find a given tag.
  *
  * @param pkt  Pointer to a full DHCP packet (UDP payload).
@@ -1574,7 +1570,7 @@ static void dhcp_send_msg(uint8_t msg_type, const uint8_t* our_mac,
              dhcp_xid);
 }
 
-/*
+/** 
  * dhcp_start - Run the DHCP DORA cycle to auto-configure networking.
  *
  * Broadcasts DISCOVER, waits for OFFER, sends REQUEST, waits for ACK.
@@ -1610,7 +1606,7 @@ int dhcp_start(void)
             pr_debug("retry %d\n", attempt + 1);
         }
 
-        /* ---- Step 1: DISCOVER ---- */
+        // Step 1: DISCOVER
         dhcp_pending = 0;
         dhcp_xid++;
         dhcp_send_msg(DHCP_DISCOVER, our_mac, 0, 0);
@@ -1629,7 +1625,7 @@ int dhcp_start(void)
             continue;   /* Retry outer loop */
         }
 
-        /* ---- Parse OFFER ---- */
+        // Parse OFFER 
         {
             __asm__ volatile("" ::: "memory");
             dhcp_pending = 0;
@@ -1647,7 +1643,7 @@ int dhcp_start(void)
             pr_debug("OFFER: IP=0x%x server=0x%x\n", offered_ip, server_id);
         }
 
-        /* ---- Step 2: REQUEST ---- */
+        // Step 2: REQUEST
         dhcp_pending = 0;
         dhcp_send_msg(DHCP_REQUEST, our_mac, offered_ip, server_id);
 
@@ -1665,7 +1661,7 @@ int dhcp_start(void)
             continue;   /* Retry outer loop */
         }
 
-        /* ---- Parse ACK ---- */
+        // Parse ACK 
         {
             __asm__ volatile("" ::: "memory");
             dhcp_packet_t* ack = (dhcp_packet_t*)dhcp_reply;

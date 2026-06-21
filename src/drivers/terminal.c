@@ -160,5 +160,6 @@ void terminal_write(const char* data, size_t size) {
  * @param data Pointer to the null-terminated string.
  */
 void terminal_writestring(const char* data) {
+    if (!data) return;
     terminal_write(data, strlen(data));
 }
