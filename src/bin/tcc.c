@@ -484,22 +484,6 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             int rhs = i + 2;
             /* Known syscall function on RHS: x = fork() or x = getpid() */
             if (tokens[rhs].type == TOK_IDENT && tokens[rhs+1].type == TOK_LPAREN) {
-                if (strcmp(tokens[rhs].str, "fork") == 0 && tokens[rhs+2].type == TOK_RPAREN) {
-                    emit_mov_eax_imm(output, &pos, 9);          /* SYS_FORK */
-                    output[pos++] = 0xCD; output[pos++] = 0x80; /* int 0x80 */
-                    if (sym->offset < -128 || sym->offset > 127) {
-                        output[pos++] = 0x89;                   /* mov [ebp+disp32], eax */
-                        output[pos++] = 0x85;
-                        *(int32_t*)(output + pos) = sym->offset;
-                        pos += 4;
-                    } else {
-                        output[pos++] = 0x89; output[pos++] = 0x45; /* mov [ebp+disp8], eax */
-                        output[pos++] = (uint8_t)(sym->offset);
-                    }
-                    i = rhs + 3;
-                    if (tokens[i].type == TOK_SEMICOLON) i++;
-                    continue;
-                }
                 if (strcmp(tokens[rhs].str, "getpid") == 0 && tokens[rhs+2].type == TOK_RPAREN) {
                     emit_mov_eax_imm(output, &pos, 15);         /* SYS_GETPID */
                     output[pos++] = 0xCD; output[pos++] = 0x80; /* int 0x80 */
@@ -544,11 +528,7 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
         }
         /* Statement-level builtins: fork(); getpid(); exit(N); */
         else if (tokens[i].type == TOK_IDENT && tokens[i+1].type == TOK_LPAREN) {
-            if (strcmp(tokens[i].str, "fork") == 0 && tokens[i+2].type == TOK_RPAREN) {
-                emit_mov_eax_imm(output, &pos, 9);          /* SYS_FORK */
-                output[pos++] = 0xCD; output[pos++] = 0x80; /* int 0x80 */
-                i += 3;
-            } else if (strcmp(tokens[i].str, "getpid") == 0 && tokens[i+2].type == TOK_RPAREN) {
+            if (strcmp(tokens[i].str, "getpid") == 0 && tokens[i+2].type == TOK_RPAREN) {
                 emit_mov_eax_imm(output, &pos, 15);         /* SYS_GETPID */
                 output[pos++] = 0xCD; output[pos++] = 0x80; /* int 0x80 */
                 i += 3;
