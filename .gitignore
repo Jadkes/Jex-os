@@ -13,7 +13,6 @@ iso/
 
 # Host-side files
 a.out
-rootfs/
 
 # QEMU / debug
 serial.log
