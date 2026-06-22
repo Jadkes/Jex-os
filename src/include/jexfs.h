@@ -1,111 +1,88 @@
 /**
  * @file jexfs.h
- * @brief JexFS - Native Filesystem for JexOS.
+ * @brief JexFS v2 -- Modern on-disk filesystem for JexOS.
  *
- * Defines the structure of the JexFS filesystem on disk.
+ * On-disk layout (1024-byte blocks):
+ *   Block 0:     Reserved (boot block)
+ *   Block 1:     Superblock
+ *   Block 2:     Inode bitmap (1 block = 8192 inode slots)
+ *   Blocks 3-10: Block bitmap (8 blocks = 65536 bits)
+ *   Blocks 11-53: Inode table (43 blocks, ~1024 inodes x 42 bytes)
+ *   Block 54+:   Data blocks (65482 blocks approx 64MB)
  */
 
 #ifndef JEXFS_H
 #define JEXFS_H
-
 #include <stdint.h>
+#define JEXFS_MAGIC        0x4A455846u
+#define BLOCK_SIZE         1024u
+#define JEXFS_INODE_SIZE   42u
+#define JEXFS_TYPE_MASK    0x0007
+#define JEXFS_TYPE_FREE    0
+#define JEXFS_TYPE_FILE    1
+#define JEXFS_TYPE_DIR     2
+#define JEXFS_IRUSR  0x0008
+#define JEXFS_IWUSR  0x0010
+#define JEXFS_IXUSR  0x0020
+#define JEXFS_IRGRP  0x0040
+#define JEXFS_IWGRP  0x0080
+#define JEXFS_IXGRP  0x0100
+#define JEXFS_IROTH  0x0200
+#define JEXFS_IWOTH  0x0400
+#define JEXFS_IXOTH  0x0800
+#define JEXFS_DIRENT_FILE  1
+#define JEXFS_DIRENT_DIR   2
+#define JEXFS_DIRECT_COUNT        8
+#define JEXFS_INDIRECT_ENTRIES   512
 
-#define JEXFS_MAGIC 0x4A455846 /**< Magic number "JEXF" */
-#define BLOCK_SIZE 1024        /**< JexFS block size in bytes. */
-#define INODES_PER_BLOCK (BLOCK_SIZE / sizeof(struct jex_inode))
-#define DIR_ENTRIES_PER_BLOCK (BLOCK_SIZE / sizeof(struct jex_dir_entry))
-
-/**
- * @struct jex_superblock
- * @brief JexFS Superblock - contains overall filesystem metadata.
- */
 struct jex_superblock {
-    uint32_t magic;                 /**< Magic number. */
-    uint32_t total_blocks;          /**< Total number of blocks. */
-    uint32_t total_inodes;          /**< Total number of inodes. */
-    uint32_t inode_bitmap_start;    /**< Block index of inode bitmap. */
-    uint32_t block_bitmap_start;    /**< Block index of data block bitmap. */
-    uint32_t inode_table_start;     /**< Block index of inode table. */
-    uint32_t data_start;            /**< Block index where data blocks begin. */
-};
-
-/**
- * @struct jex_inode
- * @brief JexFS Inode - represents a file or directory.
- */
-struct jex_inode {
-    uint16_t mode;      /**< Mode (0: free, 1: file, 2: dir). */
-    uint32_t size;      /**< File size in bytes. */
-    uint32_t mtime;     /**< Modification time. */
-    uint16_t blocks[10]; /**< 10 direct block pointers. */
+    uint32_t magic;
+    uint32_t total_blocks;
+    uint32_t total_inodes;
+    uint32_t inode_bitmap_start;
+    uint32_t block_bitmap_start;
+    uint32_t bitmap_blocks;
+    uint32_t inode_table_start;
+    uint32_t inode_size;
+    uint32_t data_start;
 } __attribute__((packed));
 
-/**
- * @struct jex_dir_entry
- * @brief Directory Entry in JexFS.
- */
+struct jex_inode {
+    uint16_t mode;
+    uint16_t uid;
+    uint16_t gid;
+    uint32_t size;
+    uint32_t atime;
+    uint32_t mtime;
+    uint32_t ctime;
+    uint16_t direct_blocks[8];
+    uint16_t indirect_block;
+    uint16_t double_indirect;
+} __attribute__((packed));
+
 struct jex_dir_entry {
-    uint16_t inode;     /**< Inode index. */
-    char name[14];      /**< Filename (max 14 chars). */
+    uint16_t inode;
+    uint16_t name_len;
+    uint8_t  file_type;
+    char     name[];
 } __attribute__((packed));
 
 extern uint32_t cwd_inode;
 
-/**
- * @brief Initialize JexFS and mount the root directory.
- */
-void jexfs_init();
-
-/**
- * @brief Read an inode by its index.
- * @param idx Inode index.
- * @param inode Pointer to the inode structure to fill.
- */
-void jexfs_read_inode(uint32_t idx, struct jex_inode* inode);
-
-/**
- * @brief Open a file by name and return its inode index.
- */
-int jexfs_open(const char* name);
-
-/**
- * @brief Create a new file.
- */
-int jexfs_create(const char* name);
-
-/**
- * @brief Create a new directory.
- */
-int jexfs_mkdir(const char* name);
-
-/**
- * @brief Read data from an inode.
- */
-int jexfs_read(int inode_idx, void* buffer, uint32_t size, uint32_t offset);
-
-/**
- * @brief Write data to an inode.
- */
-int jexfs_write(int inode_idx, const void* buffer, uint32_t size, uint32_t offset);
-
-/**
- * @brief Remove a file or directory.
- */
-int jexfs_remove(const char* name);
-
-/**
- * @brief Rename a file.
- */
-int jexfs_rename(const char* old_name, const char* new_name);
-
-/**
- * @brief Get the size of a file by inode index.
- */
-int jexfs_get_size(int inode_idx);
-
-/**
- * @brief List the contents of a directory.
- */
+void jexfs_init(void);
+void jexfs_read_inode(uint32_t idx, struct jex_inode *inode);
+void jexfs_write_inode(uint32_t idx, struct jex_inode *inode);
+void jexfs_stat(int inode_idx, struct jex_inode *inode);
+int  jexfs_open(const char *name);
+int  jexfs_read(int inode_idx, void *buf, uint32_t size, uint32_t offset);
+int  jexfs_write(int inode_idx, const void *buf, uint32_t size, uint32_t offset);
+int  jexfs_create(const char *name);
+int  jexfs_mkdir(const char *name);
+int  jexfs_remove(const char *name);
+int  jexfs_rename(const char *old_name, const char *new_name);
+int  jexfs_get_size(int inode_idx);
 void jexfs_list_dir(uint32_t inode_idx);
+void read_block(uint32_t block, uint8_t *buffer);
+void write_block(uint32_t block, const uint8_t *buffer);
 
-#endif // JEXFS_H
+#endif /* JEXFS_H */
