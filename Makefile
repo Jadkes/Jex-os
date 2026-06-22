@@ -58,7 +58,7 @@ tools/gen_kallsyms: tools/gen_kallsyms.c
 
 $(IMG): tools/mkjexfs.c
 	gcc tools/mkjexfs.c -o tools/mkjexfs
-	./tools/mkjexfs $(IMG)
+	./tools/mkjexfs $(IMG) 4096
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
