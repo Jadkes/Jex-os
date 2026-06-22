@@ -96,22 +96,24 @@ typedef struct page_directory {
 #define PDE_PTR(pde_idx) \
     ((page_directory_entry_t*)(RECURSIVE_PDE_SELF + ((pde_idx) << 2)))
 
-/** @brief Temporarily map a physical frame at SCRATCH_PTE_BASE. */
+/** @brief Temporarily map a physical frame at SCRATCH_PTE_BASE.
+ *
+ * Uses a single 32-bit store for the PDE to avoid the GCC packed-bitfield
+ * read-modify-write hazard (separate writes can zero adjacent bits). */
 static inline void scratch_map_frame(uint32_t phys_addr) {
-    page_directory_entry_t* pde = PDE_PTR(SCRATCH_PDE_IDX);
-    pde->table_frame = phys_addr >> 12;
-    pde->present = 1;
-    pde->rw = 1;
-    pde->user = 0;
+    uint32_t* raw = (uint32_t*)PDE_PTR(SCRATCH_PDE_IDX);
+    *raw = ((phys_addr >> 12) << 12)  /* table_frame */
+         | (1u << 0)                  /* present */
+         | (1u << 1);                 /* rw */
+    /* user = 0 (kernel only) */
     __asm__ volatile("invlpg (%0)" :: "r"(SCRATCH_PTE_BASE));
 }
 
 /** @brief Unmap the scratch window after use. */
 static inline void scratch_unmap(void) {
     /* Clear PTE[0] self-map while scratch is still accessible */
-    page_table_entry_t* pt = (page_table_entry_t*)SCRATCH_PTE_BASE;
-    pt[0].present = 0;
-    PDE_PTR(SCRATCH_PDE_IDX)->present = 0;
+    *(uint32_t*)SCRATCH_PTE_BASE = 0;
+    *(uint32_t*)PDE_PTR(SCRATCH_PDE_IDX) = 0;
     __asm__ volatile("invlpg (%0)" :: "r"(SCRATCH_PTE_BASE));
 }
 /** @} */
