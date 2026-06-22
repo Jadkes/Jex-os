@@ -13,6 +13,7 @@
 #include "isr.h"
 #include "kheap.h"
 #include "terminal.h"
+#include <jexos/errno.h>
 #include "panic.h"
 #include "task.h"
 #include <stdbool.h>
@@ -148,12 +149,12 @@ static page_table_t* get_table(uint32_t table_idx, uint32_t flags) {
  * @param virtualaddr The virtual address.
  * @param flags PTE flags (Present, RW, User).
  */
-void map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
+int map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
     uint32_t pdindex = (uint32_t)virtualaddr >> 22;
     uint32_t ptindex = ((uint32_t)virtualaddr >> 12) & 0x03FF;
 
     page_table_t* table = get_table(pdindex, flags);
-    if (!table) return;
+    if (!table) return -ENOMEM;
 
     /* Single 32-bit store to avoid GCC bitfield RMW hazard */
     uint32_t pte_val = (((uint32_t)physaddr >> 12) << 12)  /* frame */
@@ -161,6 +162,7 @@ void map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
                      | ((flags & 0x2) ? 2u : 0u)            /* rw */
                      | ((flags & 0x4) ? 4u : 0u);           /* user */
     *(uint32_t*)&table->pages[ptindex] = pte_val;
+    return 0;
 }
 
 /**
@@ -186,12 +188,12 @@ void paging_unmap_page(void* virtualaddr) {
  * @brief Map a page in a specific page directory.
  * Like map_page() but targets an explicit directory instead of the current one.
  */
-void map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsigned int flags) {
+int map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsigned int flags) {
     uint32_t pdindex = (uint32_t)virtualaddr >> 22;
     uint32_t ptindex = ((uint32_t)virtualaddr >> 12) & 0x03FF;
 
     page_table_t* table = get_table_in(dir, pdindex, flags);
-    if (!table) return;
+    if (!table) return -ENOMEM;
 
     /* Single 32-bit store to avoid GCC bitfield RMW hazard */
     {
@@ -201,6 +203,7 @@ void map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsig
                          | ((flags & 0x4) ? 4u : 0u);
         *(uint32_t*)&table->pages[ptindex] = pte_val;
     }
+    return 0;
 }
 
 /**

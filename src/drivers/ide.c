@@ -11,6 +11,7 @@
 #include "ide.h"
 #include "ports.h"
 #include "serial.h"
+#include <jexos/errno.h>
 
 /**
  * @brief Polling loop to wait for the BSY bit to clear.
@@ -22,7 +23,7 @@ static int ide_wait_busy() {
     while (inb(IDE_STATUS) & IDE_STATUS_BSY) {
         if (--timeout <= 0) {
             pr_debug("ide_wait_busy: timeout\n");
-            return -1;
+            return -EIO;
         }
     }
     return 0;
@@ -38,7 +39,7 @@ static int ide_wait_drq() {
     while (!(inb(IDE_STATUS) & IDE_STATUS_DRQ)) {
         if (--timeout <= 0) {
             pr_debug("ide_wait_drq: timeout\n");
-            return -1;
+            return -EIO;
         }
     }
     return 0;
@@ -77,7 +78,7 @@ int ide_read_sector(uint32_t lba, uint8_t* buffer) {
     /* Check for errors in the status register */
     if (inb(IDE_STATUS) & (IDE_STATUS_ERR | IDE_STATUS_DF)) {
         pr_err("Read error!\n");
-        return -1;
+        return -EIO;
     }
 
     /* Wait for drive to have data ready */
@@ -112,7 +113,7 @@ int ide_write_sector(uint32_t lba, const uint8_t* buffer) {
     /* Check for errors */
     if (inb(IDE_STATUS) & (IDE_STATUS_ERR | IDE_STATUS_DF)) {
         pr_err("Write error!\n");
-        return -1;
+        return -EIO;
     }
 
     /* Wait for drive to be ready to receive data */

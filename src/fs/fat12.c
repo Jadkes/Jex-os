@@ -8,6 +8,7 @@
 
 #include "fat12.h"
 #include "kheap.h"
+#include <jexos/errno.h>
 #include "terminal.h"
 #include "init.h"
 #include <stddef.h>
@@ -197,7 +198,7 @@ int fat12_read_file(const char* name, uint8_t* buffer) {
             return (int)entries[i].file_size;
         }
     }
-    return -1;
+    return -ENOENT;
 }
 
 /**

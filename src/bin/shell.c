@@ -65,7 +65,7 @@ static int hist_count = 0;
 static int hist_pos = 0;
 int buffer_len = 0;
 int cursor_pos = 0;
-char shell_cwd[128] = "/home/user";
+char shell_cwd[128] = "/";
 static char tab_name_buf[32][256];
 
 /**

@@ -19,6 +19,7 @@
 #include "serial.h"
 #include "gdt.h"
 #include "task.h"
+#include <jexos/errno.h>
 #include <stddef.h>
 
 /* Forward declarations for architecture-specific assembly functions */
@@ -54,10 +55,15 @@ static int map_user_stack(void)
             for (int j = 0; j < allocated; j++)
                 pmm_free_block(frames[j]);
             terminal_writestring("exec: Failed to allocate stack frame\n");
-            return -1;
+            return -ENOMEM;
         }
         frames[allocated++] = frame;
-        map_page(frame, (void*)page, USER_STACK_FLAGS);
+        if (map_page(frame, (void*)page, USER_STACK_FLAGS) < 0) {
+            for (int j = 0; j < allocated; j++)
+                pmm_free_block(frames[j]);
+            terminal_writestring("exec: Failed to map stack page\n");
+            return -ENOMEM;
+        }
     }
     return 0;
 }
@@ -108,18 +114,18 @@ int check_shebang(const char* filename, char* interpreter, int interp_size)
 int exec_c_code(const char* c_source, char** argv)
 {
     tcc_state_t* tcc = tcc_new();
-    if (!tcc) return -1;
+    if (!tcc) return -ENOMEM;
 
     if (tcc_compile_string(tcc, c_source) < 0) {
         tcc_delete(tcc);
-        return -1;
+        return -ENOEXEC;
     }
 
     uint8_t* elf_data;
     uint32_t elf_size;
     if (tcc_output_memory(tcc, &elf_data, &elf_size) < 0) {
         tcc_delete(tcc);
-        return -1;
+        return -ENOMEM;
     }
 
     char* dummy_argv[] = {"a.out", NULL};
@@ -131,13 +137,13 @@ int exec_c_code(const char* c_source, char** argv)
     uint32_t entry = elf_load_with_args(elf_data, argc, actual_argv);
     if (entry == 0) {
         tcc_delete(tcc);
-        return -1;
+        return -ENOEXEC;
     }
 
     /* Map user stack BEFORE writing to it */
     if (map_user_stack() < 0) {
         tcc_delete(tcc);
-        return -1;
+        return -ENOMEM;
     }
 
     /* Setup user-mode stack with arguments */
@@ -168,7 +174,7 @@ int execve_file(const char* filename, char** argv, char** envp)
     (void)envp;
     if (!filename) {
         terminal_writestring("execve: No filename specified\n");
-        return -1;
+        return -EINVAL;
     }
 
     log_serial("execve: ");
@@ -195,7 +201,7 @@ int execve_file(const char* filename, char** argv, char** envp)
     if (check_shebang(filename, interpreter, sizeof(interpreter)) == 0) {
         if (strcmp(interpreter, "/usr/bin/tcc") == 0 || strcmp(interpreter, "tcc") == 0) {
             int fd = fs_open(filename, O_RDONLY);
-            if (fd < 0) return -1;
+            if (fd < 0) return fd;  /* propagate -ENOENT / -EACCES from fs_open */
 
             uint32_t file_size = fs_seek(fd, 0, 2);
             fs_seek(fd, 0, 0);
@@ -203,14 +209,14 @@ int execve_file(const char* filename, char** argv, char** envp)
             char* source = (char*)kmalloc(file_size + 1);
             if (!source) {
                 fs_close(fd);
-                return -1;
+                return -ENOMEM;
             }
 
             int read_size = fs_read(fd, source, file_size);
             if (read_size < 0 || (uint32_t)read_size != file_size) {
                 kfree(source);
                 fs_close(fd);
-                return -1;
+                return -EIO;
             }
             source[read_size] = '\0';
             fs_close(fd);
@@ -227,7 +233,7 @@ int execve_file(const char* filename, char** argv, char** envp)
         terminal_writestring("execve: File not found: ");
         terminal_writestring(filename);
         terminal_writestring("\n");
-        return -1;
+        return fd;  /* propagate errno from fs_open */
     }
 
     uint32_t file_size = fs_seek(fd, 0, 2);
@@ -236,14 +242,14 @@ int execve_file(const char* filename, char** argv, char** envp)
     uint8_t* file_data = (uint8_t*)kmalloc(file_size);
     if (!file_data) {
         fs_close(fd);
-        return -1;
+        return -ENOMEM;
     }
 
     int bytes_read = fs_read(fd, file_data, file_size);
     if (bytes_read < 0 || (uint32_t)bytes_read != file_size) {
         kfree(file_data);
         fs_close(fd);
-        return -1;
+        return -EIO;
     }
     fs_close(fd);
 
@@ -260,14 +266,14 @@ int execve_file(const char* filename, char** argv, char** envp)
         log_serial("\n");
         if (entry == 0) {
             kfree(file_data);
-            return -1;
+            return -ENOEXEC;
         }
 
         /* Map user stack BEFORE writing to it */
         log_serial("[EXEC] mapping user stack\n");
         if (map_user_stack() < 0) {
             kfree(file_data);
-            return -1;
+            return -ENOMEM;
         }
 
         /* Setup user-mode stack with arguments */
@@ -304,6 +310,6 @@ int execve_file(const char* filename, char** argv, char** envp)
         terminal_writestring(filename);
         terminal_writestring("\n");
         kfree(file_data);
-        return -1;
+        return -ENOEXEC;
     }
 }

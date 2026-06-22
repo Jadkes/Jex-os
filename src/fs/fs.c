@@ -11,6 +11,7 @@
 #include "devtmpfs.h"
 #include "kheap.h"
 #include "init.h"
+#include <jexos/errno.h>
 #include <stddef.h>
 
 extern void terminal_writestring(const char* data);
@@ -45,7 +46,7 @@ static int mount_count;
 int fs_mount(const char *path, const char *fstype)
 {
     if (mount_count >= MAX_MOUNTS)
-        return -1;
+        return -ENOSPC;
 
     if (strcmp(fstype, "devtmpfs") == 0) {
         mounts[mount_count].path     = path;
@@ -58,7 +59,7 @@ int fs_mount(const char *path, const char *fstype)
         return 0;
     }
 
-    return -1;
+    return -ENODEV;
 }
 
 /**
@@ -120,12 +121,12 @@ int fs_open(const char* filename, int flags) {
             break;
         }
     }
-    if (fd == -1) return -1;
+    if (fd < 0) return -ENOMEM;
 
     /* Ask JexFS to find the file */
     int inode_idx = jexfs_open(filename);
-    if (inode_idx == -1) {
-        return -1;
+    if (inode_idx < 0) {
+        return inode_idx;   /* pass through errno from filesystem */
     }
 
     /* Populate the descriptor */
@@ -162,11 +163,11 @@ int fs_read(int fd, void* buffer, uint32_t size) {
                 if (ret >= 0) return ret;
             }
         }
-        return -1; /* No mount handled this FD */
+        return -ENODEV; /* No mount handled this FD */
     }
 
     /* Fall through to JexFS */
-    if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -1;
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -EBADF;
 
     int bytes = jexfs_read(file_table[fd].dir_entry_idx, buffer, size, file_table[fd].offset);
     if (bytes > 0) {
@@ -192,11 +193,11 @@ int fs_write(int fd, const void* buffer, uint32_t size) {
                 if (ret >= 0) return ret;
             }
         }
-        return -1; /* No mount handled this FD */
+        return -ENODEV; /* No mount handled this FD */
     }
 
     /* Fall through to JexFS */
-    if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -1;
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -EBADF;
 
     int bytes = jexfs_write(file_table[fd].dir_entry_idx, buffer, size, file_table[fd].offset);
     if (bytes > 0) {
@@ -233,7 +234,7 @@ void fs_close(int fd) {
  * @return The resulting offset, or -1 on error.
  */
 int fs_seek(int fd, int offset, int whence) {
-    if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -1;
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !file_table[fd].used) return -EBADF;
     
     if (whence == 0) { /* SEEK_SET */
         file_table[fd].offset = offset;

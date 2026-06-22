@@ -802,22 +802,24 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x29; /* sub eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 break;
             case TOK_STAR:   /* imul ebx; result in eax */
                 output[(*out_pos)++] = 0x0F; /* imul */
                 output[(*out_pos)++] = 0xAF;
                 output[(*out_pos)++] = 0xC3; /* modrm: eax *= ebx */
                 break;
-            case TOK_SLASH:  /* cdq; idiv ebx */
+            case TOK_SLASH:  /* xchg eax, ebx; cdq; idiv ebx */
+                output[(*out_pos)++] = 0x93; /* xchg eax, ebx (swap: left->eax, right->ebx) */
                 output[(*out_pos)++] = X86_CDQ; /* sign extend eax to edx:eax */
                 output[(*out_pos)++] = 0xF7; /* idiv */
-                output[(*out_pos)++] = 0xFB; /* modrm: idiv ebx */
+                output[(*out_pos)++] = 0xFB; /* modrm: idiv ebx (left / right) */
                 break;
-            case TOK_PERCENT: /* cdq; idiv ebx; mov eax, edx */
+            case TOK_PERCENT: /* xchg eax, ebx; cdq; idiv ebx; mov eax, edx */
+                output[(*out_pos)++] = 0x93; /* xchg eax, ebx */
                 output[(*out_pos)++] = X86_CDQ;
                 output[(*out_pos)++] = 0xF7;
-                output[(*out_pos)++] = 0xFB; /* idiv ebx */
+                output[(*out_pos)++] = 0xFB; /* idiv ebx (left % right) */
                 output[(*out_pos)++] = 0x89; /* mov eax, edx */
                 output[(*out_pos)++] = 0xD0;
                 break;
@@ -829,7 +831,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x39; /* cmp eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 emit_setl_al(output, out_pos);
                 emit_movzx_eax_al(output, out_pos);
                 break;
@@ -839,7 +841,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x39; /* cmp eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 emit_setg_al(output, out_pos);
                 emit_movzx_eax_al(output, out_pos);
                 break;
@@ -849,7 +851,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x39; /* cmp eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 emit_setle_al(output, out_pos);
                 emit_movzx_eax_al(output, out_pos);
                 break;
@@ -859,7 +861,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x39; /* cmp eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 emit_setge_al(output, out_pos);
                 emit_movzx_eax_al(output, out_pos);
                 break;
@@ -869,7 +871,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x39; /* cmp eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 emit_sete_al(output, out_pos);
                 emit_movzx_eax_al(output, out_pos);
                 break;
@@ -879,7 +881,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
                 output[(*out_pos)++] = 0x89; /* mov eax, ebx */
                 output[(*out_pos)++] = 0xD8;
                 output[(*out_pos)++] = 0x39; /* cmp eax, ecx */
-                output[(*out_pos)++] = 0xC1;
+                output[(*out_pos)++] = 0xC8;
                 emit_setne_al(output, out_pos);
                 emit_movzx_eax_al(output, out_pos);
                 break;

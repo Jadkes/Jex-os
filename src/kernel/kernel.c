@@ -123,28 +123,8 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     devtmpfs_init();
     fs_mount("/sys", "devtmpfs");
 
-    /* Create /home directory */
-    {
-        if (jexfs_open("/home") < 0) {
-            jexfs_mkdir("home");
-            pr_info("Created /home\n");
-        }
-
-        int home_inode = jexfs_open("/home");
-        if (home_inode > 0) {
-            cwd_inode = (uint32_t)home_inode;
-
-            if (jexfs_open("user") < 0) {
-                jexfs_mkdir("user");
-                pr_info("Created /home/user\n");
-            }
-
-            /* Set CWD to /home/user */
-            int user_inode = jexfs_open("user");
-            if (user_inode > 0)
-                cwd_inode = (uint32_t)user_inode;
-        }
-    }
+    /* CWD starts at root */
+    cwd_inode = 1;
 
     /* 13. System Timer — needs explicit frequency parameter, kept manual */
     pr_info("Initializing Timer...\n");

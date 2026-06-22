@@ -141,7 +141,7 @@ int tokenize_c_code(const char* source, token_t* tokens, int max_tokens) {
                 break;
             case '!':
                 if (source[pos+1] == '=') { tok->type = TOK_NEQ; pos += 2; }
-                else { tok->type = TOK_ERROR; pos++; }
+                else { tok->type = TOK_LOGNOT; pos++; }
                 break;
             case '<':
                 if (source[pos+1] == '<') { tok->type = TOK_SHL; pos += 2; }
@@ -161,6 +161,18 @@ int tokenize_c_code(const char* source, token_t* tokens, int max_tokens) {
             case '}': tok->type = TOK_RBRACE; pos++; break;
             case '[': tok->type = TOK_LBRACKET; pos++; break;
             case ']': tok->type = TOK_RBRACKET; pos++; break;
+
+            case '&':
+                if (source[pos+1] == '&') { tok->type = TOK_LOGAND; pos += 2; }
+                else { tok->type = TOK_AND; pos++; }
+                break;
+            case '|':
+                if (source[pos+1] == '|') { tok->type = TOK_LOGOR; pos += 2; }
+                else { tok->type = TOK_ERROR; pos++; }
+                break;
+            case '~':
+                tok->type = TOK_NOT; pos++;
+                break;
             
             default:
                 if (is_digit(source[pos])) {
@@ -243,6 +255,14 @@ static void emit_mov_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
     buf[(*pos)++] = (imm >> 24) & 0xFF;
 }
 
+static void emit_mov_ebx_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
+    buf[(*pos)++] = 0xBB;
+    buf[(*pos)++] = imm & 0xFF;
+    buf[(*pos)++] = (imm >> 8) & 0xFF;
+    buf[(*pos)++] = (imm >> 16) & 0xFF;
+    buf[(*pos)++] = (imm >> 24) & 0xFF;
+}
+
 /**
  * @brief Simple Parser and Code Generator.
  * 
@@ -274,6 +294,17 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
     uint32_t print_patch_positions[64];
     int print_patch_count = 0;
 
+    /* Control flow state for if/while/for — single-depth (no nested control flow) */
+    int ctrl_type = 0;          /* 0=none, 1=if, 2=while, 3=for */
+    int ctrl_else_state = 0;    /* 1=in then-body, 2=in else-body */
+    int ctrl_outer_depth = 0;   /* brace_depth when body started */
+    uint32_t ctrl_jz_patch = 0; /* position of conditional jz to patch */
+    uint32_t ctrl_jmp_patch = 0; /* position of jmp to patch (for else skip) */
+    uint32_t ctrl_loop_top = 0; /* code position to jump back to (while/for) */
+    int ctrl_inc_pos = 0;       /* token position of for-increment expression */
+    int ctrl_empty_cond = 0;    /* flag: true if for-condition is empty */
+    int brace_depth = 0;        /* current brace nesting depth */
+
     while (tokens[i].type != TOK_EOF && pos < (*size - 200)) {
         /* Handle function declarations: int main() {, void func(int a) {, char* main(), etc. */
         if ((tokens[i].type == TOK_INT || tokens[i].type == TOK_CHAR || tokens[i].type == TOK_VOID)) {
@@ -292,44 +323,182 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             }
         }
 
-        /* Handle print("...") / printf("...", ...) */
-        if (tokens[i].type == TOK_IDENT && 
+        /* Handle print("...") / printf("...", ...) with format specifiers */
+        if (tokens[i].type == TOK_IDENT &&
             (strcmp(tokens[i].str, "print") == 0 || strcmp(tokens[i].str, "printf") == 0) &&
             tokens[i+1].type == TOK_LPAREN &&
             tokens[i+2].type == TOK_STRING) {
-            
-            uint32_t str_offset = string_pos;
-            int len = strlen(tokens[i+2].str) + 1;
-            if (string_pos + len > sizeof(string_table)) {
-                len = sizeof(string_table) - string_pos;
-                if (len < 1) continue; /* String table full, skip this print */
+
+            char *fmt = tokens[i+2].str;
+            int fmt_len = strlen(fmt);
+            int arg_idx = 0;     /* which %-specifier we're on */
+            int lit_start = 0;   /* start of current literal segment */
+
+            for (int f = 0; f < fmt_len; ) {
+                if (fmt[f] == '%' && f + 1 < fmt_len) {
+                    /* --- emit accumulated literal text --- */
+                    if (f > lit_start) {
+                        int slen = f - lit_start;
+                        if (string_pos + slen + 1 <= sizeof(string_table)) {
+                            memcpy(string_table + string_pos, fmt + lit_start, slen);
+                            string_table[string_pos + slen] = '\0';
+
+                            emit_mov_eax_imm(output, &pos, 0); /* SYS_PRINT */
+                            {
+                                uint32_t bb_pos = pos;
+                                output[pos++] = 0xBB;
+                                *(uint32_t*)(output + pos) = string_pos;
+                                pos += 4;
+                                if (print_patch_count < 64)
+                                    print_patch_positions[print_patch_count++] = bb_pos;
+                            }
+                            output[pos++] = 0xCD; output[pos++] = 0x80;
+                            string_pos += slen + 1;
+                        }
+                    }
+
+                    char spec = fmt[f + 1];
+                    if (spec == '%') {
+                        /* %% → literal '%' via SYS_PRINT_CHAR */
+                        emit_mov_eax_imm(output, &pos, 12);
+                        emit_mov_ebx_imm(output, &pos, '%');
+                        output[pos++] = 0xCD; output[pos++] = 0x80;
+                        f    += 2;
+                        lit_start = f;
+                    } else if (spec == 'd' || spec == 'i' ||
+                               spec == 'c' || spec == 'x' || spec == 'X') {
+                        /* --- locate argument token --- */
+                        int arg_t = i + 4;
+                        for (int a = 0; a < arg_idx; a++) {
+                            while (tokens[arg_t].type != TOK_COMMA &&
+                                   tokens[arg_t].type != TOK_RPAREN &&
+                                   tokens[arg_t].type != TOK_EOF)
+                                arg_t++;
+                            if (tokens[arg_t].type == TOK_COMMA)
+                                arg_t++;
+                        }
+
+                        /* --- load argument value into EBX --- */
+                        if (tokens[arg_t].type == TOK_NUMBER) {
+                            emit_mov_ebx_imm(output, &pos, tokens[arg_t].int_val);
+                        } else if (tokens[arg_t].type == TOK_IDENT) {
+                            symbol_t *sym = symtab_lookup(&symtab, tokens[arg_t].str);
+                            if (sym) {
+                                if (sym->offset < -128 || sym->offset > 127) {
+                                    output[pos++] = 0x8B;           /* mov ebx, [ebp+disp32] */
+                                    output[pos++] = 0x9D;
+                                    *(int32_t*)(output + pos) = sym->offset;
+                                    pos += 4;
+                                } else {
+                                    output[pos++] = 0x8B;           /* mov ebx, [ebp+disp8] */
+                                    output[pos++] = 0x5D;
+                                    output[pos++] = (uint8_t)(sym->offset);
+                                }
+                            } else {
+                                emit_mov_ebx_imm(output, &pos, 0);
+                            }
+                        } else {
+                            emit_mov_ebx_imm(output, &pos, 0);
+                        }
+
+                        /* --- dispatch syscall --- */
+                        if (spec == 'd' || spec == 'i') {
+                            emit_mov_eax_imm(output, &pos, 11);  /* SYS_PRINT_INT */
+                        } else if (spec == 'x' || spec == 'X') {
+                            emit_mov_eax_imm(output, &pos, 18);  /* SYS_PRINT_HEX */
+                        } else {
+                            emit_mov_eax_imm(output, &pos, 12);  /* SYS_PRINT_CHAR */
+                        }
+                        output[pos++] = 0xCD; output[pos++] = 0x80;
+
+                        arg_idx++;
+                        f    += 2;
+                        lit_start = f;
+                    } else if (spec == 's') {
+                        /* --- string argument --- */
+                        int arg_t = i + 4;
+                        for (int a = 0; a < arg_idx; a++) {
+                            while (tokens[arg_t].type != TOK_COMMA &&
+                                   tokens[arg_t].type != TOK_RPAREN &&
+                                   tokens[arg_t].type != TOK_EOF)
+                                arg_t++;
+                            if (tokens[arg_t].type == TOK_COMMA)
+                                arg_t++;
+                        }
+
+                        if (tokens[arg_t].type == TOK_STRING) {
+                            /* String literal — add to string table */
+                            int slen = strlen(tokens[arg_t].str) + 1;
+                            if (string_pos + slen <= sizeof(string_table)) {
+                                memcpy(string_table + string_pos, tokens[arg_t].str, slen);
+                                emit_mov_eax_imm(output, &pos, 0); /* SYS_PRINT */
+                                {
+                                    uint32_t bb_pos = pos;
+                                    output[pos++] = 0xBB;
+                                    *(uint32_t*)(output + pos) = string_pos;
+                                    pos += 4;
+                                    if (print_patch_count < 64)
+                                        print_patch_positions[print_patch_count++] = bb_pos;
+                                }
+                                output[pos++] = 0xCD; output[pos++] = 0x80;
+                                string_pos += slen;
+                            }
+                        } else if (tokens[arg_t].type == TOK_IDENT) {
+                            /* String variable — load pointer from stack */
+                            symbol_t *sym = symtab_lookup(&symtab, tokens[arg_t].str);
+                            if (sym) {
+                                if (sym->offset < -128 || sym->offset > 127) {
+                                    output[pos++] = 0x8B; output[pos++] = 0x9D;
+                                    *(int32_t*)(output + pos) = sym->offset;
+                                    pos += 4;
+                                } else {
+                                    output[pos++] = 0x8B; output[pos++] = 0x5D;
+                                    output[pos++] = (uint8_t)(sym->offset);
+                                }
+                            } else {
+                                emit_mov_ebx_imm(output, &pos, 0);
+                            }
+                            emit_mov_eax_imm(output, &pos, 0);  /* SYS_PRINT */
+                            output[pos++] = 0xCD; output[pos++] = 0x80;
+                        }
+
+                        arg_idx++;
+                        f    += 2;
+                        lit_start = f;
+                    } else {
+                        /* Unknown specifier — treat as literal */
+                        f++;
+                    }
+                } else {
+                    f++;
+                }
             }
-            memcpy(string_table + string_pos, tokens[i+2].str, len);
-            string_pos += len;
-            
-            /* mov eax, 0 (SYS_PRINT) */
-            emit_mov_eax_imm(output, &pos, 0);
-            
-            /* mov ebx, str_addr (temp offset stored) */
-            {
-                uint32_t bb_pos = pos;
-                output[pos++] = 0xBB;
-                uint32_t* patch_ptr = (uint32_t*)(output + pos);
-                *patch_ptr = str_offset;
-                pos += 4;
-                if (print_patch_count < 64)
-                    print_patch_positions[print_patch_count++] = bb_pos;
+
+            /* --- emit remaining literal text --- */
+            if (lit_start < fmt_len) {
+                int slen = fmt_len - lit_start;
+                if (string_pos + slen + 1 <= sizeof(string_table)) {
+                    memcpy(string_table + string_pos, fmt + lit_start, slen);
+                    string_table[string_pos + slen] = '\0';
+
+                    emit_mov_eax_imm(output, &pos, 0); /* SYS_PRINT */
+                    {
+                        uint32_t bb_pos = pos;
+                        output[pos++] = 0xBB;
+                        *(uint32_t*)(output + pos) = string_pos;
+                        pos += 4;
+                        if (print_patch_count < 64)
+                            print_patch_positions[print_patch_count++] = bb_pos;
+                    }
+                    output[pos++] = 0xCD; output[pos++] = 0x80;
+                    string_pos += slen + 1;
+                }
             }
-            
-            /* int 0x80 */
-            output[pos++] = 0xCD;
-            output[pos++] = 0x80;
-            
-            /* Skip all tokens until the closing RPAREN and SEMICOLON */
-            i += 3; /* Skip print, LPAREN, STRING */
-            while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) {
+
+            /* --- skip to end of statement --- */
+            i += 3;
+            while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF)
                 i++;
-            }
             if (tokens[i].type == TOK_SEMICOLON) i++;
         }
         /* Handle malloc(size) */
@@ -382,9 +551,49 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             while (tokens[j].type != TOK_SEMICOLON && tokens[j].type != TOK_EOF) {
                 if (tokens[j].type == TOK_IDENT) {
                     /* Add to symbol table with negative EBP-relative offset */
-                    symtab_add(&symtab, tokens[j].str, var_type, next_offset, 1);
+                    int var_offset = next_offset;   /* offset BEFORE decrement */
+                    symtab_add(&symtab, tokens[j].str, var_type, var_offset, 1);
                     total_local_size += var_size;
                     next_offset -= var_size;
+
+                    /* Handle initialization: int x = N */
+                    if (tokens[j + 1].type == TOK_ASSIGN) {
+                        if (tokens[j + 2].type == TOK_NUMBER) {
+                            emit_mov_eax_imm(output, &pos, tokens[j + 2].int_val);
+                        } else if (tokens[j + 2].type == TOK_IDENT) {
+                            /* Copy from another variable */
+                            symbol_t *src = symtab_lookup(&symtab, tokens[j + 2].str);
+                            if (src) {
+                                if (src->offset < -128 || src->offset > 127) {
+                                    output[pos++] = 0x8B;           /* mov eax, [ebp+disp32] */
+                                    output[pos++] = 0x85;
+                                    *(int32_t*)(output + pos) = src->offset;
+                                    pos += 4;
+                                } else {
+                                    output[pos++] = 0x8B;           /* mov eax, [ebp+disp8] */
+                                    output[pos++] = 0x45;
+                                    output[pos++] = (uint8_t)(src->offset);
+                                }
+                            } else {
+                                emit_mov_eax_imm(output, &pos, 0);
+                            }
+                        } else {
+                            emit_mov_eax_imm(output, &pos, 0);
+                        }
+
+                        /* Store eax to [ebp + var_offset] */
+                        if (var_offset < -128 || var_offset > 127) {
+                            output[pos++] = 0x89;                  /* mov [ebp+disp32], eax */
+                            output[pos++] = 0x85;
+                            *(int32_t*)(output + pos) = var_offset;
+                            pos += 4;
+                        } else {
+                            output[pos++] = 0x89;                  /* mov [ebp+disp8], eax */
+                            output[pos++] = 0x45;
+                            output[pos++] = (uint8_t)(var_offset);
+                        }
+                        j += 2;  /* skip = expr */
+                    }
                 }
                 j++;
                 if (tokens[j].type == TOK_COMMA) j++;
@@ -394,6 +603,151 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
             if (tokens[i].type == TOK_SEMICOLON) i++;
         }
         else if (tokens[i].type == TOK_RBRACE) {
+            /* Check if this closes a control-flow body (matching brace depth) */
+            if (ctrl_type == 1 && ctrl_else_state == 1 && brace_depth == ctrl_outer_depth + 1) {
+                /* End of if-then-body — patch conditional jz */
+                *(uint32_t*)(output + ctrl_jz_patch + 2) = pos - (ctrl_jz_patch + 6);
+
+                i++;
+                ctrl_else_state = 2;
+                /* Check for else (allow the main loop to hit the token) */
+                if (tokens[i].type == TOK_ELSE) {
+                    /* Emit jmp to skip else body (patch later) */
+                    ctrl_jmp_patch = pos;
+                    output[pos++] = 0xE9; /* jmp near rel32 */
+                    *(uint32_t*)(output + pos) = 0;
+                    pos += 4;
+                    i++; /* skip else */
+                    /* Track depth for else body */
+                    ctrl_outer_depth = brace_depth;
+                    if (tokens[i].type == TOK_LBRACE) {
+                        brace_depth++;
+                        i++;
+                    }
+                    continue;
+                }
+                /* No else — we're done */
+                ctrl_type = 0;
+                ctrl_else_state = 0;
+                brace_depth--;
+                continue;
+            }
+            if (ctrl_type == 1 && ctrl_else_state == 2 && brace_depth == ctrl_outer_depth + 1) {
+                /* End of else-body — patch unconditional jmp */
+                if (ctrl_jmp_patch) {
+                    *(uint32_t*)(output + ctrl_jmp_patch + 1) = pos - (ctrl_jmp_patch + 5);
+                }
+                ctrl_type = 0;
+                ctrl_else_state = 0;
+                ctrl_jmp_patch = 0;
+                brace_depth--;
+                i++;
+                continue;
+            }
+            if ((ctrl_type == 2 || ctrl_type == 3) && brace_depth == ctrl_outer_depth + 1) {
+                /* End of while/for body — patch jz, emit back-jump */
+                if (ctrl_type == 2) {
+                    /* while: jmp back to loop top */
+                    int32_t rel = ctrl_loop_top - (int32_t)(pos + 5);
+                    output[pos++] = 0xE9;
+                    *(int32_t*)(output + pos) = rel;
+                    pos += 4;
+                } else if (ctrl_type == 3) {
+                    /* for: emit increment expression, then jmp back */
+                    if (ctrl_inc_pos && tokens[ctrl_inc_pos].type != TOK_SEMICOLON &&
+                        tokens[ctrl_inc_pos].type != TOK_RPAREN) {
+                        int inc_i = ctrl_inc_pos;
+                        /* Handle simple incrementation: i++, ++i, i--, --i */
+                        if (tokens[inc_i].type == TOK_IDENT &&
+                            (tokens[inc_i+1].type == TOK_PLUSPLUS ||
+                             tokens[inc_i+1].type == TOK_MINUSMINUS)) {
+                            symbol_t* sym = symtab_lookup(&symtab, tokens[inc_i].str);
+                            if (sym) {
+                                int off = sym->offset;
+                                if (sym->type == SYM_CHAR) {
+                                    /* movsx eax, byte [ebp+off] */
+                                    if (off < -128 || off > 127) {
+                                        output[pos++] = 0x0F; output[pos++] = 0xBE; output[pos++] = 0x85;
+                                        *(int32_t*)(output + pos) = off; pos += 4;
+                                    } else {
+                                        output[pos++] = 0x0F; output[pos++] = 0xBE; output[pos++] = 0x45;
+                                        output[pos++] = (uint8_t)off;
+                                    }
+                                    if (tokens[inc_i+1].type == TOK_PLUSPLUS)
+                                        { output[pos++] = 0x83; output[pos++] = 0xC0; output[pos++] = 0x01; }
+                                    else
+                                        { output[pos++] = 0x83; output[pos++] = 0xE8; output[pos++] = 0x01; }
+                                    /* mov [ebp+off], al */
+                                    if (off < -128 || off > 127) {
+                                        output[pos++] = 0x88; output[pos++] = 0x85;
+                                        *(int32_t*)(output + pos) = off; pos += 4;
+                                    } else {
+                                        output[pos++] = 0x88; output[pos++] = 0x45;
+                                        output[pos++] = (uint8_t)off;
+                                    }
+                                } else {
+                                    /* mov eax, [ebp+off] */
+                                    if (off < -128 || off > 127) {
+                                        output[pos++] = 0x8B; output[pos++] = 0x85;
+                                        *(int32_t*)(output + pos) = off; pos += 4;
+                                    } else {
+                                        output[pos++] = 0x8B; output[pos++] = 0x45;
+                                        output[pos++] = (uint8_t)off;
+                                    }
+                                    if (tokens[inc_i+1].type == TOK_PLUSPLUS)
+                                        { output[pos++] = 0x83; output[pos++] = 0xC0; output[pos++] = 0x01; }
+                                    else
+                                        { output[pos++] = 0x83; output[pos++] = 0xE8; output[pos++] = 0x01; }
+                                    /* mov [ebp+off], eax */
+                                    if (off < -128 || off > 127) {
+                                        output[pos++] = 0x89; output[pos++] = 0x85;
+                                        *(int32_t*)(output + pos) = off; pos += 4;
+                                    } else {
+                                        output[pos++] = 0x89; output[pos++] = 0x45;
+                                        output[pos++] = (uint8_t)off;
+                                    }
+                                }
+                            }
+                        } else if (tokens[inc_i].type == TOK_IDENT &&
+                                   tokens[inc_i+1].type == TOK_ASSIGN) {
+                            /* i = i + 1 or similar simple expr */
+                            int rhs_pos = inc_i + 2;
+                            if (expr_parse(tokens, &rhs_pos, &symtab, output, &pos) >= 0) {
+                                symbol_t* sym = symtab_lookup(&symtab, tokens[inc_i].str);
+                                if (sym) {
+                                    int off = sym->offset;
+                                    if (off < -128 || off > 127) {
+                                        output[pos++] = 0x89; output[pos++] = 0x85;
+                                        *(int32_t*)(output + pos) = off; pos += 4;
+                                    } else {
+                                        output[pos++] = 0x89; output[pos++] = 0x45;
+                                        output[pos++] = (uint8_t)off;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    /* jmp back to loop top (condition check) */
+                    int32_t rel = ctrl_loop_top - (int32_t)(pos + 5);
+                    output[pos++] = 0xE9;
+                    *(int32_t*)(output + pos) = rel;
+                    pos += 4;
+                }
+                /* Patch conditional jz to jump past loop (only if emitted) */
+                if (ctrl_jz_patch) {
+                    *(uint32_t*)(output + ctrl_jz_patch + 2) = pos - (ctrl_jz_patch + 6);
+                }
+                ctrl_type = 0;
+                brace_depth--;
+                i++;
+                continue;
+            }
+            /* Normal closing brace */
+            brace_depth--;
+            i++;
+        }
+        else if (tokens[i].type == TOK_LBRACE) {
+            brace_depth++;
             i++;
         }
         /* Handle compound assignment: a += expr, a -= expr, a *= expr, etc. */
@@ -546,6 +900,125 @@ int parse_c_tokens(token_t* tokens, uint8_t* output, uint32_t* size) {
                 while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
             }
             if (tokens[i].type == TOK_SEMICOLON) i++;
+        }
+        /* ── Control Flow: if / while / for ──────────────────────── */
+        else if (tokens[i].type == TOK_IF || tokens[i].type == TOK_WHILE ||
+                 tokens[i].type == TOK_FOR) {
+            int is_while = (tokens[i].type == TOK_WHILE);
+            int is_for   = (tokens[i].type == TOK_FOR);
+            ctrl_loop_top = pos; /* set here for while; for may override */
+
+            i++; /* skip keyword */
+
+            /* ── for-init: process once before loop ── */
+            if (is_for) {
+                if (tokens[i].type != TOK_LPAREN) continue;
+                i++; /* skip ( */
+
+                /* Empty init: ; */
+                if (tokens[i].type == TOK_SEMICOLON) {
+                    i++;
+                }
+                else if ((tokens[i].type == TOK_INT || tokens[i].type == TOK_CHAR) &&
+                         tokens[i+1].type == TOK_IDENT) {
+                    /* int x = N; or int x; — var decl init */
+                    while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
+                    if (tokens[i].type == TOK_SEMICOLON) i++;
+                } else if (tokens[i].type == TOK_IDENT && tokens[i+1].type == TOK_ASSIGN) {
+                    /* x = expr; — simple assignment init */
+                    symbol_t* sym = symtab_lookup(&symtab, tokens[i].str);
+                    if (!sym) {
+                        int new_off = next_offset;
+                        symtab_add(&symtab, tokens[i].str, SYM_INT, new_off, 1);
+                        total_local_size += 4;
+                        next_offset -= 4;
+                        sym = symtab_lookup(&symtab, tokens[i].str);
+                    }
+                    if (sym) {
+                        int rhs_pos = i + 2;
+                        if (expr_parse(tokens, &rhs_pos, &symtab, output, &pos) >= 0) {
+                            int off = sym->offset;
+                            if (off < -128 || off > 127) {
+                                output[pos++] = 0x89; output[pos++] = 0x85;
+                                *(int32_t*)(output + pos) = off; pos += 4;
+                            } else {
+                                output[pos++] = 0x89; output[pos++] = 0x45;
+                                output[pos++] = (uint8_t)off;
+                            }
+                        }
+                        i = rhs_pos;
+                    }
+                    if (tokens[i].type == TOK_SEMICOLON) i++;
+                } else {
+                    /* Unknown init pattern — skip to ; */
+                    while (tokens[i].type != TOK_SEMICOLON && tokens[i].type != TOK_EOF) i++;
+                    if (tokens[i].type == TOK_SEMICOLON) i++;
+                }
+            }
+
+            /* ── condition check (or loop top for while) ── */
+            if (!is_for) {
+                /* if / while — condition follows keyword */
+                if (tokens[i].type != TOK_LPAREN) continue;
+                i++; /* skip ( */
+            }
+
+            /* For for: cond token starts here (may be after init's ;) */
+            int cond_expr_start = i;
+
+            /* if the next token is `)` or `;` (empty for/while condition) */
+            if (is_for && (tokens[i].type == TOK_SEMICOLON || tokens[i].type == TOK_RPAREN)) {
+                ctrl_empty_cond = 1;
+            } else if (!is_for && tokens[i].type == TOK_RPAREN) {
+                continue; /* malformed */
+            } else {
+                /* ── Parse condition expression ── */
+                ctrl_loop_top = pos; /* loop condition goes here */
+                int cond_pos = cond_expr_start;
+                if (expr_parse(tokens, &cond_pos, &symtab, output, &pos) < 0) {
+                    continue;
+                }
+                if (!is_for) {
+                    i = cond_pos;
+                    if (tokens[i].type != TOK_RPAREN) continue;
+                    i++; /* skip ) */
+                }
+                /* test eax, eax; jz near (patch later) */
+                output[pos++] = 0x85; output[pos++] = 0xC0;
+                ctrl_jz_patch = pos;
+                output[pos++] = 0x0F; output[pos++] = 0x84; /* jz near rel32 */
+                *(uint32_t*)(output + pos) = 0; pos += 4;
+            }
+
+            /* ── for: second semicolon + inc clause ── */
+            if (is_for) {
+                /* If we parsed a cond, skip to second ; or ) */
+                if (!ctrl_empty_cond) {
+                    while (tokens[i].type != TOK_SEMICOLON &&
+                           tokens[i].type != TOK_RPAREN &&
+                           tokens[i].type != TOK_EOF) i++;
+                }
+                if (tokens[i].type == TOK_SEMICOLON) {
+                    i++; /* skip ; */
+                    /* inc clause from here to RPAREN */
+                    ctrl_inc_pos = i;
+                    while (tokens[i].type != TOK_RPAREN && tokens[i].type != TOK_EOF) i++;
+                }
+                if (tokens[i].type == TOK_RPAREN) i++; /* skip ) */
+            }
+
+            /* ── Set up control flow state ── */
+            ctrl_type = is_for ? 3 : (is_while ? 2 : 1);
+            ctrl_else_state = 1; /* in body */
+            ctrl_outer_depth = brace_depth;
+
+            /* For empty-cond for: loop starts here (no cond code) */
+            if (is_for && ctrl_empty_cond) {
+                ctrl_loop_top = pos;
+            }
+
+            /* Body brace handled by main loop */
+            continue;
         }
         else i++;
     }
