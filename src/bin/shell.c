@@ -41,7 +41,6 @@
 extern void jump_to_user_mode(uint32_t entry, uint32_t stack);
 extern void editor_input(char key);
 extern int editor_running;
-extern void read_block(uint32_t block, uint8_t* buffer);
 extern void beep(int freq, int duration);
 extern void start_editor(const char* filename);
 extern int  rtl8139_poll_rx(void);
@@ -49,6 +48,7 @@ extern void sleep(uint32_t ms);
 extern void reboot(void);
 extern void shutdown(void);
 extern void set_kernel_stack(uint32_t stack);
+void int_to_string(int n, char* str);
 void print_logo(void);
 
 #define SHELL_BUFFER_SIZE 256
@@ -66,6 +66,7 @@ static int hist_pos = 0;
 int buffer_len = 0;
 int cursor_pos = 0;
 char shell_cwd[128] = "/home/user";
+static char tab_name_buf[32][256];
 
 /**
  * @brief List of supported shell commands.
@@ -126,16 +127,39 @@ void shell_autocomplete() {
         /* Complete a filename from the current directory */
         struct jex_inode dir_inode;
         jexfs_read_inode(cwd_inode, &dir_inode);
-        uint8_t buf[BLOCK_SIZE];
-        read_block(dir_inode.blocks[0], buf);
-        struct jex_dir_entry* de = (struct jex_dir_entry*)buf;
-        for (unsigned int i = 0; i < DIR_ENTRIES_PER_BLOCK; i++) {
-            if (de[i].inode != 0) {
-                if (strcmp(de[i].name, ".") == 0 || strcmp(de[i].name, "..") == 0)
-                    continue;
-                if (strncmp(de[i].name, shell_buffer + word_start, (size_t)word_len) == 0)
-                    matches[match_count++] = de[i].name;
+        uint8_t block_buf[BLOCK_SIZE];
+
+        for (int b = 0; b < JEXFS_DIRECT_COUNT; b++) {
+            if (dir_inode.direct_blocks[b] == 0) continue;
+            read_block(dir_inode.direct_blocks[b], block_buf);
+
+            uint32_t offset = 0;
+            while (offset < BLOCK_SIZE) {
+                struct jex_dir_entry *de = (struct jex_dir_entry *)(block_buf + offset);
+                if (de->inode == 0) break;
+
+                uint16_t esz = sizeof(struct jex_dir_entry) + de->name_len;
+                if (offset + esz > BLOCK_SIZE) break;
+
+                /* Skip . and .. */
+                if (de->name_len == 1 && de->name[0] == '.') { offset += esz; continue; }
+                if (de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.') { offset += esz; continue; }
+
+                /* Copy name to tab_name_buf */
+                uint16_t name_len = de->name_len;
+                if (name_len > 255) name_len = 255;
+                memcpy(tab_name_buf[match_count], de->name, name_len);
+                tab_name_buf[match_count][name_len] = '\0';
+
+                if (strncmp(tab_name_buf[match_count], shell_buffer + word_start, (size_t)word_len) == 0) {
+                    matches[match_count] = tab_name_buf[match_count];
+                    match_count++;
+                    if (match_count >= 32) break;
+                }
+
+                offset += esz;
             }
+            if (match_count >= 32) break;
         }
     }
 
@@ -932,29 +956,239 @@ static void tcc_wrapper(void* arg)
 }
 
 /**
+ * @brief Format inode mode bits to a "drwxr-xr-x" string.
+ *
+ * @param mode Inode mode field
+ * @param out  Output buffer (at least 12 bytes)
+ */
+static void format_mode_str(uint16_t mode, char *out)
+{
+    /* File type */
+    if ((mode & JEXFS_TYPE_MASK) == JEXFS_TYPE_DIR)
+        out[0] = 'd';
+    else if ((mode & JEXFS_TYPE_MASK) == JEXFS_TYPE_FILE)
+        out[0] = '-';
+    else
+        out[0] = '?';
+
+    /* Owner permissions */
+    out[1] = (mode & JEXFS_IRUSR) ? 'r' : '-';
+    out[2] = (mode & JEXFS_IWUSR) ? 'w' : '-';
+    out[3] = (mode & JEXFS_IXUSR) ? 'x' : '-';
+    /* Group permissions */
+    out[4] = (mode & JEXFS_IRGRP) ? 'r' : '-';
+    out[5] = (mode & JEXFS_IWGRP) ? 'w' : '-';
+    out[6] = (mode & JEXFS_IXGRP) ? 'x' : '-';
+    /* Other permissions */
+    out[7] = (mode & JEXFS_IROTH) ? 'r' : '-';
+    out[8] = (mode & JEXFS_IWOTH) ? 'w' : '-';
+    out[9] = (mode & JEXFS_IXOTH) ? 'x' : '-';
+    out[10] = '\0';
+}
+
+/**
+ * @brief Format a size value as a string, optionally human-readable.
+ *
+ * @param size   Size in bytes
+ * @param human  Non-zero for human-readable (1.2K, 3.4M)
+ * @param out    Output buffer (at least 32 bytes)
+ */
+static void format_size_str(uint32_t size, int human, char *out)
+{
+    if (!human) {
+        int_to_string((int)size, out);
+        return;
+    }
+
+    if (size < 1024) {
+        int_to_string((int)size, out);
+    } else if (size < 1024 * 1024) {
+        uint32_t whole = size / 1024;
+        uint32_t frac = ((size % 1024) * 10) / 1024;
+        char buf[16];
+        uint32_t pos = 0;
+        int_to_string((int)whole, buf);
+        while (buf[pos]) { out[pos] = buf[pos]; pos++; }
+        out[pos++] = '.';
+        int_to_string((int)frac, buf);
+        out[pos++] = buf[0];
+        out[pos++] = 'K';
+        out[pos] = '\0';
+    } else {
+        uint32_t whole = size / (1024 * 1024);
+        uint32_t frac = ((size % (1024 * 1024)) * 10) / (1024 * 1024);
+        char buf[16];
+        uint32_t pos = 0;
+        int_to_string((int)whole, buf);
+        while (buf[pos]) { out[pos] = buf[pos]; pos++; }
+        out[pos++] = '.';
+        int_to_string((int)frac, buf);
+        out[pos++] = buf[0];
+        out[pos++] = 'M';
+        out[pos] = '\0';
+    }
+}
+
+/**
+ * @brief List directory contents with flags.
+ *
+ * Supports -a (show hidden), -l (long format), -h (human-readable sizes).
+ * Scans directories using variable-length jex_dir_entry format.
+ */
+static void do_ls(const char *arg)
+{
+    int show_all = 0;
+    int long_fmt = 0;
+    int human = 0;
+    const char *p = arg;
+
+    /* Parse flags */
+    while (*p == '-') {
+        p++;
+        while (*p && *p != ' ') {
+            if (*p == 'a') show_all = 1;
+            else if (*p == 'l') long_fmt = 1;
+            else if (*p == 'h') human = 1;
+            p++;
+        }
+        while (*p == ' ') p++;
+    }
+
+    /* Determine target inode */
+    int target_inode;
+    if (*p == '\0') {
+        target_inode = (int)cwd_inode;
+    } else {
+        target_inode = jexfs_open(p);
+        if (target_inode < 0) {
+            terminal_writestring("ls: cannot access '");
+            terminal_writestring(p);
+            terminal_writestring("': No such file or directory\n");
+            return;
+        }
+    }
+
+    struct jex_inode dir_inode;
+    jexfs_read_inode((uint32_t)target_inode, &dir_inode);
+
+    /* Check type */
+    if ((dir_inode.mode & JEXFS_TYPE_MASK) != JEXFS_TYPE_DIR) {
+        /* Single file: show its info */
+        char mode_str[12];
+        char size_str[32];
+        format_mode_str(dir_inode.mode, mode_str);
+        format_size_str(dir_inode.size, human, size_str);
+        terminal_writestring(mode_str);
+        terminal_writestring("  ");
+        terminal_writestring(size_str);
+        terminal_writestring("  ");
+        terminal_writestring(p);
+        terminal_writestring("\n");
+        return;
+    }
+
+    uint8_t block_buf[BLOCK_SIZE];
+
+    if (!long_fmt) {
+        /* Short format: names space-separated */
+        for (int b = 0; b < JEXFS_DIRECT_COUNT; b++) {
+            if (dir_inode.direct_blocks[b] == 0) continue;
+            read_block(dir_inode.direct_blocks[b], block_buf);
+
+            uint32_t offset = 0;
+            while (offset < BLOCK_SIZE) {
+                struct jex_dir_entry *de = (struct jex_dir_entry *)(block_buf + offset);
+                if (de->inode == 0) break;
+                if (offset + sizeof(struct jex_dir_entry) > BLOCK_SIZE) break;
+
+                uint16_t esz = sizeof(struct jex_dir_entry) + de->name_len;
+                if (offset + esz > BLOCK_SIZE) break;
+
+                int is_dot   = (de->name_len == 1 && de->name[0] == '.');
+                int is_dotdot = (de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.');
+                if (!show_all && (is_dot || is_dotdot)) {
+                    offset += esz;
+                    continue;
+                }
+
+                /* Print name, append / for directories */
+                for (uint16_t i = 0; i < de->name_len; i++)
+                    terminal_putchar(de->name[i]);
+                if (de->file_type == JEXFS_DIRENT_DIR)
+                    terminal_putchar('/');
+                terminal_writestring("  ");
+
+                offset += esz;
+            }
+        }
+        terminal_writestring("\n");
+    } else {
+        /* Long format: mode  size  name */
+        for (int b = 0; b < JEXFS_DIRECT_COUNT; b++) {
+            if (dir_inode.direct_blocks[b] == 0) continue;
+            read_block(dir_inode.direct_blocks[b], block_buf);
+
+            uint32_t offset = 0;
+            while (offset < BLOCK_SIZE) {
+                struct jex_dir_entry *de = (struct jex_dir_entry *)(block_buf + offset);
+                if (de->inode == 0) break;
+                if (offset + sizeof(struct jex_dir_entry) > BLOCK_SIZE) break;
+
+                uint16_t esz = sizeof(struct jex_dir_entry) + de->name_len;
+                if (offset + esz > BLOCK_SIZE) break;
+
+                int is_dot   = (de->name_len == 1 && de->name[0] == '.');
+                int is_dotdot = (de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.');
+                if (!show_all && (is_dot || is_dotdot)) {
+                    offset += esz;
+                    continue;
+                }
+
+                /* Read entry inode for metadata */
+                struct jex_inode entry_inode;
+                jexfs_read_inode(de->inode, &entry_inode);
+
+                char mode_str[12];
+                char size_str[32];
+                format_mode_str(entry_inode.mode, mode_str);
+                format_size_str(entry_inode.size, human, size_str);
+
+                terminal_writestring(mode_str);
+                terminal_writestring("  ");
+                terminal_writestring(size_str);
+                terminal_writestring("  ");
+
+                for (uint16_t i = 0; i < de->name_len; i++)
+                    terminal_putchar(de->name[i]);
+                terminal_writestring("\n");
+
+                offset += esz;
+            }
+        }
+    }
+}
+
+/**
  * @brief Parse and run the current command in the shell buffer.
  */
 void execute_command() {
-    terminal_writestring("\n"); 
+    terminal_writestring("\n");
     if (buffer_len > 0) {
         hist_add(shell_buffer);
         shell_save_history();
     }
-    
+
     /* Dispatch command */
     if (strcmp(shell_buffer, "help") == 0) help_command();
     else if (strcmp(shell_buffer, "clear") == 0) { terminal_initialize(); print_logo(); }
-    else if (strcmp(shell_buffer, "ls") == 0) jexfs_list_dir(cwd_inode);
-    else if (strncmp(shell_buffer, "ls ", 3) == 0) {
-        int inode = jexfs_open(shell_buffer + 3);
-        if (inode != -1) jexfs_list_dir(inode); else terminal_writestring("Directory not found.\n");
-    }
+    else if (strcmp(shell_buffer, "ls") == 0) do_ls("");
+    else if (strncmp(shell_buffer, "ls ", 3) == 0) do_ls(shell_buffer + 3);
     else if (strcmp(shell_buffer, "cd") == 0) { cwd_inode = 1; strcpy(shell_cwd, "/"); }
     else if (strncmp(shell_buffer, "cd ", 3) == 0) {
         char* path = shell_buffer + 3; while(*path == ' ') path++;
         if (strcmp(path, "..") == 0) {
             int inode = jexfs_open("..");
-            if (inode != -1) {
+            if (inode >= 0) {
                 cwd_inode = inode;
                 if (strcmp(shell_cwd, "/") != 0) {
                     char* last = strrchr(shell_cwd, '/');
@@ -963,7 +1197,7 @@ void execute_command() {
             }
         } else {
             int inode = jexfs_open(path);
-            if (inode != -1) {
+            if (inode >= 0) {
                 struct jex_inode ci; jexfs_read_inode(inode, &ci);
                 if (ci.mode == 2) {
                     cwd_inode = inode;
