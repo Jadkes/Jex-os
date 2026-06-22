@@ -91,21 +91,30 @@ static page_table_t* get_table_in(page_directory_t* dir, uint32_t table_idx, uin
      * PTE[0] is zeroed and accessing 0xFF400000 would page-fault even
      * though PDE[1021] is present.
      *
+     * MUST use a single 32-bit store — separate bitfield writes on packed
+     * structs cause GCC to zero adjacent bits (read-modify-write hazard).
+     *
      * Written through identity map (still present here).
      */
-    page_table_entry_t* id_pt_arr = (page_table_entry_t*)pt_phys;
-    id_pt_arr[0].frame = pt_phys >> 12;
-    id_pt_arr[0].present = 1;
-    id_pt_arr[0].rw = 1;
+    {
+        uint32_t pte_val = ((pt_phys >> 12) << 12)  /* frame */
+                         | (1u << 0)                  /* present */
+                         | (1u << 1);                 /* rw */
+        *(uint32_t*)pt_phys = pte_val;
+    }
 
     /* Clear identity PTE — no aliasing possible after this */
     identity_unmap_frame(pt_phys);
 
-    /* Set PDE in the directory (struct access, no paging needed) */
-    dir->tables[table_idx].table_frame = pt_phys >> 12;
-    dir->tables[table_idx].present = (flags & 0x1) ? 1 : 0;
-    dir->tables[table_idx].rw = (flags & 0x2) ? 1 : 0;
-    dir->tables[table_idx].user = (flags & 0x4) ? 1 : 0;
+    /* Set PDE in the directory — single 32-bit store to avoid GCC
+     * bitfield RMW hazard on packed structs. */
+    {
+        uint32_t pde_val = ((pt_phys >> 12) << 12)
+                         | ((flags & 0x1) ? 1u : 0u)
+                         | ((flags & 0x2) ? 2u : 0u)
+                         | ((flags & 0x4) ? 4u : 0u);
+        *(uint32_t*)&dir->tables[table_idx] = pde_val;
+    }
 
     /* Return via recursive window (current PD) or scratch (non-current).
      * Before init_paging turns paging on, return the physical address —
@@ -146,10 +155,12 @@ void map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
     page_table_t* table = get_table(pdindex, flags);
     if (!table) return;
 
-    table->pages[ptindex].frame = (uint32_t)physaddr >> 12;
-    table->pages[ptindex].present = (flags & 0x1) ? 1 : 0;
-    table->pages[ptindex].rw = (flags & 0x2) ? 1 : 0;
-    table->pages[ptindex].user = (flags & 0x4) ? 1 : 0;
+    /* Single 32-bit store to avoid GCC bitfield RMW hazard */
+    uint32_t pte_val = (((uint32_t)physaddr >> 12) << 12)  /* frame */
+                     | ((flags & 0x1) ? 1u : 0u)            /* present */
+                     | ((flags & 0x2) ? 2u : 0u)            /* rw */
+                     | ((flags & 0x4) ? 4u : 0u);           /* user */
+    *(uint32_t*)&table->pages[ptindex] = pte_val;
 }
 
 /**
@@ -182,10 +193,14 @@ void map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsig
     page_table_t* table = get_table_in(dir, pdindex, flags);
     if (!table) return;
 
-    table->pages[ptindex].frame = (uint32_t)physaddr >> 12;
-    table->pages[ptindex].present = (flags & 0x1) ? 1 : 0;
-    table->pages[ptindex].rw = (flags & 0x2) ? 1 : 0;
-    table->pages[ptindex].user = (flags & 0x4) ? 1 : 0;
+    /* Single 32-bit store to avoid GCC bitfield RMW hazard */
+    {
+        uint32_t pte_val = (((uint32_t)physaddr >> 12) << 12)
+                         | ((flags & 0x1) ? 1u : 0u)
+                         | ((flags & 0x2) ? 2u : 0u)
+                         | ((flags & 0x4) ? 4u : 0u);
+        *(uint32_t*)&table->pages[ptindex] = pte_val;
+    }
 }
 
 /**
@@ -230,25 +245,46 @@ page_directory_t* clone_page_directory(page_directory_t* src) {
             uint32_t pt_phys = (uint32_t)new_pt;
 
             /*
-             * Self-map PTE[0] so the scratch window can access this frame
-             * at virtual 0xFF400000.  Written through identity map (still
-             * present here).  Then clear identity PTE — no aliasing.
+             * Self-map PTE[0] so the scratch window can access this frame.
+             * But we DON'T use the scratch window for copying — the copy
+             * loop would overwrite PTE[0] (j=0 writes to dst_pt[0] which
+             * IS PTE[0]), breaking the self-map for j>=1.
+             *
+             * Instead, we write the destination page table directly through
+             * the identity map.  The identity PTE for pt_phys is re-established
+             * if it was previously cleared by identity_unmap_frame.
+             *
+             * Single 32-bit store to avoid GCC bitfield RMW hazard.
              */
-            page_table_entry_t* self_pte = (page_table_entry_t*)pt_phys;
-            self_pte[0].frame = pt_phys >> 12;
-            self_pte[0].present = 1;
-            self_pte[0].rw = 1;
-            identity_unmap_frame(pt_phys);
+            {
+                /* Re-establish identity PTE for pt_phys if it was cleared. */
+                uint32_t pdindex = pt_phys >> 22;
+                uint32_t ptindex = (pt_phys >> 12) & 0x3FF;
+                page_table_entry_t* id_pt = PTE_PTR(pdindex);
+                uint32_t id_pte_val = ((pt_phys >> 12) << 12)
+                                    | (1u << 0)  /* present */
+                                    | (1u << 1); /* rw */
+                *(uint32_t*)&id_pt[ptindex] = id_pte_val;
+                __asm__ volatile("invlpg (%0)" :: "r"(pt_phys));
+
+                /* Set PTE[0] self-map (needed by scratch_map_frame later
+                 * for OTHER page tables, not for this copy). */
+                uint32_t pte_val = ((pt_phys >> 12) << 12)
+                                 | (1u << 0)
+                                 | (1u << 1);
+                *(uint32_t*)pt_phys = pte_val;
+                /* Leave identity PTE present — we need it for the copy below. */
+            }
 
             alloc_pt_frames[i] = pt_phys;
 
             /* Read src page table through recursive window (src == current PD) */
             page_table_entry_t* src_pt = PTE_PTR(i);
 
-            /* Write dst page table through scratch window.
-             * PTE[0] is self-mapped, so 0xFF400000 is accessible. */
-            scratch_map_frame(pt_phys);
-            page_table_entry_t* dst_pt = (page_table_entry_t*)SCRATCH_PTE_BASE;
+            /* Write dst page table DIRECTLY through the identity map.
+             * Don't use the scratch window — the copy loop would overwrite
+             * PTE[0] (the self-map), breaking all subsequent accesses. */
+            uint32_t* dst_pt_raw = (uint32_t*)pt_phys;
 
             for (int j = 0; j < 1024; j++) {
                 uint32_t src_pte_raw = *(uint32_t*)&src_pt[j];
@@ -261,14 +297,22 @@ page_directory_t* clone_page_directory(page_directory_t* src) {
                     memcpy(new_page, (void*)(src_pte_raw & 0xFFFFF000), 4096);
                     uint32_t new_phys = (uint32_t)new_page;
                     uint32_t new_pte = (src_pte_raw & 0xFFF) | (new_phys & 0xFFFFF000);
-                    *(uint32_t*)&dst_pt[j] = new_pte;
+                    dst_pt_raw[j] = new_pte;
                 } else {
                     /* Kernel page in same table — share */
-                    *(uint32_t*)&dst_pt[j] = src_pte_raw;
+                    dst_pt_raw[j] = src_pte_raw;
                 }
             }
 
-            scratch_unmap();
+            /* PTE[0] was overwritten by the copy loop (if source PTE[0]
+             * was present).  Re-establish the self-map so the scratch
+             * window works for future calls. */
+            {
+                uint32_t pte_val = ((pt_phys >> 12) << 12)
+                                 | (1u << 0)
+                                 | (1u << 1);
+                *(uint32_t*)pt_phys = pte_val;
+            }
 
             /*
              * Build PDE as a single 32-bit value to prevent GCC from emitting
@@ -292,13 +336,17 @@ page_directory_t* clone_page_directory(page_directory_t* src) {
         }
     }
 
-    /* Set recursive PDE[1022] in destination — points to dst itself */
+    /* Set recursive PDE[1022] in destination — points to dst itself.
+     * MUST use a single 32-bit store, not separate bitfield writes,
+     * because GCC can zero adjacent bits with separate byte writes
+     * (same bug pattern as the deep-copy PDE construction above). */
     {
         uint32_t dst_phys = (uint32_t)dst;
-        dst->tables[RECURSIVE_PDE_IDX].table_frame = dst_phys >> 12;
-        dst->tables[RECURSIVE_PDE_IDX].present = 1;
-        dst->tables[RECURSIVE_PDE_IDX].rw = 1;
-        dst->tables[RECURSIVE_PDE_IDX].user = 0;
+        uint32_t pde_val = ((dst_phys >> 12) << 12)  /* table_frame */
+                         | (1u << 0)                  /* present */
+                         | (1u << 1);                 /* rw */
+        /* user = 0 (kernel only) */
+        memcpy(&dst->tables[RECURSIVE_PDE_IDX], &pde_val, sizeof(pde_val));
     }
 
     return dst;
@@ -343,11 +391,14 @@ void init_paging() {
         map_page(phys, virt, kernel_flags);
     }
 
-    /* Set the recursive PDE[1022] to point to kernel_directory itself */
-    kernel_directory.tables[RECURSIVE_PDE_IDX].table_frame = (uint32_t)&kernel_directory >> 12;
-    kernel_directory.tables[RECURSIVE_PDE_IDX].present = 1;
-    kernel_directory.tables[RECURSIVE_PDE_IDX].rw = 1;
-    kernel_directory.tables[RECURSIVE_PDE_IDX].user = 0;
+    /* Set the recursive PDE[1022] to point to kernel_directory itself.
+     * Single 32-bit store to avoid GCC bitfield RMW hazard. */
+    {
+        uint32_t pde_val = (((uint32_t)&kernel_directory >> 12) << 12)
+                         | (1u << 0)  /* present */
+                         | (1u << 1); /* rw */
+        *(uint32_t*)&kernel_directory.tables[RECURSIVE_PDE_IDX] = pde_val;
+    }
 
     /* Load the Page Directory into CR3 */
     asm volatile("mov %0, %%cr3" :: "r"(&kernel_directory));
@@ -368,16 +419,23 @@ void init_paging() {
     memset(kstack_pt, 0, sizeof(page_table_t));
     uint32_t kstack_pt_phys = (uint32_t)kstack_pt;
 
-    /* Self-map PTE[0] for scratch window compatibility */
-    page_table_entry_t* kstack_self = (page_table_entry_t*)kstack_pt_phys;
-    kstack_self[0].frame = kstack_pt_phys >> 12;
-    kstack_self[0].present = 1;
-    kstack_self[0].rw = 1;
+    /* Self-map PTE[0] for scratch window compatibility.
+     * Single 32-bit store to avoid GCC bitfield RMW hazard. */
+    {
+        uint32_t pte_val = ((kstack_pt_phys >> 12) << 12)
+                         | (1u << 0)  /* present */
+                         | (1u << 1); /* rw */
+        *(uint32_t*)kstack_pt_phys = pte_val;
+    }
 
-    kernel_directory.tables[KSTACK_PDE_IDX].table_frame = kstack_pt_phys >> 12;
-    kernel_directory.tables[KSTACK_PDE_IDX].present = 1;
-    kernel_directory.tables[KSTACK_PDE_IDX].rw = 1;
-    kernel_directory.tables[KSTACK_PDE_IDX].user = 0;
+    /* Set PDE[1023] to point to the kernel stack page table.
+     * Single 32-bit store to avoid GCC bitfield RMW hazard. */
+    {
+        uint32_t pde_val = ((kstack_pt_phys >> 12) << 12)
+                         | (1u << 0)  /* present */
+                         | (1u << 1); /* rw */
+        *(uint32_t*)&kernel_directory.tables[KSTACK_PDE_IDX] = pde_val;
+    }
 
     /* Clear identity PTE for the kernel stack page table frame — it's a page table,
      * and identity-map writes to it would corrupt kernel stacks.
@@ -432,10 +490,12 @@ uint32_t alloc_kernel_stack(int pid)
             }
             return 0;
         }
-        kstack_pt->pages[slot_idx + i].frame = (uint32_t)phys >> 12;
-        kstack_pt->pages[slot_idx + i].present = 1;
-        kstack_pt->pages[slot_idx + i].rw = 1;
-        kstack_pt->pages[slot_idx + i].user = 0;
+        /* Single 32-bit store to avoid GCC bitfield RMW hazard */
+        uint32_t pte_val = (((uint32_t)phys >> 12) << 12)  /* frame */
+                         | (1u << 0)                         /* present */
+                         | (1u << 1);                        /* rw */
+        /* user = 0 (kernel only) */
+        *(uint32_t*)&kstack_pt->pages[slot_idx + i] = pte_val;
     }
 
     return KSTACK_VADDR_BASE + pid * KSTACK_SIZE;

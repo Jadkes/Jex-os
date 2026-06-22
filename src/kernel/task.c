@@ -288,8 +288,10 @@ int fork(registers_t* regs) {
 
     task_t* parent = (task_t*)current_task;
 
-    /* Use PMM directly to bypass any slab allocator bugs */
-    task_t* child = (task_t*)pmm_alloc_block();
+    /* Allocate task_t via kmalloc so waitpid's kfree() matches.
+     * Previously used pmm_alloc_block() which kfree() cannot free
+     * (ptr_to_slab sees task_t.id as "magic" — never matches). */
+    task_t* child = (task_t*)kmalloc(sizeof(task_t));
     if (!child) {
         __asm__ volatile("sti");
         return -1;
@@ -298,6 +300,7 @@ int fork(registers_t* regs) {
     /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
     if (!new_dir) {
+        kfree(child);
         __asm__ volatile("sti");
         return -1;
     }
@@ -560,6 +563,13 @@ int waitpid(int pid, int* status, int options) {
                 if (scan->kstack)
                     free_kernel_stack(scan->id);
 
+                /* TODO: Free the child's page directory and all cloned
+                 * page tables/pages.  Currently leaked — each fork() or
+                 * kernel_fork() that exits leaks ~10+ physical pages.
+                 * This is a known limitation; a full page-directory teardown
+                 * function is needed (walk all user PDEs, free page tables
+                 * and user pages, then free the directory frame itself). */
+
                 /* Remove from ready queue */
                 if (prev)
                     prev->next = scan->next;
@@ -567,6 +577,36 @@ int waitpid(int pid, int* status, int options) {
                     ready_queue = scan->next;
 
                 kfree(scan);
+
+                /* After reaping the requested child, also reap any orphaned
+                 * zombies that were reparented to us (PID 1 / init).  This
+                 * happens when a grandchild outlives its parent — the parent
+                 * exits, the grandchild is reparented to init, and if the
+                 * grandchild is already a zombie, nobody else will reap it.
+                 * Without this, orphan zombies leak their kernel stack pages
+                 * in the shared PDE 1023 page table. */
+                {
+                    task_t* p = NULL;
+                    task_t* s = (task_t*)ready_queue;
+                    while (s) {
+                        if (s->state == STATE_ZOMBIE &&
+                            s->parent_pid == self->id && s->id != self->id) {
+                            task_t* dead = s;
+                            if (p)
+                                p->next = dead->next;
+                            else
+                                ready_queue = dead->next;
+                            s = dead->next;
+                            if (dead->kstack)
+                                free_kernel_stack(dead->id);
+                            kfree(dead);
+                        } else {
+                            p = s;
+                            s = s->next;
+                        }
+                    }
+                }
+
                 __asm__ volatile("sti");  /* re-enable interrupts before returning */
                 return child_pid;
             }
