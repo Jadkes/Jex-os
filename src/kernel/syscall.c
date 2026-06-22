@@ -169,6 +169,26 @@ void syscall_handler(registers_t *regs)
         char str[2] = {c, '\0'};
         terminal_writestring(str);
     }
+    else if (regs->eax == SYS_PRINT_HEX)
+    {
+        uint32_t val = (uint32_t)regs->ebx;
+        char buf[11]; /* "0x" + 8 hex digits + null */
+        const char* hex = "0123456789ABCDEF";
+        int i = 0;
+        buf[i++] = '0';
+        buf[i++] = 'x';
+        int started = 0;
+        for (int shift = 28; shift > 0; shift -= 4) {
+            int digit = (val >> shift) & 0xF;
+            if (digit || started) {
+                buf[i++] = hex[digit];
+                started = 1;
+            }
+        }
+        buf[i++] = hex[val & 0xF];
+        buf[i] = '\0';
+        terminal_writestring(buf);
+    }
     else if (regs->eax == SYS_SIGNAL)
     {
         /* EBX = sig, ECX = handler */

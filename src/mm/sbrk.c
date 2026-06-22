@@ -68,7 +68,13 @@ void* sbrk(intptr_t increment) {
                 return (void*)-1;
             }
             alloc_frames[pages_allocated++] = new_frame;
-            map_page(new_frame, heap_end, 7); /* Present + RW + User */
+            if (map_page(new_frame, heap_end, 7) < 0) {
+                /* OOM during page table allocation — free pages so far */
+                for (int i = 0; i < pages_allocated; i++)
+                    pmm_free_block(alloc_frames[i]);
+                heap_end = (void*)((uint32_t)heap_end - (uint32_t)(pages_allocated * 4096));
+                return (void*)-1;
+            }
             heap_end = (void*)((uint32_t)heap_end + 4096);
         }
 

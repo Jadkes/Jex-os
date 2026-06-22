@@ -5,26 +5,28 @@ JexOS is a from-scratch, x86 hobby operating system with a full network stack, m
 
 ---
 
-## 🚀 Current State: v0.6.5 — TCP Hardening, HTTP Server, DHCP Client
+## 🚀 Current State: v0.7.0 — TCC Self-Hosting, Control Flow, Flat Filesystem
 
-JexOS can now serve web pages, auto-configure its network, and handle full TCP connection lifecycles. What started as a "can it ping?" experiment has grown into an OS that runs its own HTTP server.
+JexOS can now compile and run non-trivial C programs with control flow, complete with
+a fully self-hosting TCC that supports if/else, while, for loops, and hex output.
+The expression parser bugs that inverted every comparison and arithmetic operation
+have been eliminated, and the filesystem is now flat and uses proper POSIX errno codes.
 
-### 🌐 HTTP Server
-- **`serve` Command**: Listens on port 80, accepts TCP connections, serves HTTP/1.0
-- **JexFS File Serving**: Serves files from the filesystem (`/index.html`, etc.)
-- **Default Page**: Falls back to a "Hello from JexOS!" page when no file found
-- **Passive TCP Open**: Full LISTEN → SYN_RCVD → ESTABLISHED three-way handshake
-- **Content-Type/Length**: Proper HTTP headers with content negotiation
+### 💻 TCC Compiler Improvements
+- **Control Flow**: `if`/`else`, `while`, `for` — full brace-depth tracking with
+  single-pass code generation
+- **Hex Printing**: `printf("%x", val)` via new `SYS_PRINT_HEX` syscall (18)
+- **New Operators**: `!` (logical not), `&` (address-of), `|`/`||`, `~` (bitwise not)
+- **Expression Parser Fixes**: All comparison operators (`>`, `<`, `>=`, `<=`, `==`,
+  `!=`), subtraction, division, and modulo now produce correct results — the ModRM
+  operand bytes were encoding `right op left` instead of `left op right`
 
-### 🔄 DHCP Client
-- **DORA Cycle**: Discover → Offer → Request → Ack over UDP broadcast
-- **Auto-Configuration**: Sets IP, gateway, and DNS server at runtime
-- **Runtime IP Variables**: `OUR_IP`, `GATEWAY_IP`, `DNS_SERVER` are mutable globals
-- **`dhcp` Command**: One-command network setup
-- **QEMU Slirp Compatible**: Works out of the box with QEMU's built-in DHCP server
-- **Retry Logic**: 3 retries with timeout per message
+### 📁 Flat Filesystem
+- **Root-Only Layout**: No more `/home/user` — everything lives under `/`
+- **Proper Errno Codes**: All kernel syscalls return `-ENOMEM`, `-ENOENT`, `-EINVAL`,
+  `-ECHILD`, `-EIO`, `-EPERM`, `-ESRCH` instead of bare `-1`
 
-### 🔧 TCP Hardening
+### 🔧 TCP Hardening (v0.6.5)
 - **Passive Open**: `tcp_listen()` / `tcp_accept()` API for server workloads
 - **TCP States**: LISTEN (8), SYN_RCVD (9) — full state machine for passive open
 - **MSS Option**: Advertised on SYN for proper segmentation
@@ -86,6 +88,11 @@ JexOS can now serve web pages, auto-configure its network, and handle full TCP c
 
 | Feature | Description |
 | :--- | :--- |
+| **TCC Control Flow** | `if/else`, `while`, `for` with single-pass code gen |
+| **TCC Hex Print** | `printf("%x")` via `SYS_PRINT_HEX` syscall |
+| **TCC Operator Fix** | Comparisons, subtraction, division now produce correct results |
+| **Flat Filesystem** | Root-only layout, no more `/home/user` |
+| **Proper Errno** | `-ENOMEM`, `-ENOENT`, `-EIO`, `-ECHILD` everywhere, not bare `-1` |
 | **HTTP Server** | `serve` command — TCP passive open, HTTP/1.0, JexFS-backed |
 | **DHCP Client** | DORA cycle, auto-configures IP/Gateway/DNS |
 | **TCP Hardened** | Full passive open, proper state machine, clean warnings |
@@ -112,6 +119,12 @@ JexOS can now serve web pages, auto-configure its network, and handle full TCP c
 - [x] **HTTP Server**: `serve` command — TCP listen/accept + HTTP/1.0
 - [x] **DHCP Client**: DORA cycle — automatic IP configuration
 - [x] **TCP Hardening**: Passive open, states, checksum, clean warnings
+- [x] **TCC Control Flow**: if/else, while, for loops
+- [x] **TCC Hex Print**: printf "%x" via SYS_PRINT_HEX
+- [x] **TCC Operators**: == != > < >= <= ! ~ & | &&
+- [x] **Expression Parser Fix**: Comparisons and arithmetic produce correct results
+- [x] **Flat Filesystem**: No /home/user, root-only layout
+- [x] **Proper Errno Codes**: -ENOMEM, -ENOENT, -EIO everywhere
 - [ ] **JexSnake**: Terminal game
 - [ ] **Pipes & Redirection**: Shell IPC (`|`, `>`, `<`)
 - [ ] **SMP / Multi-core**: Because one CPU is boring

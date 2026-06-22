@@ -13,6 +13,7 @@
 #include "paging.h"
 #include "terminal.h"
 #include "serial.h"
+#include <jexos/errno.h>
 #include <stddef.h>
 
 /* ELF segment flags */
@@ -198,7 +199,10 @@ uint32_t elf_load_with_args(uint8_t* elf_data, int argc, char** argv) {
             for (uint32_t addr = start_page; addr < end_page; addr += 4096) {
                 void* frame = pmm_alloc_block();
                 if (!frame) return 0;
-                map_page(frame, (void*)addr, page_flags);
+                if (map_page(frame, (void*)addr, page_flags) < 0) {
+                    pmm_free_block(frame);
+                    return 0;
+                }
             }
 
             /* Copy segment data from the ELF image to its virtual address */

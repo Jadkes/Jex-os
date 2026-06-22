@@ -177,12 +177,12 @@ void init_paging();
  * @param virtualaddr The virtual address.
  * @param flags The mapping flags (Present, RW, User, etc.).
  */
-void map_page(void* physaddr, void* virtualaddr, unsigned int flags);
+int map_page(void* physaddr, void* virtualaddr, unsigned int flags);
 
 /**
  * @brief Map a page in a specific page directory (for fork/clone).
  */
-void map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsigned int flags);
+int map_page_in(page_directory_t* dir, void* physaddr, void* virtualaddr, unsigned int flags);
 
 /**
  * @brief Clone a page directory, deep-copying user pages.

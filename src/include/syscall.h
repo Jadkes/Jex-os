@@ -32,6 +32,7 @@ void init_syscalls();
 #define SYS_GETPID   15
 #define SYS_SIGNAL   13
 #define SYS_KILL     14
+#define SYS_PRINT_HEX 18
 
 /* File access modes */
 #define O_RDONLY    0x00

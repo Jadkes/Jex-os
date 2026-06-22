@@ -16,6 +16,7 @@
 #include "panic.h"
 #include "isr.h"
 #include "kernel/backtrace.h"
+#include <jexos/errno.h>
 
 extern page_directory_t kernel_directory;
 extern uint32_t read_eip();
@@ -294,7 +295,7 @@ int fork(registers_t* regs) {
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
     if (!child) {
         __asm__ volatile("sti");
-        return -1;
+        return -ENOMEM;
     }
 
     /* Clone the page directory */
@@ -302,7 +303,7 @@ int fork(registers_t* regs) {
     if (!new_dir) {
         kfree(child);
         __asm__ volatile("sti");
-        return -1;
+        return -ENOMEM;
     }
 
     child->id = next_pid++;
@@ -322,7 +323,7 @@ int fork(registers_t* regs) {
     child->kstack = alloc_kernel_stack(child->id);
     if (!child->kstack) {
         __asm__ volatile("sti");
-        return -1;
+        return -ENOMEM;
     }
 
     /*
@@ -411,7 +412,7 @@ int kernel_fork(void (*func)(void*), void* arg)
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
     if (!child) {
         __asm__ volatile("sti");
-        return -1;
+        return -ENOMEM;
     }
 
     /* Clone the page directory — deep-copy user pages, share kernel pages */
@@ -419,7 +420,7 @@ int kernel_fork(void (*func)(void*), void* arg)
     if (!new_dir) {
         kfree(child);
         __asm__ volatile("sti");
-        return -1;
+        return -ENOMEM;
     }
 
     child->id = next_pid++;
@@ -440,7 +441,7 @@ int kernel_fork(void (*func)(void*), void* arg)
     if (!child->kstack) {
         kfree(child);
         __asm__ volatile("sti");
-        return -1;
+        return -ENOMEM;
     }
 
     /*
@@ -623,7 +624,7 @@ int waitpid(int pid, int* status, int options) {
                 }
             }
             if (!any)
-                return -1;  /* No children — ECHILD */
+                return -ECHILD;  /* No children */
         }
 
         /* Yield to other tasks while waiting */
@@ -705,10 +706,10 @@ void* sys_signal(int sig, void* handler) {
  * @return 0 on success, -1 if PID not found or sig invalid.
  */
 int sys_kill(int pid, int sig) {
-    if (sig < 1 || sig > 31) return -1;
+    if (sig < 1 || sig > 31) return -EINVAL;
 
     /* Never kill PID 1 (the shell/init) */
-    if (pid == 1) return -1;
+    if (pid == 1) return -EPERM;
 
     task_t* t = (task_t*)ready_queue;
     while (t) {
@@ -718,7 +719,7 @@ int sys_kill(int pid, int sig) {
         }
         t = t->next;
     }
-    return -1;
+    return -ESRCH;
 }
 
 int task_kill(int pid) {
