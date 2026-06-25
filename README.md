@@ -1,18 +1,18 @@
-# 🪐 JexOS
+# JexOS
 **The minimal 32-bit hobby OS that actually does networking.**
 
 JexOS is a from-scratch, x86 hobby operating system with a full network stack, multitasking, a persistent filesystem, and a growing suite of developer tools. Born from a "wait, it can do *what*?" approach to kernel development.
 
 ---
 
-## 🚀 Current State: v0.7.0 — TCC Self-Hosting, Control Flow, Flat Filesystem
+## Current State: v0.7.0 — TCC Self-Hosting, Control Flow, Flat Filesystem
 
 JexOS can now compile and run non-trivial C programs with control flow, complete with
 a fully self-hosting TCC that supports if/else, while, for loops, and hex output.
 The expression parser bugs that inverted every comparison and arithmetic operation
 have been eliminated, and the filesystem is now flat and uses proper POSIX errno codes.
 
-### 💻 TCC Compiler Improvements
+### TCC Compiler Improvements
 - **Control Flow**: `if`/`else`, `while`, `for` — full brace-depth tracking with
   single-pass code generation
 - **Hex Printing**: `printf("%x", val)` via new `SYS_PRINT_HEX` syscall (18)
@@ -20,13 +20,15 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 - **Expression Parser Fixes**: All comparison operators (`>`, `<`, `>=`, `<=`, `==`,
   `!=`), subtraction, division, and modulo now produce correct results — the ModRM
   operand bytes were encoding `right op left` instead of `left op right`
+  - **Still experimental**: You can find a lot of bugs on Jexos TCC, if you have find any bugs
+  please contact me
 
-### 📁 Flat Filesystem
+### Flat Filesystem
 - **Root-Only Layout**: No more `/home/user` — everything lives under `/`
 - **Proper Errno Codes**: All kernel syscalls return `-ENOMEM`, `-ENOENT`, `-EINVAL`,
   `-ECHILD`, `-EIO`, `-EPERM`, `-ESRCH` instead of bare `-1`
 
-### 🔧 TCP Hardening (v0.6.5)
+### TCP Hardening (v0.6.5)
 - **Passive Open**: `tcp_listen()` / `tcp_accept()` API for server workloads
 - **TCP States**: LISTEN (8), SYN_RCVD (9) — full state machine for passive open
 - **MSS Option**: Advertised on SYN for proper segmentation
@@ -34,17 +36,17 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 - **Checksum on All Segments**: TCP checksum computed for every sent segment
 - **Connection Tuple Filtering**: Source IP/port matching guards in LISTEN mode
 
-### 🧠 Memory Management
+### Memory Management
 - **Slab Allocator**: Power-of-2 size classes (16B–2048B) with O(1) `kfree`
 - **PMM Fallback**: Handles missing multiboot memory map (QEMU `-kernel` boot)
 - **Heap Inspection**: `heapcheck` shows slab committed/free stats
 
-### ⚡ Process Control
+### Process Control
 - **Signal Handling**: `sys_signal()` / `sys_kill()` syscalls with 32 signal slots
 - **Signal Delivery**: Pending signal check in `task_switch()` scheduler
 - **`kill` Command**: `kill <pid>` (SIGTERM), `kill -9 <pid>` (SIGKILL), `kill -l`
 
-### ⌨️ Shell & UX
+### Shell
 - **Keyboard Ring Buffer**: ISR stores scancodes — no more dropped keys under load
 - **Paged Help**: `more`-style pagination for large command lists
 - **Ctrl+L**: Clear screen shortcut
@@ -54,7 +56,7 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 - **Process Management**: `ps`, `kill`, `uptime`, `top` commands
 - **Editor**: Vix 3.0 IDE with syntax highlighting and `Ctrl+B` build
 
-### 🌐 Networking
+### Networking
 - **RTL8139 NIC Driver**: DMA-based ring buffer, interrupt-driven RX/TX, auto-probe via PCI
 - **Full Protocol Stack**: ARP, IP, ICMP (ping), UDP, TCP — all from scratch
 - **HTTP Server**: `serve` command — TCP passive open + HTTP/1.0 response
@@ -64,7 +66,7 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 - **Gateway Routing**: Automatically routes non-local traffic through gateway
 - **Diagnostics**: `ping`, `dhcp`, `arp`, `tcpdump`, `netlog`, `nicregs` commands
 
-### 🐛 Debug Infrastructure
+### Debug Infrastructure
 - **Panic Handler**: Full crash screen with register dump, stack trace, and page fault decode
 - **Kernel Ring Buffer** (`dmesg`): Structured event logging with severity levels
 - **Stack Unwinder**: Symbolic backtraces via kallsyms
@@ -76,15 +78,14 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 - **WARN_ON / BUG_ON**: Kernel warning infrastructure
 - **Lockdep**: Lock ordering validator
 
-### 📂 Storage & Filesystem
+### Storage & Filesystem
 - **JexFS**: Custom persistent filesystem on 1.44MB floppy image
-- **VFS Layer**: Mount point dispatch (JexFS, devtmpfs, sysfs)
 - **IDE PIO Driver**: Low-level ATA disk access
 - **Standard Tools**: `cp`, `mv`, `rm`, `ls`, `cat`, `touch`, `mkdir`
 
 ---
 
-## ✨ Core Features at a Glance
+##  Core Features at a Glance
 
 | Feature | Description |
 | :--- | :--- |
@@ -110,7 +111,7 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 
 ---
 
-## 🗺️ Roadmap
+## ️Roadmap
 
 - [x] **Slab Allocator**: Power-of-2 size classes, O(1) kfree
 - [x] **Keyboard Buffering**: Ring buffer, no dropped keys under load
@@ -131,7 +132,7 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 
 ---
 
-## 🏗️ Building & Running
+## Building & Running
 
 ```bash
 make          # Build kernel + disk image
@@ -142,8 +143,7 @@ Requires: `gcc` (i386 cross), `nasm`, `qemu-system-i386`.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 JexOS is an educational project. Network protocol bugs, driver improvements, and shell features are all welcome.
 
-**Developed with ❤️ for the OS Dev community.**
