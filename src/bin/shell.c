@@ -74,7 +74,7 @@ static char tab_name_buf[32][256];
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp", "history", "top", "reboot", "shutdown", "clear", "music", "hardbass", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp", "history", "top", "reboot", "shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
 };
 
 /**
@@ -1163,7 +1163,6 @@ void execute_command() {
     }
     else if (strncmp(shell_buffer, "vix ", 4) == 0) start_editor(shell_buffer + 4);
     else if (strcmp(shell_buffer, "music") == 0) play_tune();
-    else if (strcmp(shell_buffer, "hardbass") == 0) play_hardbass();
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
      else if (strcmp(shell_buffer, "poweroff") == 0) shutdown();
