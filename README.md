@@ -1,4 +1,4 @@
-# JexOS
+# JexOS 
 **The minimal 32-bit hobby OS that actually does networking.**
 
 JexOS is a from-scratch, x86 hobby operating system with a full network stack, multitasking, a persistent filesystem, and a growing suite of developer tools. Born from a "wait, it can do *what*?" approach to kernel development.
@@ -128,7 +128,7 @@ have been eliminated, and the filesystem is now flat and uses proper POSIX errno
 - [x] **Proper Errno Codes**: -ENOMEM, -ENOENT, -EIO everywhere
 - [ ] **JexSnake**: Terminal game
 - [ ] **Pipes & Redirection**: Shell IPC (`|`, `>`, `<`)
-- [ ] **SMP / Multi-core**: Because one CPU is boring
+- [ ] **SMP / Multi-core**: Cuz one CPU is boring
 
 ---
 

@@ -7,7 +7,7 @@ LDFLAGS = -m elf_i386 -T user.ld
 # Library sources
 LIB_OBJS = lib/stdio.o lib/string.o lib/stdlib.o lib/unistd.o lib/crt0.o
 
-all: hello.elf test_stdlib.elf test_unistd.elf
+all: hello.elf calc.elf test_stdlib.elf test_unistd.elf
 
 # Build LibC
 libc.a: $(LIB_OBJS)
@@ -17,6 +17,11 @@ libc.a: $(LIB_OBJS)
 hello.elf: ../apps/hello.c libc.a
 	$(CC) $(CFLAGS) -c $< -o hello.o
 	ld $(LDFLAGS) lib/crt0.o hello.o libc.a -o $@
+
+# Build Calculator App
+calc.elf: ../apps/calc.c libc.a
+	$(CC) $(CFLAGS) -c $< -o calc.o
+	ld $(LDFLAGS) lib/crt0.o calc.o libc.a -o $@
 
 # Build stdlib test app
 test_stdlib.elf: ../apps/test_stdlib.c libc.a
