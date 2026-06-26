@@ -127,6 +127,13 @@ void keyboard_callback(registers_t *regs) {
             else if (c == 'q' || c == 'Q') c = 0x11; /* Ctrl+Q (Quit) */
             else if (c == 'b' || c == 'B') c = 0x02; /* Ctrl+B (Build/Compile) */
             else if (c == 'v' || c == 'V') c = 0x16; /* Ctrl+V (Paste) */
+            else if (c == 'a' || c == 'A') c = 0x01; /* Ctrl+A (Select All / About) */
+            else if (c == 'c' || c == 'C') c = 0x03; /* Ctrl+C (Copy) */
+            else if (c == 'f' || c == 'F') c = 0x06; /* Ctrl+F (Find) */
+            else if (c == 'g' || c == 'G') c = 0x07; /* Ctrl+G (Goto Line) */
+            else if (c == 'n' || c == 'N') c = 0x0E; /* Ctrl+N (New File) */
+            else if (c == 'x' || c == 'X') c = 0x18; /* Ctrl+X (Cut) */
+            else if (c == 'z' || c == 'Z') c = 0x1A; /* Ctrl+Z (Undo) */
         }
 
         if (c != 0) {

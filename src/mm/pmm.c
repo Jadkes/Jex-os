@@ -206,7 +206,7 @@ void* pmm_alloc_block() {
 
     bitmap_set(frame);
     used_blocks++;
-    
+
     return (void*)(frame * BLOCK_SIZE);
 }
 
