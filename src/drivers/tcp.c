@@ -216,7 +216,6 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     pr_debug("RX: flags=0x%x seq=0x%x ack=0x%x pay_len=%u\n",
              seg->flags, seg_seq, seg_ack, tcp_payload_len);
 
-    /* ---- Passive open: SYN on LISTEN ---- */
     if (tcp_state == TCP_LISTEN) {
         if ((seg->flags & TCP_SYN) && !(seg->flags & TCP_ACK)) {
             memcpy(peer_mac, src_mac, 6);
@@ -239,7 +238,6 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
         return;
     }
 
-    /* ---- Passive open: ACK on SYN_RCVD ---- */
     if (tcp_state == TCP_SYN_RCVD && (seg->flags & TCP_ACK)) {
         if (seg_ack == my_seq) {
             peer_acked_to = seg_ack;
@@ -251,7 +249,6 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
         return;
     }
 
-    /* ---- Handle SYN+ACK (reply to our SYN) ---- */
     if (seg->flags & TCP_SYN && seg->flags & TCP_ACK) {
         if (tcp_state == TCP_SYN_SENT && seg_ack == my_seq) {
             peer_isn = seg_seq;
@@ -272,7 +269,6 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
         return;
     }
 
-    /* ---- Handle data + ACK ---- */
     if (seg->flags & TCP_ACK) {
         /* Update what peer has acked (only when advancing) */
         if (seg_ack > peer_acked_to)
@@ -327,7 +323,6 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
         }
     }
 
-    /* ---- Handle FIN ---- */
     if (seg->flags & TCP_FIN) {
         my_ack = seg_seq + tcp_payload_len + 1;
 
@@ -348,7 +343,6 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
         }
     }
 
-    /* ---- Handle RST ---- */
     if (seg->flags & TCP_RST) {
         pr_debug("received RST\n");
         __asm__ volatile("cli");
@@ -736,7 +730,6 @@ int http_get(const char* hostname, uint16_t port, const char* path)
 {
     char ip_buf[16];
 
-    /* ---- Resolve hostname ---- */
     pr_debug("resolving %s\n", hostname);
     terminal_writestring("Resolving ");
     terminal_writestring(hostname);
@@ -758,7 +751,6 @@ int http_get(const char* hostname, uint16_t port, const char* path)
     int_to_string(ipb[3], ip_buf); terminal_writestring(ip_buf);
     terminal_writestring("\n");
 
-    /* ---- TCP Connect ---- */
     pr_debug("connecting...\n");
     terminal_writestring("Connecting...\n");
     if (tcp_connect(ip, port, 0) < 0) {
@@ -766,7 +758,6 @@ int http_get(const char* hostname, uint16_t port, const char* path)
         return -1;
     }
 
-    /* ---- Build HTTP request (separate buffer from tx_buf) ---- */
     static char http_req_buf[TCP_TX_BUF_SIZE];
     uint32_t req_len = 0;
     char* req = http_req_buf;
@@ -800,7 +791,6 @@ int http_get(const char* hostname, uint16_t port, const char* path)
 
     pr_debug("request len=%u\n", req_len);
 
-    /* ---- Send request ---- */
     pr_debug("sending request...\n");
     terminal_writestring("Sending request...\n");
     int sent = tcp_send((const uint8_t*)req, req_len);
@@ -810,7 +800,6 @@ int http_get(const char* hostname, uint16_t port, const char* path)
         return -1;
     }
 
-    /* ---- Read response ---- */
     terminal_writestring("Response:\n");
     {
         char resp_buf[1024];
@@ -851,7 +840,6 @@ int http_get(const char* hostname, uint16_t port, const char* path)
         }
     }
 
-    /* ---- Close ---- */
     tcp_close();
     return 0;
 }
@@ -868,7 +856,6 @@ int http_serve(uint16_t port)
 {
     char num_buf[8];
 
-    /* ---- Listen ---- */
     if (tcp_listen(port) < 0) {
         terminal_writestring("Listen failed\n");
         return -1;
@@ -879,7 +866,6 @@ int http_serve(uint16_t port)
     terminal_writestring(num_buf);
     terminal_writestring("...\n");
 
-    /* ---- Accept ---- */
     if (tcp_accept() < 0) {
         terminal_writestring("Accept failed\n");
         return -1;
@@ -896,7 +882,6 @@ int http_serve(uint16_t port)
     terminal_writestring("\n");
     terminal_writestring("Receiving request...\n");
 
-    /* ---- Read HTTP request ---- */
     static char req_buf[1024];
     int req_len = 0;
     int timeout = 1000; /* ~10 seconds */
@@ -933,7 +918,6 @@ int http_serve(uint16_t port)
     req_buf[req_len] = '\0';
     pr_debug("HTTP request (%d bytes)\n", req_len);
 
-    /* ---- Parse GET path ---- */
     char path[256];
     int path_len = 0;
 
@@ -956,7 +940,6 @@ int http_serve(uint16_t port)
 
     pr_debug("GET %s\n", path);
 
-    /* ---- Try to serve file from JexFS ---- */
     static char resp_buf[4096];
     uint32_t body_len = 0;
     const char* content_type = "text/html";
@@ -997,7 +980,6 @@ int http_serve(uint16_t port)
         }
     }
 
-    /* ---- Build HTTP response header ---- */
     char header[256];
     uint32_t hdr_len = 0;
 
@@ -1028,7 +1010,6 @@ int http_serve(uint16_t port)
     terminal_writestring(" bytes)\n");
     pr_debug("served %u bytes\n", body_len);
 
-    /* ---- Close ---- */
     tcp_close();
     return 0;
 }

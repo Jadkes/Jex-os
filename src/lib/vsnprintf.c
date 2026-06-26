@@ -1,8 +1,8 @@
 /*
  * vsnprintf.c - Minimal kernel vsnprintf/snprintf
  *
- * Purpose: Freestanding printf-family for kernel use.
- * Design: Hand-rolled per-specifier helpers; no floating point, no 64-bit divide.
+ * Freestanding printf-family for kernel use.
+ * Hand-rolled per-specifier helpers; no floating point, no 64-bit divide.
  * Thread-safety: No global state -- all output goes to a caller-provided buffer.
  */
 

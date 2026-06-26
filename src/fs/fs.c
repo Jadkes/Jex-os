@@ -16,10 +16,6 @@
 
 extern void terminal_writestring(const char* data);
 
-/* ------------------------------------------------------------------ */
-/*  Mount-point dispatch table                                        */
-/* ------------------------------------------------------------------ */
-
 #define MAX_MOUNTS       4
 #define VIRTUAL_FD_START 100
 
@@ -78,10 +74,6 @@ static struct mount *fs_find_mount(const char *path)
     }
     return NULL;
 }
-
-/* ------------------------------------------------------------------ */
-/*  System-wide open file table (JexFS)                               */
-/* ------------------------------------------------------------------ */
 
 file_descriptor_t file_table[MAX_OPEN_FILES];
 

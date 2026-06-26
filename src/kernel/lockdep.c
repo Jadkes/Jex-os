@@ -2,8 +2,8 @@
  * @file lockdep.c
  * @brief Lock Dependency Validator
  *
- * Purpose: Detect potential deadlocks by tracking lock acquisition order.
- * Design: Maintains an adjacency matrix of first-seen lock orderings and
+ * Detect potential deadlocks by tracking lock acquisition order.
+ * Maintains an adjacency matrix of first-seen lock orderings and
  *         performs BFS cycle detection on every new acquisition. Warns on
  *         any inversion that would create a cycle.
  * Thread-safety: All public functions are safe under cli/sti save/restore.
@@ -57,7 +57,7 @@ static int find_lock(struct lockdep_lock* l)
     return -1;
 }
 
-/*
+/**
  * check_deadlock - BFS for cycle detection
  * @from: Source stack index (the "before" lock)
  * @to:   Target stack index (the "after" lock)

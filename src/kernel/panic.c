@@ -2,7 +2,7 @@
  * @file panic.c
  * @brief Kernel Panic Handler — Crash Screen, Stack Trace, Page Fault Decode.
  *
- * Purpose: Replace basic exception halt with comprehensive diagnostic output
+ * Replace basic exception halt with comprehensive diagnostic output
  *          including register dump, page fault decode, stack unwind, and
  *          interactive crash recovery (reboot / save dump / halt).
  * Thread-safety: Interrupts are disabled before any output; no concurrency.
@@ -171,7 +171,6 @@ void panic_handler(registers_t* regs)
         }
     }
 
-    /* Serial dump for AI agents */
     log_serial("*** JEXOS PANIC ***\n");
     log_serial("Exception: ");
     log_serial(ex_name);

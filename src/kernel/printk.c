@@ -1,9 +1,9 @@
 /*
  * printk.c - pr_* logging implementation
  *
- * Purpose: Provides the _printk() backend that formats messages via
+ * Provides the _printk() backend that formats messages via
  *          vsnprintf and distributes them to serial, terminal, and klog.
- * Design:  All output goes to serial unconditionally. Terminal output is
+ * All output goes to serial unconditionally. Terminal output is
  *          skipped during ISR context to avoid slow PIO on the critical path.
  *          klog stores messages with their log level for dmesg retrieval.
  */
