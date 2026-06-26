@@ -43,3 +43,5 @@ docs/
 # References and temp files
 linux 0.11/
 Linux-0.11/
+/apps/calc.c
+/build/
