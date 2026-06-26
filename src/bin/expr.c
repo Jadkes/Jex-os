@@ -74,7 +74,7 @@ int expr_is_binary_op(token_type_t type) {
     return expr_get_precedence(type) > PREC_NONE;
 }
 
-/**
+/*
  * Emit mov eax, imm32 instruction.
  */
 static void emit_mov_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
@@ -85,21 +85,21 @@ static void emit_mov_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
     buf[(*pos)++] = (imm >> 24) & 0xFF;
 }
 
-/**
+/*
  * Emit push eax instruction.
  */
 static void emit_push_eax(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = X86_PUSH_EAX;
 }
 
-/**
+/*
  * Emit pop ebx instruction.
  */
 static void emit_pop_ebx(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = X86_POP_EBX;
 }
 
-/**
+/*
  * Emit mov eax, [ebp-offset] instruction.
  * Load variable value from stack (32-bit).
  */
@@ -116,7 +116,7 @@ static void emit_mov_eax_mem_ebp(uint8_t* buf, uint32_t* pos, int offset) {
     }
 }
 
-/**
+/*
  * Emit movsx eax, byte [ebp-offset] instruction.
  * Load char variable with sign extension (8-bit to 32-bit).
  */
@@ -133,7 +133,7 @@ static void emit_movsx_eax_mem8_ebp(uint8_t* buf, uint32_t* pos, int offset) {
     }
 }
 
-/**
+/*
  * Emit lea eax, [ebp-offset] instruction.
  * Load address of variable (for & operator).
  */
@@ -149,7 +149,7 @@ static void emit_lea_eax_ebp(uint8_t* buf, uint32_t* pos, int offset) {
     }
 }
 
-/**
+/*
  * Emit mov eax, [eax] instruction.
  * Dereference pointer in eax.
  */
@@ -158,7 +158,7 @@ static void emit_mov_eax_mem_eax(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0x00; /* modrm: [eax] */
 }
 
-/**
+/*
  * Emit not eax instruction.
  */
 static void emit_not_eax(uint8_t* buf, uint32_t* pos) {
@@ -166,7 +166,7 @@ static void emit_not_eax(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xD0; /* modrm: 11 010 000 */
 }
 
-/**
+/*
  * Emit neg eax instruction.
  */
 static void emit_neg_eax(uint8_t* buf, uint32_t* pos) {
@@ -174,7 +174,7 @@ static void emit_neg_eax(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xD8; /* modrm: 11 011 000 */
 }
 
-/**
+/*
  * Emit add dword [ebp-offset], 1 instruction.
  * Increment a variable on the stack by 1.
  */
@@ -191,7 +191,7 @@ static void __attribute__((unused)) emit_add_mem_ebp_1(uint8_t* buf, uint32_t* p
     buf[(*pos)++] = 0x01; /* imm8 = 1 */
 }
 
-/**
+/*
  * Emit sub dword [ebp-offset], 1 instruction.
  * Decrement a variable on the stack by 1.
  */
@@ -208,7 +208,7 @@ static void __attribute__((unused)) emit_sub_mem_ebp_1(uint8_t* buf, uint32_t* p
     buf[(*pos)++] = 0x01; /* imm8 = 1 */
 }
 
-/**
+/*
  * Emit mov ebx, eax instruction.
  */
 static void __attribute__((unused)) emit_mov_ebx_eax(uint8_t* buf, uint32_t* pos) {
@@ -216,7 +216,7 @@ static void __attribute__((unused)) emit_mov_ebx_eax(uint8_t* buf, uint32_t* pos
     buf[(*pos)++] = 0xC3; /* modrm: ebx, eax */
 }
 
-/**
+/*
  * Emit add eax, ebx instruction.
  * Result in eax.
  */
@@ -225,7 +225,7 @@ static void emit_add_eax_ebx(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC3; /* modrm: eax, ebx */
 }
 
-/**
+/*
  * Emit imul eax, imm32 instruction.
  * Multiply eax by immediate value.
  */
@@ -236,7 +236,7 @@ static void emit_imul_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
     *pos += 4;
 }
 
-/**
+/*
  * Emit add eax, imm32 instruction.
  * Add immediate value to eax.
  */
@@ -246,7 +246,7 @@ static void emit_add_eax_imm(uint8_t* buf, uint32_t* pos, uint32_t imm) {
     *pos += 4;
 }
 
-/**
+/*
  * Emit mov [ebp-offset], eax instruction.
  * Store eax value to stack variable (32-bit).
  */
@@ -262,7 +262,7 @@ static void emit_mov_mem_ebp_eax(uint8_t* buf, uint32_t* pos, int offset) {
     }
 }
 
-/**
+/*
  * Emit mov [ebp-offset], al instruction (8-bit store for char).
  */
 static void emit_mov_mem_ebp_al(uint8_t* buf, uint32_t* pos, int offset) {
@@ -277,7 +277,7 @@ static void emit_mov_mem_ebp_al(uint8_t* buf, uint32_t* pos, int offset) {
     }
 }
 
-/**
+/*
  * Emit xor eax, eax instruction.
  */
 static void emit_xor_eax_eax(uint8_t* buf, uint32_t* pos) {
@@ -285,7 +285,7 @@ static void emit_xor_eax_eax(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0; /* modrm: 11 000 000 */
 }
 
-/**
+/*
  * Emit cmp eax, ebx instruction.
  */
 static void emit_cmp_eax_ebx(uint8_t* buf, uint32_t* pos) {
@@ -293,7 +293,7 @@ static void emit_cmp_eax_ebx(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xD8; /* modrm: 11 011 000 */
 }
 
-/**
+/*
  * Emit sete al instruction.
  */
 static void emit_sete_al(uint8_t* buf, uint32_t* pos) {
@@ -302,7 +302,7 @@ static void emit_sete_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0;
 }
 
-/**
+/*
  * Emit setne al instruction.
  */
 static void emit_setne_al(uint8_t* buf, uint32_t* pos) {
@@ -311,7 +311,7 @@ static void emit_setne_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0;
 }
 
-/**
+/*
  * Emit setl al instruction.
  */
 static void emit_setl_al(uint8_t* buf, uint32_t* pos) {
@@ -320,7 +320,7 @@ static void emit_setl_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0;
 }
 
-/**
+/*
  * Emit setg al instruction.
  */
 static void emit_setg_al(uint8_t* buf, uint32_t* pos) {
@@ -329,7 +329,7 @@ static void emit_setg_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0;
 }
 
-/**
+/*
  * Emit setle al instruction.
  */
 static void emit_setle_al(uint8_t* buf, uint32_t* pos) {
@@ -338,7 +338,7 @@ static void emit_setle_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0;
 }
 
-/**
+/*
  * Emit setge al instruction.
  */
 static void emit_setge_al(uint8_t* buf, uint32_t* pos) {
@@ -347,7 +347,7 @@ static void emit_setge_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0;
 }
 
-/**
+/*
  * Emit movzx eax, al instruction.
  */
 static void emit_movzx_eax_al(uint8_t* buf, uint32_t* pos) {
@@ -356,7 +356,7 @@ static void emit_movzx_eax_al(uint8_t* buf, uint32_t* pos) {
     buf[(*pos)++] = 0xC0; /* modrm: 11 000 000 */
 }
 
-/**
+/*
  * Parse a primary expression: literal, variable, parenthesized expr, prefix op.
  * Result in eax.
  */
@@ -709,7 +709,7 @@ static int parse_primary(token_t* tokens, int* pos, symtab_t* tab,
     return -1;  /* Unexpected token */
 }
 
-/**
+/*
  * Parse expression with precedence climbing.
  * lhs_parsed: flag indicating if left-hand side already parsed (in eax).
  * min_prec: minimum precedence to continue parsing.
@@ -925,7 +925,7 @@ static int parse_expr_1(token_t* tokens, int* pos, symtab_t* tab,
     return 0;
 }
 
-/**
+/*
  * Main expression parser entry point.
  * Uses precedence climbing algorithm.
  * Result left in eax register.
