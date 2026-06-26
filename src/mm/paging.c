@@ -453,8 +453,8 @@ void init_paging() {
 }
 
 /**
- * alloc_kernel_stack - Allocate 2 PMM pages and map at KSTACK_VADDR_BASE + pid*8KB.
- * @pid: Task PID for slot selection (slot = pid * 2 PTEs).
+ * alloc_kernel_stack - Allocate 8 PMM pages and map at KSTACK_VADDR_BASE + pid*32KB.
+ * @pid: Task PID for slot selection (slot = pid * 8 PTEs).
  * @return: Stack base virtual address, or 0 on failure.
  *
  * Physical pages are PMM-allocated and their PTEs written into PDE 1023's
@@ -473,16 +473,16 @@ uint32_t alloc_kernel_stack(int pid)
         return 0;
 
     page_table_t* kstack_pt = (page_table_t*)PTE_PTR(KSTACK_PDE_IDX);
-    uint32_t slot_idx = pid * (KSTACK_SIZE / 4096);   /* pid * 2 */
+    uint32_t slot_idx = pid * (KSTACK_SIZE / 4096);   /* pid * 8 */
 
     /* Bail if slot already occupied */
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
         if (kstack_pt->pages[slot_idx + i].present)
             return 0;
     }
 
-    /* Allocate and map both 4KB pages */
-    for (int i = 0; i < 2; i++) {
+    /* Allocate and map all 4KB pages */
+    for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
         void* phys = pmm_alloc_block();
         if (!phys) {
             /* Roll back on failure */
@@ -505,11 +505,11 @@ uint32_t alloc_kernel_stack(int pid)
 }
 
 /**
- * free_kernel_stack - Unmap and free the 2 physical pages of a kernel stack.
+ * free_kernel_stack - Unmap and free the physical pages of a kernel stack.
  * @pid: Task PID of the stack to free.
  *
- * Clears both PTEs in PDE 1023's shared page table and returns the physical
- * pages to PMM.  Invalidates TLB entries for both pages.
+ * Clears all PTEs in PDE 1023's shared page table and returns the physical
+ * pages to PMM.  Invalidates TLB entries for all pages.
  */
 void free_kernel_stack(int pid)
 {
@@ -519,7 +519,7 @@ void free_kernel_stack(int pid)
     page_table_t* kstack_pt = (page_table_t*)PTE_PTR(KSTACK_PDE_IDX);
     uint32_t slot_idx = pid * (KSTACK_SIZE / 4096);
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
         if (kstack_pt->pages[slot_idx + i].present) {
             uint32_t phys = kstack_pt->pages[slot_idx + i].frame << 12;
             pmm_free_block((void*)phys);
@@ -527,9 +527,10 @@ void free_kernel_stack(int pid)
         }
     }
 
-    /* Flush TLB for both pages */
-    asm volatile("invlpg (%0)" :: "r"(KSTACK_VADDR_BASE + pid * KSTACK_SIZE));
-    asm volatile("invlpg (%0)" :: "r"(KSTACK_VADDR_BASE + pid * KSTACK_SIZE + 4096));
+    /* Flush TLB for all pages */
+    for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
+        asm volatile("invlpg (%0)" :: "r"(KSTACK_VADDR_BASE + pid * KSTACK_SIZE + i * 4096));
+    }
 }
 
 /**

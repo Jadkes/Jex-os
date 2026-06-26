@@ -1,6 +1,10 @@
 /**
  * @file editor.h
- * @brief Vim-like Text Editor (Vix) interface.
+ * @brief Vix 4.0 - Modern C Editor interface.
+ *
+ * External interface for the editor. The shell calls start_editor() to
+ * launch it; the keyboard input loop routes keys to editor_input() while
+ * editor_running is 1.
  */
 
 #ifndef EDITOR_H

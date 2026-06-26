@@ -1,9 +1,10 @@
-/**
+/*
  * @file shell.c
  * @brief Interactive Kernel Shell.
  *
- * Provides a command-line interface for the user to interact with the OS.
+ * Provides a cli interface for the user to interact with the OS.
  * Supports file management, program execution, and basic system control.
+ * And buggy as hell.
  */
 
 #include "shell.h"
@@ -1643,8 +1644,32 @@ void shell_init() {
 
 /**
  * @brief Shell main loop (handles serial bridge).
+ *
+ * PID 1 starts on the BSS stack (16 KB at 0x159000), which is too small
+ * for TCC inline compilation (cc command) — deep recursion in
+ * tcc_compile_string plus a 4 KB code_buffer overflows into BSS globals
+ * (current_task, ready_queue), corrupting them and causing a triple fault.
+ *
+ * We allocate a 128 KB stack from PMM (identity-mapped) and switch to it
+ * before entering the shell loop.  The BSS stack is abandoned — the old
+ * kernel_main frame stays there but is never revisited because shell_loop
+ * never returns.
  */
-void shell_main() {
+void shell_main(void) {
+    void *pstack = pmm_alloc_blocks(32);           /* 128 KB = 32 x 4 KB */
+    uint32_t new_esp;
+
+    if (pstack) {
+        new_esp = (uint32_t)pstack + (32 * 4096);  /* top of allocation  */
+        new_esp &= ~15;                              /* 16-byte alignment */
+
+        __asm__ volatile(
+            "movl %0, %%esp\n\t"
+            "movl %%esp, %%ebp\n\t"
+            :: "r"(new_esp) : "memory"
+        );
+    }
+
     shell_init();
     shell_loop();
 }

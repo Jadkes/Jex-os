@@ -181,7 +181,7 @@ void task_switch() {
     eip = current_task->eip;
 
     if (current_task->kstack) {
-        set_kernel_stack(current_task->kstack + 8192);
+        set_kernel_stack(current_task->kstack + KSTACK_SIZE);
     }
 
 

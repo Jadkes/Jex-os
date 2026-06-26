@@ -288,7 +288,7 @@ int execve_file(const char* filename, char** argv, char** envp)
             log_hex_serial(tss_entry.esp0);
             log_serial(" task.kstack_top=0x");
             if (current_task && current_task->kstack)
-                log_hex_serial(current_task->kstack + 8192);
+                log_hex_serial(current_task->kstack + KSTACK_SIZE);
             else
                 log_serial("NULL");
             log_serial(" pid=");

@@ -149,11 +149,11 @@ static inline void identity_unmap_frame(uint32_t phys) {
 
 /* Kernel stack virtual address base — PDE 1023, shared page table */
 #define KSTACK_VADDR_BASE  0xFFC00000u
-#define KSTACK_SIZE        8192
+#define KSTACK_SIZE        32768
 #define KSTACK_PDE_IDX     1023
 
 /**
- * alloc_kernel_stack - Allocate 8KB physical RAM and map as kernel stack.
+ * alloc_kernel_stack - Allocate 32KB physical RAM and map as kernel stack.
  * @pid: Task PID determines slot: KSTACK_VADDR_BASE + pid * KSTACK_SIZE.
  * @return: Stack base virtual address, or 0 on failure.
  */
