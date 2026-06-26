@@ -2,7 +2,7 @@
  * @file dump.c
  * @brief Hexdump memory utility — prints memory regions to the terminal.
  *
- * Purpose: Shell command for inspecting kernel memory at runtime.
+ * Shell command for inspecting kernel memory at runtime.
  *          Reads directly from virtual addresses; if the address is
  *          unmapped, the page fault handler will catch it.
  */

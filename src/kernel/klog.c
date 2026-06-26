@@ -2,7 +2,7 @@
  * @file klog.c
  * @brief Kernel Ring Buffer (klog) — captures all log_serial() output
  *
- * Purpose: Provides a 4 KB ring buffer that stores log output for later
+ * Provides a 4 KB ring buffer that stores log output for later
  *          retrieval via the dmesg command. All log_serial() calls feed
  *          into this buffer automatically.
  * Thread-safety: The buffer uses volatile for the write position, but is

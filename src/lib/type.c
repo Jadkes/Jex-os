@@ -2,8 +2,8 @@
  * @file type.c
  * @brief Type system implementation for TCC compiler.
  *
- * Purpose: Implement type creation, size calculation, and type checking.
- * Design: Simple factory functions for each type kind.
+ * Implement type creation, size calculation, and type checking.
+ * Simple factory functions for each type kind.
  * Thread-safety: Single-threaded compiler, no concurrency needed.
  */
 
@@ -12,8 +12,6 @@
 
 /**
  * type_create - Create a basic type (int, char, void).
- *
- * WHY: Factory function to create simple types with correct size.
  *
  * @param kind Type kind (TYPE_INT, TYPE_CHAR, TYPE_VOID).
  * @return Initialized type_t struct.
@@ -50,8 +48,6 @@ type_t type_create(type_kind_t kind) {
 /**
  * type_create_void - Create a void type.
  *
- * WHY: Convenience function to create void type with size=0.
- *
  * @return Void type with size=0.
  */
 type_t type_create_void(void) {
@@ -60,9 +56,6 @@ type_t type_create_void(void) {
 
 /**
  * type_create_ptr - Create a pointer type.
- *
- * WHY: Pointers have same size (4 bytes in 32-bit), but need base type for deref.
- *
  * @param base Base type that pointer points to.
  * @return Pointer type.
  */
@@ -77,9 +70,6 @@ type_t type_create_ptr(type_t* base) {
 
 /**
  * type_size - Get the size of a type in bytes.
- *
- * WHY: Used for stack allocation and sizeof operator.
- *
  * @param type Type to query.
  * @return Size in bytes.
  */
@@ -109,9 +99,6 @@ uint32_t type_size(type_t* type) {
 
 /**
  * type_compatible - Check if two types are compatible.
- *
- * WHY: Type checking for assignments and comparisons.
- *
  * @param a First type.
  * @param b Second type.
  * @return 1 if compatible, 0 otherwise.
@@ -136,9 +123,6 @@ int type_compatible(type_t* a, type_t* b) {
 
 /**
  * type_is_arithmetic - Check if a type is arithmetic (int or char).
- *
- * WHY: Used to determine if operators can be applied.
- *
  * @param type Type to check.
  * @return 1 if arithmetic, 0 otherwise.
  */
@@ -149,9 +133,6 @@ int type_is_arithmetic(type_t* type) {
 
 /**
  * type_is_pointer - Check if a type is a pointer.
- *
- * WHY: Used for pointer arithmetic and dereference.
- *
  * @param type Type to check.
  * @return 1 if pointer, 0 otherwise.
  */

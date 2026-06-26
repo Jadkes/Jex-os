@@ -22,7 +22,6 @@
 #include "terminal.h"
 #include <jexos/errno.h>
 
-/* ── jfs_memcmp replacement (kernel has no libc) ── */
 static inline int jfs_memcmp(const void *a, const void *b, uint32_t len) {
     const unsigned char *ca = (const unsigned char *)a;
     const unsigned char *cb = (const unsigned char *)b;
@@ -31,17 +30,12 @@ static inline int jfs_memcmp(const void *a, const void *b, uint32_t len) {
     return 0;
 }
 
-/* ── Global state ── */
 static struct jex_superblock sb;
 uint32_t cwd_inode = 1;
 
-/* ── Forward declarations ── */
 static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
                             const char *name, uint16_t name_len, uint8_t file_type);
 
-/* ═════════════════════════════════════════════════════════════════════════════
- * Block I/O
- * ═════════════════════════════════════════════════════════════════════════════ */
 
 void read_block(uint32_t block, uint8_t *buffer)
 {
@@ -54,10 +48,6 @@ void write_block(uint32_t block, const uint8_t *buffer)
     ide_write_sector(block * 2, buffer);
     ide_write_sector(block * 2 + 1, buffer + 512);
 }
-
-/* ═════════════════════════════════════════════════════════════════════════════
- * Bitmap allocator
- * ═════════════════════════════════════════════════════════════════════════════ */
 
 /**
  * jexfs_alloc_block -- Allocate a free data block from the bitmap.
@@ -122,10 +112,6 @@ static void jexfs_free_inode(uint32_t idx)
     write_block(sb.inode_bitmap_start, buf);
 }
 
-/* ═════════════════════════════════════════════════════════════════════════════
- * Inode I/O
- * ═════════════════════════════════════════════════════════════════════════════ */
-
 void jexfs_read_inode(uint32_t idx, struct jex_inode *inode)
 {
     if (idx >= sb.total_inodes) {
@@ -154,10 +140,6 @@ void jexfs_stat(int inode_idx, struct jex_inode *inode)
 {
     jexfs_read_inode((uint32_t)inode_idx, inode);
 }
-
-/* ═════════════════════════════════════════════════════════════════════════════
- * Logical -> physical block mapping
- * ═════════════════════════════════════════════════════════════════════════════ */
 
 /**
  * jexfs_bmap -- Translate logical block index to physical block number.
@@ -273,10 +255,6 @@ static int jexfs_bmap_alloc(struct jex_inode *inode, uint32_t lblock)
     return l2[i2];
 }
 
-/* ═════════════════════════════════════════════════════════════════════════════
- * Directory scanning
- * ═════════════════════════════════════════════════════════════════════════════ */
-
 /**
  * jexfs_find_entry -- Look up a name in a directory inode.
  * @return Inode index on success, -ENOENT if not found.
@@ -320,10 +298,6 @@ int jexfs_open(const char *name)
     if (name[0] == '\0') return 1;
     return jexfs_find_entry(dir, name, (uint16_t)strlen(name));
 }
-
-/* ═════════════════════════════════════════════════════════════════════════════
- * Read / Write
- * ═════════════════════════════════════════════════════════════════════════════ */
 
 int jexfs_read(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
 {
@@ -386,10 +360,6 @@ int jexfs_write(int inode_idx, const void *buffer,
     jexfs_write_inode((uint32_t)inode_idx, &inode);
     return (int)(size - remain);
 }
-
-/* ═════════════════════════════════════════════════════════════════════════════
- * File / Directory operations
- * ═════════════════════════════════════════════════════════════════════════════ */
 
 int jexfs_create(const char *name)
 {
@@ -541,8 +511,6 @@ write_entry:
     return 0;
 }
 
-/* ── Remove ── */
-
 int jexfs_remove(const char *name)
 {
     if (!name || name[0] == '\0') return -EINVAL;
@@ -614,8 +582,6 @@ not_found:
     return -ENOENT;
 }
 
-/* ── Rename ── */
-
 int jexfs_rename(const char *old_name, const char *new_name)
 {
     if (!old_name || !new_name) return -EINVAL;
@@ -675,10 +641,6 @@ int jexfs_get_size(int inode_idx)
     return (int)inode.size;
 }
 
-/* ═════════════════════════════════════════════════════════════════════════════
- * Directory listing (legacy -- new ls uses its own scanner)
- * ═════════════════════════════════════════════════════════════════════════════ */
-
 void jexfs_list_dir(uint32_t inode_idx)
 {
     struct jex_inode di;
@@ -715,10 +677,6 @@ next:
 list_end:
     terminal_writestring("\n");
 }
-
-/* ═════════════════════════════════════════════════════════════════════════════
- * Init
- * ═════════════════════════════════════════════════════════════════════════════ */
 
 void jexfs_init(void)
 {

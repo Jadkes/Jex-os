@@ -1258,7 +1258,6 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
  */
 uint32_t net_dns_resolve(const char* hostname)
 {
-    /* ---- Build the DNS query ---- */
     union {
         uint8_t  u8[512];
         uint16_t u16[256];
@@ -1512,7 +1511,6 @@ static void dhcp_send_msg(uint8_t msg_type, const uint8_t* our_mac,
     /* Option 255: END */
     opt_buf[opt_len++] = DHCP_OPT_END;
 
-    /* ---- Build the packet ---- */
     uint8_t* buf = send_buf;
     uint8_t* p   = buf;
 

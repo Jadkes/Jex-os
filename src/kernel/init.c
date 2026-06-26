@@ -2,12 +2,12 @@
  * @file init.c
  * @brief Initcall runner — iterates linker-collected init function pointers.
  *
- * Purpose: Provides the initcalls_run() entry point that walks the
+ * Provides the initcalls_run() entry point that walks the
  *          .early_initcalls and .device_initcalls sections, calling each
  *          registered init function.  Replaces the manual list of ~18 calls
  *          in kernel_main() with two automatic loops.
  *
- * Design:
+ *
  *   - Section boundaries are defined by the linker (__early_initcall_start,
  *     __early_initcall_end, __device_initcall_start, __device_initcall_end).
  *   - All initcalls within a section run in link order.

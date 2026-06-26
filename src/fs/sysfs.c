@@ -1,12 +1,12 @@
 /*
  * sysfs.c - Kernel state exported as virtual files under /sys/
  *
- * Purpose: Exposes kernel-inspection and tuning knobs as virtual files
+ * Exposes kernel-inspection and tuning knobs as virtual files
  *          mounted at /sys/.  Each file is backed by a pair of callbacks:
  *          .read() to produce content on-demand, and optionally .write()
  *          to accept input (e.g. changing log level).
  *
- * Design:
+ *:
  *   - Each file is registered via devtmpfs_add_file() from sysfs_init().
  *   - sysfs_init() runs as a device_initcall so the VFS and devtmpfs
  *     are already set up when it fires.
@@ -23,9 +23,6 @@
 #include "init.h"
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/*  /sys/kernel/version -- read only                                  */
-/* ------------------------------------------------------------------ */
 
 static int sys_read_version(char* buf, int max)
 {
@@ -37,9 +34,6 @@ static int sys_read_version(char* buf, int max)
     return len;
 }
 
-/* ------------------------------------------------------------------ */
-/*  /sys/kernel/loglevel -- read-write                                */
-/* ------------------------------------------------------------------ */
 
 static int sys_read_loglevel(char* buf, int max)
 {
@@ -57,10 +51,6 @@ static int sys_write_loglevel(const char* buf, int len)
     return len;
 }
 
-/* ------------------------------------------------------------------ */
-/*  /sys/kernel/network -- read-only placeholder                      */
-/* ------------------------------------------------------------------ */
-
 static int sys_read_network(char* buf, int max)
 {
     const char* info = "Network: active\n";
@@ -71,10 +61,6 @@ static int sys_read_network(char* buf, int max)
     return len;
 }
 
-/* ------------------------------------------------------------------ */
-/*  /sys/kernel/meminfo -- read-only placeholder                      */
-/* ------------------------------------------------------------------ */
-
 static int sys_read_meminfo(char* buf, int max)
 {
     const char* info = "Memory: available\n";
@@ -84,10 +70,6 @@ static int sys_read_meminfo(char* buf, int max)
     memcpy(buf, info, len);
     return len;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Initcall -- register all sysfs files                              */
-/* ------------------------------------------------------------------ */
 
 void sysfs_init(void)
 {

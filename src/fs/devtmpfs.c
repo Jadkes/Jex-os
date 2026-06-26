@@ -1,12 +1,11 @@
 /*
  * devtmpfs.c - Virtual filesystem backed by kernel callbacks
  *
- * Purpose: Provides a filesystem where every file is a thin shim over a
+ * Provides a filesystem where every file is a thin shim over a
  *          kernel callback.  Reads invoke the file's .read() to produce
  *          content on the fly; writes invoke its .write() to handle input.
  *          Used for /sys/ inspection files and, in future, /dev/ nodes.
  *
- * Design:
  *   - Fixed-size entry table (DEVTMFS_MAX_FILES) indexed by add order.
  *   - Each entry stores a path + devtmpfs_file callback table.
  *   - open() walks the table for a path match, allocates a slot from
@@ -22,9 +21,6 @@
 #include "devtmpfs.h"
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/*  Constants                                                          */
-/* ------------------------------------------------------------------ */
 
 #define DEVTMFS_MAX_FILES  32
 #define DEVTMFS_MAX_OPEN   8
@@ -36,9 +32,6 @@
  */
 #define VIRTUAL_FD_START   100
 
-/* ------------------------------------------------------------------ */
-/*  Entry table -- maps paths to callbacks                            */
-/* ------------------------------------------------------------------ */
 
 typedef struct {
     const char         *path;   /* Full virtual path, e.g. "/sys/kernel/version" */
@@ -48,9 +41,6 @@ typedef struct {
 static devtmpfs_entry_t entries[DEVTMFS_MAX_FILES];
 static int entry_count = 0;
 
-/* ------------------------------------------------------------------ */
-/*  Open-file table -- per-FD state                                   */
-/* ------------------------------------------------------------------ */
 
 typedef struct {
     int      used;       /* 1 = slot in use */
@@ -59,10 +49,6 @@ typedef struct {
 } devtmpfs_fd_t;
 
 static devtmpfs_fd_t open_files[DEVTMFS_MAX_OPEN];
-
-/* ------------------------------------------------------------------ */
-/*  Public API -- called by filesystem drivers during boot             */
-/* ------------------------------------------------------------------ */
 
 /**
  * devtmpfs_add_file - Register a virtual file.
@@ -92,10 +78,6 @@ int devtmpfs_init(void)
     /* All tables are BSS, already zeroed by the bootloader. */
     return 0;
 }
-
-/* ------------------------------------------------------------------ */
-/*  Public API -- called by the VFS dispatch layer (fs.c)             */
-/* ------------------------------------------------------------------ */
 
 /**
  * devtmpfs_open - Open a virtual file by path.
