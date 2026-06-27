@@ -113,7 +113,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **Slab Allocator**: Power-of-2 size classes, O(1) kfree, PMM fallback
 - [x] **Keyboard Buffering**: Ring buffer, no dropped keys under load
 - [x] **Signal Handling**: sys_signal/sys_kill, delivery in scheduler
-- [ ] **SMP / Multi-core**: Because one CPU is boring
+- [ ] **Single core optimisation**: Because a lot of cpu's means a lot of bugs, better rely on 1
 - [ ] **AHCI / SATA**: Faster disk I/O
 - [ ] **USB Keyboard/Mouse**: Beyond PS/2
 
