@@ -96,7 +96,8 @@ void shell_refresh_line() {
  * @brief Display the shell prompt.
  */
 void print_prompt() {
-    terminal_setcolor(0x0B); terminal_writestring("JexOS:~$ ");
+    terminal_setcolor(0x05);
+    terminal_writestring("JexOS:~$ ");
     terminal_setcolor(0x07);
 }
 
