@@ -58,6 +58,51 @@ void print_logo(void);
 #define MAX_FILENAME_SIZE 63
 #define MAX_OUTPUT_SIZE 63
 
+/* VGA text-mode color attribute values (foreground on black background).
+ * Attribute byte = (background << 4) | foreground; the constants below
+ * are the foreground nibble with background = 0 (black).
+ */
+#define VGA_COLOR_BLACK          0x00
+#define VGA_COLOR_BLUE           0x01
+#define VGA_COLOR_GREEN          0x02
+#define VGA_COLOR_CYAN           0x03
+#define VGA_COLOR_RED            0x04
+#define VGA_COLOR_MAGENTA        0x05
+#define VGA_COLOR_BROWN          0x06
+#define VGA_COLOR_LIGHT_GRAY     0x07
+#define VGA_COLOR_DARK_GRAY      0x08
+#define VGA_COLOR_LIGHT_BLUE     0x09
+#define VGA_COLOR_LIGHT_GREEN    0x0A
+#define VGA_COLOR_LIGHT_CYAN     0x0B
+#define VGA_COLOR_LIGHT_RED      0x0C
+#define VGA_COLOR_LIGHT_MAGENTA  0x0D
+#define VGA_COLOR_YELLOW         0x0E
+#define VGA_COLOR_WHITE          0x0F
+
+/* Shell UI constants */
+#define PROMPT_LEN          9
+#define SCREEN_COLS        80
+#define MORE_LINE_LIMIT    22
+
+/* Default QEMU gateway octets (10.0.2.2) */
+#define DEFAULT_GW_OCTETS  ((10 << 24) | (0 << 16) | (2 << 8) | 2)
+
+/* Timing intervals (timer runs at 100 Hz = 10 ms per tick) */
+#define ARP_TIMEOUT_TICKS     1000  /* ~10 seconds */
+#define PING_REPLY_TICKS       200  /* ~2 seconds */
+#define LOOPBACK_PING_TICKS    500  /* ~5 seconds */
+#define PING_DELAY_MS          100
+
+/* Capture defaults */
+#define TCPDUMP_DEFAULT_COUNT  5
+#define TCPDUMP_WAIT_TICKS    500
+
+/* Code compilation buffer */
+#define CODE_BUF_SIZE       4096
+
+/* Stack pages for shell main (32 * 4 KB = 128 KB) */
+#define STACK_PAGES          32
+
 /* Shell state variables */
 char shell_buffer[SHELL_BUFFER_SIZE];
 static char history[HIST_SIZE][256];
@@ -80,15 +125,15 @@ static const char* shell_commands[] = {
 /**
  * @brief Calculate the current prompt length.
  */
-int get_prompt_len() { return 9; } /* "JexOS:~$ " */
+int get_prompt_len() { return PROMPT_LEN; } /* "JexOS:~$ " */
 
 /**
  * @brief Redraw the current shell line.
  */
 void shell_refresh_line() {
     int prompt_len = get_prompt_len();
-    for (int i = prompt_len; i < 80; i++) terminal_putentryat(' ', 0x07, i, terminal_row);
-    for (int i = 0; i < buffer_len; i++) terminal_putentryat(shell_buffer[i], 0x07, prompt_len + i, terminal_row);
+    for (int i = prompt_len; i < SCREEN_COLS; i++) terminal_putentryat(' ', VGA_COLOR_LIGHT_GRAY, i, terminal_row);
+    for (int i = 0; i < buffer_len; i++) terminal_putentryat(shell_buffer[i], VGA_COLOR_LIGHT_GRAY, prompt_len + i, terminal_row);
     update_cursor(prompt_len + cursor_pos, terminal_row);
 }
 
@@ -96,9 +141,9 @@ void shell_refresh_line() {
  * @brief Display the shell prompt.
  */
 void print_prompt() {
-    terminal_setcolor(0x05);
+    terminal_setcolor(VGA_COLOR_MAGENTA);
     terminal_writestring("JexOS:~$ ");
-    terminal_setcolor(0x07);
+    terminal_setcolor(VGA_COLOR_LIGHT_GRAY);
 }
 
 /**
@@ -187,7 +232,7 @@ void shell_autocomplete() {
         terminal_writestring("\n");
         print_prompt();
         terminal_writestring(shell_buffer);
-        update_cursor(9 + cursor_pos, terminal_row);
+        update_cursor(PROMPT_LEN + cursor_pos, terminal_row);
     }
 }
 
@@ -310,13 +355,13 @@ static void ftrace_command(char* args)
  * @brief Display the JexOS ASCII logo.
  */
 void print_logo() {
-    terminal_setcolor(0x0B); 
+    terminal_setcolor(VGA_COLOR_LIGHT_CYAN);
     terminal_writestring("      _             ___  ____  \n");
     terminal_writestring("     | | _____  __ / _ \\ / ___| \n");
     terminal_writestring("  _  | |/ _ \\ \\/ /| | | \\___ \\ \n");
     terminal_writestring(" | |_| |  __/>  < | |_| |___) |\n");
     terminal_writestring("  \\___/ \\___/_/\\_\\ \\___/|____/ \n");
-    terminal_setcolor(0x07);
+    terminal_setcolor(VGA_COLOR_LIGHT_GRAY);
 }
 
 
