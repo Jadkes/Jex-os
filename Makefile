@@ -7,6 +7,7 @@
 #   run             Launch in QEMU (GUI)
 #   clean           Remove build artifacts
 #   distclean       Remove everything (incl. build directory)
+#   docs            Generate Doxygen HTML documentation
 #   iso             Build bootable GRUB ISO
 #   help            Show this help
 #
@@ -79,7 +80,6 @@ $(IMG): $(MKJEXFS) $(ROOTFS_FILES)
 	$(Q)printf "  IMG     $@\n"
 	$(Q)./$(MKJEXFS) $@ 4096
 
-## ── Compilation ──────────────────────────────────────────────
 $(OBJ_DIR)/%.o: src/%.c
 	$(Q)mkdir -p $(@D)
 	$(Q)printf "  CC      $<\n"
@@ -90,7 +90,7 @@ $(OBJ_DIR)/%.o: src/%.s
 	$(Q)printf "  AS      $<\n"
 	$(Q)$(AS) $(ASFLAGS) $< -o $@
 
-## ── Host tools ───────────────────────────────────────────────
+
 $(GEN_KS): tools/gen_kallsyms.c
 	$(Q)mkdir -p $(@D)
 	$(Q)printf "  HOSTCC $<\n"
@@ -101,7 +101,7 @@ $(MKJEXFS): tools/mkjexfs.c
 	$(Q)printf "  HOSTCC $<\n"
 	$(Q)$(HOSTCC) -o $@ $<
 
-## ── Bootable ISO ─────────────────────────────────────────────
+
 $(ISO): $(KERNEL) $(IMG)
 	$(Q)printf "  ISO     $@\n"
 	$(Q)mkdir -p iso/boot/grub
@@ -118,7 +118,12 @@ $(ISO): $(KERNEL) $(IMG)
 
 iso: $(ISO)
 
-## ── QEMU ─────────────────────────────────────────────────────
+
+docs:
+	$(Q)printf "  DOXYGEN\n"
+	$(Q)doxygen Doxyfile
+
+
 run: $(KERNEL) $(IMG)
 	$(Q)printf "  QEMU    %s\n" "$(QEMU)"
 	$(Q)$(QEMU) -kernel $(KERNEL) -hda $(IMG) -serial stdio \
@@ -126,7 +131,7 @@ run: $(KERNEL) $(IMG)
 	       -netdev user,id=net0,hostfwd=tcp::8080-:80 \
 	       -device rtl8139,netdev=net0
 
-## ── Cleanup ──────────────────────────────────────────────────
+
 clean:
 	$(Q)printf "  CLEAN\n"
 	rm -rf $(BUILD) $(KERNEL) $(IMG) $(ISO) $(KALLSYMS_S) iso/
@@ -135,7 +140,7 @@ distclean: clean
 	$(Q)printf "  DISTCLEAN\n"
 	rm -rf iso/
 
-## ── Help ─────────────────────────────────────────────────────
+
 help:
 	@echo "JexOS Build System"
 	@echo ""
@@ -143,6 +148,7 @@ help:
 	@echo "  make              Build kernel + disk image"
 	@echo "  make run          Launch in QEMU (GUI)"
 	@echo "  make iso          Build GRUB bootable ISO"
+	@echo "  make docs         Generate HTML docs via Doxygen"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
 	@echo ""
@@ -153,4 +159,4 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run clean distclean iso help
+.PHONY: all run clean distclean iso docs help
