@@ -123,6 +123,9 @@ docs:
 	$(Q)printf "  DOXYGEN\n"
 	$(Q)doxygen Doxyfile
 
+docs-run: docs
+	$(Q)printf "  SERVE   http://localhost:8000\n"
+	$(Q)cd docs/html && python3 -m http.server 8000
 
 run: $(KERNEL) $(IMG)
 	$(Q)printf "  QEMU    %s\n" "$(QEMU)"
@@ -147,8 +150,9 @@ help:
 	@echo "Targets:"
 	@echo "  make              Build kernel + disk image"
 	@echo "  make run          Launch in QEMU (GUI)"
-	@echo "  make iso          Build GRUB bootable ISO"
 	@echo "  make docs         Generate HTML docs via Doxygen"
+	@echo "  make docs-run     Generate docs + serve at :8000"
+	@echo "  make iso          Build GRUB bootable ISO"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
 	@echo ""
@@ -159,4 +163,4 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run clean distclean iso docs help
+.PHONY: all run clean distclean iso docs docs-run help
