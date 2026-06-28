@@ -141,7 +141,7 @@ void shell_refresh_line() {
  * @brief Display the shell prompt.
  */
 void print_prompt() {
-    terminal_setcolor(VGA_COLOR_MAGENTA);
+    terminal_setcolor(VGA_COLOR_LIGHT_CYAN);
     terminal_writestring("JexOS:~$ ");
     terminal_setcolor(VGA_COLOR_LIGHT_GRAY);
 }
