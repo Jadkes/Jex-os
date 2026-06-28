@@ -18,7 +18,7 @@ a.out
 serial.log
 serial_*.log
 core
-
+rootfs/
 # Test artifacts
 vga_*.bin
 slowloris_test.*
