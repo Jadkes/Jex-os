@@ -20,10 +20,12 @@ CC        = gcc
 AS        = as
 LD        = ld
 HOSTCC    = gcc
+OBJCOPY   = objcopy
+NM        = nm
 QEMU      = qemu-system-i386
 
 ## Architecture 
-CFLAGS    = -m32 -ffreestanding -std=gnu99 -fno-pie
+CFLAGS    = -m32 -march=i386 -ffreestanding -std=gnu99 -fno-pie -fno-stack-protector
 CFLAGS   += -O2 -Wall -Wextra
 CFLAGS   += -fno-omit-frame-pointer
 CFLAGS   += -Isrc/include -Isrc/tests
@@ -41,10 +43,14 @@ IMG       = jexos.img
 ISO       = jexos.iso
 BUILD     = build
 OBJ_DIR   = $(BUILD)/obj
+BOOT_IMG  = jexos.boot.img
+BOOTSECT  = $(BUILD)/bootsect.bin
+LOADER    = $(BUILD)/loader.bin
+LOADER_ELF = $(BUILD)/loader.elf
 
 ## Source discovery
 SRC_C     = $(shell find src -name '*.c' ! -path '*/lib/type.c')
-SRC_S     = $(shell find src/arch -name '*.s')
+SRC_S     = $(shell find src/arch -name '*.s' ! -name 'bootsect.s' ! -name 'loader.s')
 OBJECTS   = $(patsubst src/%.c, $(OBJ_DIR)/%.o, $(SRC_C)) \
             $(patsubst src/%.s, $(OBJ_DIR)/%.o, $(SRC_S))
 
@@ -60,8 +66,9 @@ KALLSYMS_S = src/kernel/kallsyms_data.S
 ROOTFS_FILES = $(wildcard rootfs/*)
 
 
-Q         = @
-ifneq ($(V),1)
+ifeq ($(V),1)
+Q         =
+else
 Q         = @
 endif
  
@@ -119,6 +126,56 @@ $(ISO): $(KERNEL) $(IMG)
 iso: $(ISO)
 
 
+## Boot image (native boot, no GRUB)
+
+$(BOOTSECT): src/arch/i386/bootsect.s
+	$(Q)mkdir -p $(BUILD)
+	$(Q)printf "  AS      $<\n"
+	$(Q)$(AS) $(ASFLAGS) $< -o $(BUILD)/bootsect.o
+	$(Q)$(LD) -m elf_i386 -Ttext=0x7C00 -N -nostdlib $(BUILD)/bootsect.o -o $(BUILD)/bootsect.elf
+	$(Q)$(OBJCOPY) --remove-section=.note.gnu.property -O binary $(BUILD)/bootsect.elf $@
+
+$(LOADER): src/arch/i386/loader.s src/arch/i386/loader_defs.h
+	$(Q)mkdir -p $(BUILD)
+	$(Q)printf "  AS      $<\n"
+	$(Q)$(AS) $(ASFLAGS) -Isrc/arch/i386 $< -o $(BUILD)/loader.o
+	$(Q)$(LD) -m elf_i386 -Ttext=0x7E00 -N -nostdlib $(BUILD)/loader.o -o $(LOADER_ELF)
+	$(Q)$(OBJCOPY) --remove-section=.note.gnu.property -O binary $(LOADER_ELF) $@
+
+$(BOOT_IMG): $(BOOTSECT) $(LOADER) $(KERNEL)
+	$(Q)printf "  BOOTIMG $@\n"
+	$(Q)                                                                    \
+	LOADER_SECTORS=$$(( ( $$(wc -c < $(LOADER)) + 511) / 512 ));             \
+	KERNEL_BYTES=$$(wc -c < $(KERNEL));                                       \
+	KERNEL_SECTORS=$$(( (KERNEL_BYTES + 511) / 512 ));                        \
+	KERNEL_LBA=$$(( LOADER_SECTORS + 1 ));                                    \
+	BD=$$(dirname $(LOADER));                                                  \
+	TOTAL_SECTORS=$$(( 1 + LOADER_SECTORS + KERNEL_SECTORS ));                 \
+	dd if=/dev/zero of=$@ bs=512 count=$$TOTAL_SECTORS 2>/dev/null;            \
+	BS_OFF=$$(( 0x$$($(NM) $$BD/bootsect.elf | grep ' dap_sectors$$' |       \
+		cut -d' ' -f1) - 0x7C00 ));                                          \
+	python3 -c "import struct; f=open('$(BOOTSECT)','r+b'); f.seek($$BS_OFF); f.write(struct.pack('<H',$$LOADER_SECTORS)); f.close()"; \
+	dd if=$(BOOTSECT) of=$@ bs=512 count=1 conv=notrunc 2>/dev/null;           \
+	LD_OFF=$$(( 0x$$($(NM) $(LOADER_ELF) | grep ' kernel_dap_sectors$$' |     \
+		cut -d' ' -f1) - 0x7E00 ));                                          \
+	python3 -c "import struct; f=open('$(LOADER)','r+b'); f.seek($$LD_OFF); f.write(struct.pack('<H',$$KERNEL_SECTORS)); f.close()"; \
+	L0_OFF=$$(( 0x$$($(NM) $(LOADER_ELF) | grep ' kernel_dap_lba_0$$' |      \
+		cut -d' ' -f1) - 0x7E00 ));                                          \
+	python3 -c "import struct; f=open('$(LOADER)','r+b'); f.seek($$L0_OFF); f.write(struct.pack('<H',$$KERNEL_LBA & 0xFFFF)); f.close()"; \
+	L2_OFF=$$(( 0x$$($(NM) $(LOADER_ELF) | grep ' kernel_dap_lba_2$$' |      \
+		cut -d' ' -f1) - 0x7E00 ));                                          \
+	python3 -c "import struct; f=open('$(LOADER)','r+b'); f.seek($$L2_OFF); f.write(struct.pack('<H',($$KERNEL_LBA >> 16) & 0xFFFF)); f.close()"; \
+	dd if=$(LOADER) of=$@ bs=512 count=1 seek=1 conv=notrunc 2>/dev/null;      \
+	dd if=$(KERNEL) of=$@ bs=512 seek=$$KERNEL_LBA conv=notrunc 2>/dev/null
+
+boot: $(BOOT_IMG)
+	$(Q)printf "  QEMU    %s (native boot)\n" "$(QEMU)"
+	$(Q)$(QEMU) -hda $(BOOT_IMG) -hdb $(IMG) -serial stdio \
+	       -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 \
+	       -netdev user,id=net0,hostfwd=tcp::8080-:80 \
+	       -device rtl8139,netdev=net0
+
+
 docs:
 	$(Q)printf "  DOXYGEN\n"
 	$(Q)doxygen Doxyfile
@@ -137,7 +194,7 @@ run: $(KERNEL) $(IMG)
 
 clean:
 	$(Q)printf "  CLEAN\n"
-	rm -rf $(BUILD) $(KERNEL) $(IMG) $(ISO) $(KALLSYMS_S) iso/
+	rm -rf $(BUILD) $(KERNEL) $(IMG) $(ISO) $(KALLSYMS_S) $(BOOT_IMG) iso/
 
 distclean: clean
 	$(Q)printf "  DISTCLEAN\n"
@@ -153,6 +210,7 @@ help:
 	@echo "  make docs         Generate HTML docs via Doxygen"
 	@echo "  make docs-run     Generate docs + serve at :8000"
 	@echo "  make iso          Build GRUB bootable ISO"
+	@echo "  make boot         Native boot via custom bootloader"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
 	@echo ""
@@ -163,4 +221,4 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run clean distclean iso docs docs-run help
+.PHONY: all run clean distclean iso docs docs-run boot help
