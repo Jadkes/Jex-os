@@ -17,16 +17,22 @@
 extern void* memset(void* s, int c, size_t n);
 
 /**
- * @brief Memory Management configuration.
- * Currently limited to 128MB for simplicity and to keep the bitmap at 4KB.
- * 
- * 128MB / 4KB per block = 32768 blocks.
- * 32768 blocks / 8 blocks per byte = 4096 bytes (4KB) for the bitmap.
+ * @brief Physical memory configuration.
+ *
+ * The bitmap spans the full 32-bit physical address space (4GB), so the
+ * PMM can manage whatever RAM the bootloader reports — there is no
+ * hardcoded 128MB cap.  Only frames actually listed as available by the
+ * multiboot memory map are freed for allocation; everything else stays
+ * reserved.
+ *
+ * 4GB / 4KB per block = 1048576 blocks.
+ * 1048576 blocks / 8 blocks per byte = 131072 bytes (128KB) for the bitmap.
  */
-#define RAM_SIZE_MB 128
+#define FALLBACK_RAM_MB 128
 #define BLOCKS_PER_BYTE 8
 #define BLOCK_SIZE 4096
-#define TOTAL_BLOCKS (RAM_SIZE_MB * 1024 * 1024 / BLOCK_SIZE)
+#define MAX_PHYS_BYTES 0x100000000ULL        /* full 32-bit address space */
+#define TOTAL_BLOCKS (MAX_PHYS_BYTES / BLOCK_SIZE)
 #define BITMAP_SIZE (TOTAL_BLOCKS / BLOCKS_PER_BYTE)
 
 /*
@@ -165,14 +171,28 @@ void pmm_init(multiboot_info_t* mboot_info) {
         }
     }
 
-    /* Fallback: if the multiboot memory map wasn't provided or freed nothing,
-     * assume the configured RAM_SIZE_MB is correct and free blocks above 2MB.
-     * This is needed because QEMU -kernel boot doesn't always provide a memory map. */
+    /* Fallback: if the memory map freed nothing, fall back to the
+     * multiboot mem_lower/mem_upper fields (bit 0), then to
+     * FALLBACK_RAM_MB.  Covers bootloaders that report memory info
+     * without an mmap (our custom stage-2 loader) and ones that report
+     * neither. */
     if (used_blocks == TOTAL_BLOCKS) {
-        pr_info("no memory map from bootloader, assuming %dMB RAM\n",
-                RAM_SIZE_MB);
+        uint64_t avail_bytes;
+        if (mboot_info->flags & (1 << 0)) {
+            uint32_t avail_kb = mboot_info->mem_lower + mboot_info->mem_upper;
+            pr_info("no mmap, using multiboot mem info (%u KB)\n", avail_kb);
+            avail_bytes = (uint64_t)avail_kb * 1024;
+        } else {
+            pr_info("no memory map from bootloader, assuming %dMB RAM\n",
+                    FALLBACK_RAM_MB);
+            avail_bytes = (uint64_t)FALLBACK_RAM_MB * 1024 * 1024;
+        }
+
         uint32_t start_free = (2 * 1024 * 1024) / BLOCK_SIZE;  /* frame 512 */
-        for (uint32_t i = start_free; i < TOTAL_BLOCKS; i++) {
+        uint32_t end_free = (uint32_t)(avail_bytes / BLOCK_SIZE);
+        if (end_free > TOTAL_BLOCKS)
+            end_free = TOTAL_BLOCKS;
+        for (uint32_t i = start_free; i < end_free; i++) {
             if (bitmap_test(i)) {
                 bitmap_unset(i);
                 used_blocks--;
