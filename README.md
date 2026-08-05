@@ -1,6 +1,6 @@
 # JexOS
 
-A 32-bit x86 hobby OS written from scratch: GRUB-multiboot, freestanding C,
+A 32-bit x86 hobby OS written from scratch: freestanding C,
 a full network stack, multitasking, a persistent filesystem, and a
 self-hosting TCC compiler.
 
