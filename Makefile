@@ -3,8 +3,9 @@
 # Makefile - JexOS build system
 #
 # Targets:
-#   all             Build kernel + disk image (default)
-#   run             Launch in QEMU (GUI)
+#   all             Build kernel + disk image + boot image (default)
+#   run             Boot in QEMU via the custom bootloader (GUI)
+#   boot            Alias for run
 #   clean           Remove build artifacts
 #   distclean       Remove everything (incl. build directory)
 #   docs            Generate Doxygen HTML documentation
@@ -22,7 +23,14 @@ LD        = ld
 HOSTCC    = gcc
 OBJCOPY   = objcopy
 NM        = nm
+PYTHON    = python3
 QEMU      = qemu-system-i386
+
+## QEMU options shared by all run targets
+QEMU_OPTS = -serial stdio \
+            -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 \
+            -netdev user,id=net0,hostfwd=tcp::8080-:80 \
+            -device rtl8139,netdev=net0
 
 ## Architecture 
 CFLAGS    = -m32 -march=i386 -ffreestanding -std=gnu99 -fno-pie -fno-stack-protector
@@ -72,7 +80,7 @@ else
 Q         = @
 endif
  
-all: $(KERNEL) $(IMG)
+all: $(KERNEL) $(IMG) $(BOOT_IMG)
 
 $(KERNEL): $(OBJECTS) $(GEN_KS)
 	$(Q)printf "  LD      $@\n"
@@ -142,38 +150,21 @@ $(LOADER): src/arch/i386/loader.s src/arch/i386/loader_defs.h
 	$(Q)$(LD) -m elf_i386 -Ttext=0x7E00 -N -nostdlib $(BUILD)/loader.o -o $(LOADER_ELF)
 	$(Q)$(OBJCOPY) --remove-section=.note.gnu.property -O binary $(LOADER_ELF) $@
 
+# mkbootimg.py patches the loader/bootsect DAP fields with the actual
+# kernel size/LBA and lays the sectors out (see its docstring).
 $(BOOT_IMG): $(BOOTSECT) $(LOADER) $(KERNEL)
 	$(Q)printf "  BOOTIMG $@\n"
-	$(Q)                                                                    \
-	LOADER_SECTORS=$$(( ( $$(wc -c < $(LOADER)) + 511) / 512 ));             \
-	KERNEL_BYTES=$$(wc -c < $(KERNEL));                                       \
-	KERNEL_SECTORS=$$(( (KERNEL_BYTES + 511) / 512 ));                        \
-	KERNEL_LBA=$$(( LOADER_SECTORS + 1 ));                                    \
-	BD=$$(dirname $(LOADER));                                                  \
-	TOTAL_SECTORS=$$(( 1 + LOADER_SECTORS + KERNEL_SECTORS ));                 \
-	dd if=/dev/zero of=$@ bs=512 count=$$TOTAL_SECTORS 2>/dev/null;            \
-	BS_OFF=$$(( 0x$$($(NM) $$BD/bootsect.elf | grep ' dap_sectors$$' |       \
-		cut -d' ' -f1) - 0x7C00 ));                                          \
-	python3 -c "import struct; f=open('$(BOOTSECT)','r+b'); f.seek($$BS_OFF); f.write(struct.pack('<H',$$LOADER_SECTORS)); f.close()"; \
-	dd if=$(BOOTSECT) of=$@ bs=512 count=1 conv=notrunc 2>/dev/null;           \
-	LD_OFF=$$(( 0x$$($(NM) $(LOADER_ELF) | grep ' kernel_dap_sectors$$' |     \
-		cut -d' ' -f1) - 0x7E00 ));                                          \
-	python3 -c "import struct; f=open('$(LOADER)','r+b'); f.seek($$LD_OFF); f.write(struct.pack('<H',$$KERNEL_SECTORS)); f.close()"; \
-	L0_OFF=$$(( 0x$$($(NM) $(LOADER_ELF) | grep ' kernel_dap_lba_0$$' |      \
-		cut -d' ' -f1) - 0x7E00 ));                                          \
-	python3 -c "import struct; f=open('$(LOADER)','r+b'); f.seek($$L0_OFF); f.write(struct.pack('<H',$$KERNEL_LBA & 0xFFFF)); f.close()"; \
-	L2_OFF=$$(( 0x$$($(NM) $(LOADER_ELF) | grep ' kernel_dap_lba_2$$' |      \
-		cut -d' ' -f1) - 0x7E00 ));                                          \
-	python3 -c "import struct; f=open('$(LOADER)','r+b'); f.seek($$L2_OFF); f.write(struct.pack('<H',($$KERNEL_LBA >> 16) & 0xFFFF)); f.close()"; \
-	dd if=$(LOADER) of=$@ bs=512 count=1 seek=1 conv=notrunc 2>/dev/null;      \
-	dd if=$(KERNEL) of=$@ bs=512 seek=$$KERNEL_LBA conv=notrunc 2>/dev/null
+	$(Q)$(PYTHON) tools/mkbootimg.py \
+		--bootsect $(BOOTSECT) --bootsect-elf $(BUILD)/bootsect.elf \
+		--loader $(LOADER) --loader-elf $(LOADER_ELF) \
+		--kernel $(KERNEL) --output $@
 
-boot: $(BOOT_IMG)
+run: $(BOOT_IMG) $(IMG)
 	$(Q)printf "  QEMU    %s (native boot)\n" "$(QEMU)"
-	$(Q)$(QEMU) -hda $(BOOT_IMG) -hdb $(IMG) -serial stdio \
-	       -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 \
-	       -netdev user,id=net0,hostfwd=tcp::8080-:80 \
-	       -device rtl8139,netdev=net0
+	$(Q)$(QEMU) -hda $(BOOT_IMG) -hdb $(IMG) $(QEMU_OPTS)
+
+# Backwards-compatible alias
+boot: run
 
 
 docs:
@@ -183,13 +174,6 @@ docs:
 docs-run: docs
 	$(Q)printf "  SERVE   http://localhost:8000\n"
 	$(Q)cd docs/html && python3 -m http.server 8000
-
-run: $(KERNEL) $(IMG)
-	$(Q)printf "  QEMU    %s\n" "$(QEMU)"
-	$(Q)$(QEMU) -kernel $(KERNEL) -hda $(IMG) -serial stdio \
-	       -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 \
-	       -netdev user,id=net0,hostfwd=tcp::8080-:80 \
-	       -device rtl8139,netdev=net0
 
 
 clean:
@@ -205,12 +189,12 @@ help:
 	@echo "JexOS Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  make              Build kernel + disk image"
-	@echo "  make run          Launch in QEMU (GUI)"
+	@echo "  make              Build kernel + disk + boot image"
+	@echo "  make run          Boot in QEMU via custom bootloader (GUI)"
+	@echo "  make boot         Alias for run"
 	@echo "  make docs         Generate HTML docs via Doxygen"
 	@echo "  make docs-run     Generate docs + serve at :8000"
 	@echo "  make iso          Build GRUB bootable ISO"
-	@echo "  make boot         Native boot via custom bootloader"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
 	@echo ""
