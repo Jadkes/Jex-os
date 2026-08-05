@@ -2,8 +2,6 @@
  * loader_defs.h - Shared constants for the stage-2 bootloader
  *
  * These are consumed by loader.s as assembly .equ directives.
- * The Makefile patches KERNEL_SECTORS and the LBA fields in the
- * flat binary after linking, so the values here are placeholders.
  *
  * NOTE: this file is NOT a C header — it is #included by GAS.
  *       Keep it to .equ / comments only.
@@ -14,13 +12,12 @@
 .equ KERNEL_SEGMENT,    0x1000     /* segment = buffer / 16            */
 
 /*
- * KERNEL_SECTORS and KERNEL_LBA_{LOW,HIGH} are placeholder defaults.
- * The Makefile patches the corresponding labels in loader.s via
- * objcopy --update-section or a hex-patch step at build time.
+ * The kernel's sector count and LBA are NOT constants here: the Makefile
+ * patches kernel_dap_sectors / kernel_dap_lba_{0,2} in loader.s at build
+ * time, and loader.s seeds its loop registers from those patched fields.
+ * Never reintroduce LBA/count placeholders here — stale values were the
+ * cause of reads past the end of the boot image.
  */
-.equ KERNEL_SECTORS,    376        /* ceil(188 KB / 512)  — placeholder */
-.equ KERNEL_LBA_LOW,    8          /* stage 2 fits in 8 sectors        */
-.equ KERNEL_LBA_HIGH,   0
 
 /* ─── Multiboot info structure layout ──────────────────────────────── */
 .equ MBI_ADDR,          0x60A      /* free conventional mem (above BDA) */

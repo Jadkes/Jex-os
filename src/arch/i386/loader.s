@@ -16,11 +16,12 @@
  *     - (We never return.)
  *
  * Disk layout (after bootsect):
- *   Sectors 1-7:   loader (this file)      — stage 2
- *   Sectors 8+:    jexos.bin               — kernel ELF
+ *   Sector 0:     bootsect.bin         — stage 1
+ *   Sectors 1-L:  loader.bin           — stage 2 (L = LOADER_SECTORS)
+ *   Sectors L+1+: jexos.bin            — kernel ELF
  *
- * Constants marked MAY_BE_PATCHED are overwritten by the Makefile
- * with the actual kernel size / LBA at link time.
+ * The Makefile computes L and the kernel's sector count / LBA at build
+ * time and patches kernel_dap_{sectors,lba_0,lba_2} below accordingly.
  */
 
 .include "loader_defs.h"          /* shared defines */
@@ -43,10 +44,14 @@ loader_start:
     movw   $0x7E00, %sp
 
     /* ─── Load kernel from disk (batched LBA reads) ────────────── */
-    movw   $KERNEL_LBA_LOW,  %di   /* LBA low word */
-    movw   $KERNEL_LBA_HIGH, %si   /* LBA high word */
-    movw   $KERNEL_SEGMENT,  %bx   /* buffer segment (0x1000) */
-    movw   $KERNEL_SECTORS,  %cx   /* total sectors remaining */
+    /* Seed registers from the DAP fields: the Makefile patches
+     * kernel_dap_{sectors,lba_0,lba_2} with the real values at build
+     * time.  Using the placeholder equates instead would read from the
+     * wrong LBA with the wrong count. */
+    movw   kernel_dap_sectors, %cx   /* total sectors remaining (patched) */
+    movw   kernel_dap_lba_0,   %di   /* LBA low word (patched) */
+    movw   kernel_dap_lba_2,   %si   /* LBA high word (patched) */
+    movw   $KERNEL_SEGMENT,    %bx   /* buffer segment (0x1000) */
 
 .L_kload:
     /* How many sectors for this batch?  Cap at 127 for BIOS compat. */
@@ -64,9 +69,11 @@ loader_start:
     movw   %si,      kernel_dap_lba_2
     movl   $0,       kernel_dap_lba_4   /* upper 32 bits of LBA = 0 */
 
-    /* Call INT 13h AH=42h */
+    /* Call INT 13h AH=42h.  Restore the boot drive explicitly: BIOS calls
+     * may clobber DL, and we still need it for every batch read. */
     pushal
     movw   $kernel_dap, %si
+    movb   drive_number, %dl
     movb   $0x42, %ah
     int    $0x13
     jc     disk_error
