@@ -25,15 +25,19 @@ self-hosting TCC compiler.
 ## Build & Run
 
 ```bash
-make          # build kernel + disk + boot image
-make run      # boot in QEMU via the custom bootloader (GUI)
-make iso      # build a GRUB bootable ISO
+make              # build kernel + disk + boot image
+make run          # boot in QEMU via GRUB (default)
+make run-native   # boot via the custom two-stage bootloader
+make iso          # build the GRUB ISO only
 ```
 
-The kernel boots from a raw disk image through JexOS's own two-stage
-bootloader (BIOS → bootsect → loader → protected mode), no GRUB required.
+Boots with GRUB by default, which gives the kernel a proper memory map
+and keeps the JexFS data disk on hda. `make run-native` instead boots
+through JexOS's own stage-1/stage-2 bootloader
+(BIOS → bootsect → loader → protected mode).
 
-Requires `gcc` (i386), `binutils`, `python3`, and `qemu-system-i386`.
+Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
+`qemu-system-i386`.
 
 ## Roadmap
 

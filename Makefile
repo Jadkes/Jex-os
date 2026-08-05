@@ -4,8 +4,9 @@
 #
 # Targets:
 #   all             Build kernel + disk image + boot image (default)
-#   run             Boot in QEMU via the custom bootloader (GUI)
-#   boot            Alias for run
+#   run             Boot in QEMU via GRUB (GUI) [default]
+#   run-native      Boot in QEMU via the custom stage-1/2 bootloader
+#   boot            Alias for run-native
 #   clean           Remove build artifacts
 #   distclean       Remove everything (incl. build directory)
 #   docs            Generate Doxygen HTML documentation
@@ -159,12 +160,21 @@ $(BOOT_IMG): $(BOOTSECT) $(LOADER) $(KERNEL)
 		--loader $(LOADER) --loader-elf $(LOADER_ELF) \
 		--kernel $(KERNEL) --output $@
 
-run: $(BOOT_IMG) $(IMG)
-	$(Q)printf "  QEMU    %s (native boot)\n" "$(QEMU)"
+# Default boot path: GRUB ISO.  GRUB hands the kernel a real e820 memory
+# map (the custom loader only fakes mem_lower/mem_upper) and lets the
+# JexFS data disk live on hda, which the native bootloader cannot do
+# because boot.img needs hda for itself.
+run: $(ISO) $(IMG)
+	$(Q)printf "  QEMU    %s (GRUB ISO)\n" "$(QEMU)"
+	$(Q)$(QEMU) -cdrom $(ISO) -hda $(IMG) $(QEMU_OPTS)
+
+# Fallback: boot through the custom stage-1/stage-2 bootloader.
+run-native: $(BOOT_IMG) $(IMG)
+	$(Q)printf "  QEMU    %s (native bootloader)\n" "$(QEMU)"
 	$(Q)$(QEMU) -hda $(BOOT_IMG) -hdb $(IMG) $(QEMU_OPTS)
 
 # Backwards-compatible alias
-boot: run
+boot: run-native
 
 
 docs:
@@ -190,8 +200,9 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  make              Build kernel + disk + boot image"
-	@echo "  make run          Boot in QEMU via custom bootloader (GUI)"
-	@echo "  make boot         Alias for run"
+	@echo "  make run          Boot in QEMU via GRUB (GUI)"
+	@echo "  make run-native   Boot via the custom bootloader"
+	@echo "  make boot         Alias for run-native"
 	@echo "  make docs         Generate HTML docs via Doxygen"
 	@echo "  make docs-run     Generate docs + serve at :8000"
 	@echo "  make iso          Build GRUB bootable ISO"
@@ -205,4 +216,4 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run clean distclean iso docs docs-run boot help
+.PHONY: all run run-native clean distclean iso docs docs-run boot help
