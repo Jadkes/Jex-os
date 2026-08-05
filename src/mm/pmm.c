@@ -48,6 +48,11 @@ uint8_t pmm_bitmap[BITMAP_SIZE] __attribute__((aligned(4)));
 uint32_t used_blocks = 0;
 uint32_t max_blocks = TOTAL_BLOCKS;
 
+/* Actual RAM detected from the bootloader (mmap, mem info, or fallback).
+ * The bitmap spans 4GB of address space, so this is what 'free' reports
+ * as total rather than the address-space span. */
+static uint32_t total_mem_bytes = FALLBACK_RAM_MB * 1024 * 1024;
+
 /**
  * @brief Mark a physical block as used in the bitmap.
  * @param bit The frame number (block index).
@@ -142,6 +147,9 @@ void pmm_init(multiboot_info_t* mboot_info) {
     memset(pmm_bitmap, 0xFF, BITMAP_SIZE);
     used_blocks = TOTAL_BLOCKS;
 
+    /* Bytes of RAM the bootloader says is available. */
+    uint64_t avail_bytes = 0;
+
     /* Process the Memory Map provided by the bootloader (e.g., GRUB) */
     if (mboot_info->flags & (1 << 6)) {
         multiboot_memory_map_t* mmap = (multiboot_memory_map_t*)mboot_info->mmap_addr;
@@ -151,6 +159,8 @@ void pmm_init(multiboot_info_t* mboot_info) {
             if (mmap->type == 1) {
                 uint64_t addr = mmap->addr;
                 uint64_t len = mmap->len;
+
+                avail_bytes += len;
 
                 /* Mark these ranges as free in our bitmap */
                 for (uint64_t i = 0; i < len; i += BLOCK_SIZE) {
@@ -177,7 +187,6 @@ void pmm_init(multiboot_info_t* mboot_info) {
      * without an mmap (our custom stage-2 loader) and ones that report
      * neither. */
     if (used_blocks == TOTAL_BLOCKS) {
-        uint64_t avail_bytes;
         if (mboot_info->flags & (1 << 0)) {
             uint32_t avail_kb = mboot_info->mem_lower + mboot_info->mem_upper;
             pr_info("no mmap, using multiboot mem info (%u KB)\n", avail_kb);
@@ -199,6 +208,8 @@ void pmm_init(multiboot_info_t* mboot_info) {
             }
         }
     }
+
+    total_mem_bytes = (uint32_t)(avail_bytes > 0xFFFFFFFFULL ? 0xFFFFFFFFULL : avail_bytes);
 
     /**
      * @brief Kernel Reservation.
@@ -289,11 +300,13 @@ uint32_t pmm_get_free_memory() {
 }
 
 uint32_t pmm_get_used_memory() {
-    return used_blocks * BLOCK_SIZE;
+    uint32_t total = pmm_get_total_memory();
+    uint32_t free = pmm_get_free_memory();
+    return free < total ? total - free : 0;
 }
 
 uint32_t pmm_get_total_memory() {
-    return max_blocks * BLOCK_SIZE;
+    return total_mem_bytes;
 }
 
 /* Initcall wrapper: pmm_init needs mboot info passed via globals */
