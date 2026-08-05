@@ -230,9 +230,12 @@ pm_entry:
     xorl   %eax, %eax
     rep    stosb                    /* zero-fill the structure */
 
-    movl   $0x00000001, MBI_FLAGS_OFF   /* flags: bit 0 = mem info valid */
-    movl   $639,        MBI_MEM_LOW     /* mem_lower = 639 KB  */
-    movl   $130048,     MBI_MEM_HIGH    /* mem_upper = 127 MB (128 MB total) */
+    /* These are OFFSETS into the structure, so add MBI_ADDR: writing the
+     * bare offsets previously clobbered physical 0x0-0xB (the real-mode
+     * IVT) and left the mbi all zeros. */
+    movl   $0x00000001, MBI_ADDR + MBI_FLAGS_OFF   /* flags: bit 0 = mem info valid */
+    movl   $639,        MBI_ADDR + MBI_MEM_LOW     /* mem_lower = 639 KB  */
+    movl   $130048,     MBI_ADDR + MBI_MEM_HIGH    /* mem_upper = 127 MB (128 MB total) */
 
     /* ─── Jump to kernel entry point ─────────────────────────── */
 
