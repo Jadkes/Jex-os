@@ -1583,7 +1583,7 @@ void execute_command() {
 void shell_init() {
     shell_load_history();
     print_logo();
-    terminal_writestring("\nWelcome to JexOS v0.7.0!\nType 'help' for a list of commands.\n\n");
+    terminal_writestring("\nWelcome to JexOS v0.7.4!\nType 'help' for a list of commands.\n\n");
     print_prompt();
 }
 

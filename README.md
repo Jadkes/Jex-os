@@ -48,6 +48,11 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 
 ## Status
 
+v0.7.4: boot via GRUB by default (custom two-stage loader kept as
+`make run-native`), no hardcoded RAM cap (bitmap covers the full 4GB
+address space), and `free`/memory stats report the RAM actually
+detected by the bootloader instead of nonsense.
+
 v0.7.0: TCC self-hosting, control flow, flat filesystem. TCC is experimental
 and buggy — report any that you find.
 
