@@ -115,4 +115,7 @@ void rtl8139_dump_regs(void);
  */
 int rtl8139_poll_rx(void);
 
+/* Activity counters (see rtl8139.c) */
+void rtl8139_get_stats(uint32_t* irq, uint32_t* rx, uint32_t* tx);
+
 #endif // RTL8139_H

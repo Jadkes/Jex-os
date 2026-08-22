@@ -69,6 +69,7 @@ struct jex_dir_entry {
 
 extern uint32_t cwd_inode;
 
+void jexfs_set_ramdisk(void *base, uint32_t bytes);
 void jexfs_init(void);
 void jexfs_read_inode(uint32_t idx, struct jex_inode *inode);
 void jexfs_write_inode(uint32_t idx, struct jex_inode *inode);

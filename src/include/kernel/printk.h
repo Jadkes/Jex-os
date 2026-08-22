@@ -36,6 +36,9 @@
 /* Runtime console log level -- messages above this are suppressed */
 extern int console_loglevel;
 
+/* Serial-only debug channel (see printk.c) */
+extern int serial_debug;
+
 /*
  * _printk - Core printk function
  * @level:  Log severity (LOG_EMERG .. LOG_DEBUG)

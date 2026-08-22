@@ -223,6 +223,22 @@ void pmm_init(multiboot_info_t* mboot_info) {
             used_blocks++;
         }
     }
+
+    /* Reserve bootloader-loaded modules (e.g. the GRUB RAM root image).
+     * The mmap may list these as available; pin them so the heap never
+     * hands the root filesystem out. */
+    if (mboot_info->flags & (1 << 3)) {
+        multiboot_module_t *mod = (multiboot_module_t *)mboot_info->mods_addr;
+        for (uint32_t i = 0; i < mboot_info->mods_count; i++, mod++) {
+            for (uint32_t a = mod->start; a < mod->end; a += BLOCK_SIZE) {
+                uint32_t frame = a / BLOCK_SIZE;
+                if (frame < TOTAL_BLOCKS && !bitmap_test(frame)) {
+                    bitmap_set(frame);
+                    used_blocks++;
+                }
+            }
+        }
+    }
 }
 
 /**

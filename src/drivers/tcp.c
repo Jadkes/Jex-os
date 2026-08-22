@@ -11,6 +11,7 @@
 #include "net.h"
 #include "fs.h"
 #include "rtl8139.h"
+#include "ports.h"
 #include "panic.h"
 #include "terminal.h"
 #include "serial.h"
@@ -159,14 +160,11 @@ mac_ok:
     }
 
     /* tcp_checksum uses a static scratch buffer shared between ISR and
-     * shell contexts — protect with cli/sti (same pattern as udp_checksum). */
-    uint32_t _csum_ef;
-    __asm__ volatile("pushf; pop %0" : "=r"(_csum_ef));
-    __asm__ volatile("cli");
+     * shell contexts — protect with irq_save/irq_restore. */
+    uint32_t _irqf1 = irq_save();
     tcp->checksum = tcp_checksum(OUR_IP, remote_ip,
                                   (const uint16_t*)tcp, tcp_seg_len);
-    if (_csum_ef & 0x200)
-        __asm__ volatile("sti");
+    irq_restore(_irqf1);
 
     uint32_t total = sizeof(eth_header_t) + IP_HEADER_LEN + tcp_seg_len;
     net_send_ether(pkt_buf, total);
@@ -231,9 +229,9 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
             send_tcp_segment(TCP_SYN | TCP_ACK, my_seq, my_ack, NULL, 0);
             my_seq++;
 
-            __asm__ volatile("cli");
+            uint32_t _irqf2 = irq_save();
             tcp_state = TCP_SYN_RCVD;
-            __asm__ volatile("sti");
+            irq_restore(_irqf2);
         }
         return;
     }
@@ -241,9 +239,9 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     if (tcp_state == TCP_SYN_RCVD && (seg->flags & TCP_ACK)) {
         if (seg_ack == my_seq) {
             peer_acked_to = seg_ack;
-            __asm__ volatile("cli");
+            uint32_t _irqf3 = irq_save();
             tcp_state = TCP_ESTABLISHED;
-            __asm__ volatile("sti");
+            irq_restore(_irqf3);
             pr_debug("connection established (passive open)\n");
         }
         return;
@@ -260,9 +258,9 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
              * NOTE: pure ACK does NOT consume a sequence number. */
             send_tcp_segment(TCP_ACK, my_seq, my_ack, NULL, 0);
 
-            __asm__ volatile("cli");
+            uint32_t _irqf4 = irq_save();
             tcp_state = TCP_ESTABLISHED;
-            __asm__ volatile("sti");
+            irq_restore(_irqf4);
 
             pr_debug("connection established\n");
         }
@@ -277,17 +275,17 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 
         /* If we're in FIN_WAIT_1 and peer ACKed our FIN, advance */
         if (tcp_state == TCP_FIN_WAIT_1 && seg_ack >= my_seq) {
-            __asm__ volatile("cli");
+            uint32_t _irqf5 = irq_save();
             tcp_state = TCP_FIN_WAIT_2;
-            __asm__ volatile("sti");
+            irq_restore(_irqf5);
             pr_debug("state -> FIN_WAIT_2\n");
         }
 
         /* LAST_ACK: peer ACKed our FIN → CLOSED */
         if (tcp_state == TCP_LAST_ACK && seg_ack >= my_seq) {
-            __asm__ volatile("cli");
+            uint32_t _irqf6 = irq_save();
             tcp_state = TCP_CLOSED;
-            __asm__ volatile("sti");
+            irq_restore(_irqf6);
             pr_debug("state -> CLOSED\n");
         }
     }
@@ -299,7 +297,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
             uint8_t* tcp_data = data + ip_hdr + seg_data_offset;
 
             /* Copy to RX buffer (guard from ISR vs shell) */
-            __asm__ volatile("cli");
+            uint32_t _irqf7 = irq_save();
             /* Clamp rx_len to buffer size to avoid underflow in subtraction */
             if (rx_len > TCP_RX_BUF_SIZE)
                 rx_len = TCP_RX_BUF_SIZE;
@@ -308,7 +306,7 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
                 copy = TCP_RX_BUF_SIZE - rx_len;
             memcpy(rx_buf + rx_len, tcp_data, copy);
             rx_len += copy;
-            __asm__ volatile("sti");
+            irq_restore(_irqf7);
 
             my_ack += tcp_payload_len;
 
@@ -332,22 +330,22 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
             /* Peer is closing first (passive close) */
             send_tcp_segment(TCP_ACK | TCP_FIN, my_seq, my_ack, NULL, 0);
             my_seq++;
-            __asm__ volatile("cli");
+            uint32_t _irqf8 = irq_save();
             tcp_state = TCP_LAST_ACK;
-            __asm__ volatile("sti");
+            irq_restore(_irqf8);
         } else if (tcp_state == TCP_FIN_WAIT_1 || tcp_state == TCP_FIN_WAIT_2) {
             send_tcp_segment(TCP_ACK, my_seq, my_ack, NULL, 0);
-            __asm__ volatile("cli");
+            uint32_t _irqf9 = irq_save();
             tcp_state = TCP_TIME_WAIT;
-            __asm__ volatile("sti");
+            irq_restore(_irqf9);
         }
     }
 
     if (seg->flags & TCP_RST) {
         pr_debug("received RST\n");
-        __asm__ volatile("cli");
+        uint32_t _irqf10 = irq_save();
         tcp_state = TCP_CLOSED;
-        __asm__ volatile("sti");
+        irq_restore(_irqf10);
     }
 }
 
@@ -391,9 +389,9 @@ int tcp_connect(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port)
     retry_count = 0;
 
     /* Build and send SYN */
-    __asm__ volatile("cli");
+    uint32_t _irqf11 = irq_save();
     tcp_state = TCP_SYN_SENT;
-    __asm__ volatile("sti");
+    irq_restore(_irqf11);
 
     pr_debug("connecting to 0x%x port %u (local port %u)\n",
              dest_ip, dest_port, local_port);
@@ -521,7 +519,7 @@ int tcp_receive(uint8_t* buf, uint32_t buf_len)
         copy = buf_len;
 
     /* Guard: prevent data from being written by ISR while we read */
-    __asm__ volatile("cli");
+    uint32_t _irqf12 = irq_save();
     memcpy(buf, rx_buf, copy);
     /* Shift remaining data (memmove not available in freestanding env) */
     uint32_t rest = rx_len - copy;
@@ -530,7 +528,7 @@ int tcp_receive(uint8_t* buf, uint32_t buf_len)
             rx_buf[i] = rx_buf[i + copy];
     }
     rx_len = rest;
-    __asm__ volatile("sti");
+    irq_restore(_irqf12);
 
     return (int)copy;
 }
@@ -573,9 +571,9 @@ void tcp_close(void)
     pr_debug("closing connection\n");
 
     /* Send FIN */
-    __asm__ volatile("cli");
+    uint32_t _irqf13 = irq_save();
     tcp_state = TCP_FIN_WAIT_1;
-    __asm__ volatile("sti");
+    irq_restore(_irqf13);
 
     send_tcp_segment(TCP_FIN | TCP_ACK, my_seq, my_ack, NULL, 0);
     my_seq++;
@@ -590,9 +588,9 @@ void tcp_close(void)
             if (tcp_state == TCP_TIME_WAIT || tcp_state == TCP_CLOSED ||
                 tcp_state == TCP_LAST_ACK) {
                 /* Connection closed */
-                __asm__ volatile("cli");
+                uint32_t _irqf14 = irq_save();
                 tcp_state = TCP_CLOSED;
-                __asm__ volatile("sti");
+                irq_restore(_irqf14);
                 pr_debug("connection closed\n");
                 return;
             }
@@ -607,9 +605,9 @@ void tcp_close(void)
             while (get_ticks() < fin_deadline) {
                 rtl8139_poll_rx();
                 if (tcp_state == TCP_TIME_WAIT || tcp_state == TCP_CLOSED) {
-                    __asm__ volatile("cli");
+                    uint32_t _irqf15 = irq_save();
                     tcp_state = TCP_CLOSED;
-                    __asm__ volatile("sti");
+                    irq_restore(_irqf15);
                     pr_debug("connection closed\n");
                     return;
                 }
@@ -643,9 +641,9 @@ void tcp_abort(void)
     pr_debug("sending RST\n");
     send_tcp_segment(TCP_RST | TCP_ACK, my_seq, my_ack, NULL, 0);
 
-    __asm__ volatile("cli");
+    uint32_t _irqf16 = irq_save();
     tcp_state = TCP_CLOSED;
-    __asm__ volatile("sti");
+    irq_restore(_irqf16);
 }
 
 /* State accessors */
@@ -678,9 +676,9 @@ int tcp_listen(uint16_t port)
     rx_len      = 0;
     tx_len      = 0;
 
-    __asm__ volatile("cli");
+    uint32_t _irqf17 = irq_save();
     tcp_state = TCP_LISTEN;
-    __asm__ volatile("sti");
+    irq_restore(_irqf17);
 
     pr_debug("listening on port %u\n", port);
     return 0;

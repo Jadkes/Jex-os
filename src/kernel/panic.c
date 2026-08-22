@@ -195,23 +195,24 @@ void panic_handler(registers_t* regs)
     log_serial("TSS.ESP0=");
     log_hex_serial(tss_entry.esp0);
     log_serial(" ");
-    if (current_task) {
+    task_t* ct = cur_task();
+    if (ct) {
         log_serial("pid=");
-        log_hex_serial(current_task->id);
+        log_hex_serial(ct->id);
         log_serial(" kstack=0x");
-        log_hex_serial(current_task->kstack);
+        log_hex_serial(ct->kstack);
         log_serial(" eip=0x");
-        log_hex_serial(current_task->eip);
+        log_hex_serial(ct->eip);
         log_serial(" state=");
-        log_hex_serial(current_task->state);
+        log_hex_serial(ct->state);
         log_serial(" queue:");
-        task_t* scan = (task_t*)ready_queue;
+        task_t* scan = rdy_queue();
         int qc = 0;
         while (scan && qc < 4) {
-            log_serial(scan == current_task ? "[" : "");
+            log_serial(scan == ct ? "[" : "");
             log_hex_serial(scan->id);
             log_serial(scan->state == STATE_ZOMBIE ? "Z" : scan->state == STATE_READY ? "R" : "?");
-            log_serial(scan == current_task ? "]" : "");
+            log_serial(scan == ct ? "]" : "");
             scan = scan->next;
             qc++;
         }

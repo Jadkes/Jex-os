@@ -11,7 +11,6 @@
 #include "irq.h"
 #include "ports.h"
 #include "task.h"
-
 /**
  * @brief Global system tick counter.
  * Marked volatile because it is modified within an interrupt handler.
@@ -29,8 +28,9 @@ void timer_callback(registers_t *regs)
     system_ticks++;
 
     /* Track per-task CPU usage for the top command */
-    if (current_task)
-        current_task->cpu_ticks++;
+    task_t* t = cur_task();
+    if (t)
+        t->cpu_ticks++;
 
     /* Trigger the scheduler to possibly switch tasks */
     task_switch();
@@ -47,8 +47,12 @@ void init_timer(uint32_t frequency)
 {
     if (frequency == 0) frequency = 100;  /* Guard against div-by-zero */
 
-    /* Register IRQ0 handler */
+    /* Register IRQ0 handler.  With the 8259 masked and the IO/APIC owning
+     * delivery, QEMU's PIIX3 routes the PIT output through the legacy
+     * cascade line, which lands on vector 34 (slot 2) instead of 32 — so
+     * register the callback on both slots. */
     register_interrupt_handler(0, timer_callback);
+    register_interrupt_handler(2, timer_callback);
 
     /* PIT base frequency is 1.193182 MHz */
     uint32_t divisor = 1193180 / frequency;
@@ -76,7 +80,11 @@ void sleep(uint32_t ms)
     uint32_t ticks_to_wait = (ms + 9) / 10;
     if (ticks_to_wait == 0) ticks_to_wait = 1;
 
-    /* Ensure interrupts are enabled so the timer continues to tick */
+    /* Ticks only advance while interrupts flow, so IF must be ON during
+     * the wait — a bare hlt with IF=0 sleeps forever because no tick can
+     * ever wake the CPU.  Capture the caller's state, enable, wait, then
+     * restore, so sleep never leaks an IF change into its caller. */
+    uint32_t eflags = irq_save();
     __asm__ volatile("sti");
 
     while(system_ticks < start_ticks + ticks_to_wait)
@@ -84,6 +92,8 @@ void sleep(uint32_t ms)
         /* Halt the CPU until the next interrupt to save power */
         __asm__ volatile("hlt");
     }
+
+    irq_restore(eflags);
 }
 
 /**

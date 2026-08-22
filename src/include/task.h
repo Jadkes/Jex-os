@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include "paging.h"
 #include "isr.h"
+#include "smp.h"
 
 /**
  * @enum task_state_t
@@ -135,9 +136,23 @@ void* sys_signal(int sig, void* handler);
 int   sys_kill(int pid, int sig);
 
 /**
- * @brief Global current-task and ready-queue pointers (defined in task.c).
+ * @brief Per-CPU current-task and ready-queue accessors.
+ *
+ * Each CPU has its own ready queue and current task, stored in cpus[].
+ * These inline helpers provide convenient per-CPU access.  On the BSP with
+ * a single core they return the same values the old globals did.
  */
-extern volatile task_t* current_task;
-extern volatile task_t* ready_queue;
+static inline task_t* cur_task(void) {
+    return (task_t*)cpus[cpu_id()].current_task;
+}
+static inline task_t* rdy_queue(void) {
+    return (task_t*)cpus[cpu_id()].ready_queue;
+}
+static inline void set_cur_task(task_t* t) {
+    cpus[cpu_id()].current_task = (struct task*)t;
+}
+static inline void set_rdy_queue(task_t* q) {
+    cpus[cpu_id()].ready_queue = (struct task*)q;
+}
 
 #endif // TASK_H

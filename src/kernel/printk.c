@@ -22,15 +22,31 @@
 int console_loglevel = DEFAULT_CONSOLE_LOGLEVEL;
 
 /*
- * ISR context flag -- set to 1 by irq_handler before dispatching,
- * cleared on return. Used to skip slow terminal PIO during interrupts.
+ * Serial-debug channel: when set, LOG_DEBUG messages bypass the
+ * console_loglevel filter for SERIAL and KLOG but never touch the
+ * VGA terminal.  Lets a subsystem (e.g. ping -v) flood the serial
+ * console with trace while the shell stays readable.
+ */
+int serial_debug = 0;
+
+/*
+ * ISR nesting depth -- incremented by irq_handler before dispatching,
+ * decremented on return.  Used to suppress terminal output while any
+ * hardware interrupt is in flight: VGA text-mode PIO is slow and would
+ * interleave with a preempted task's half-finished screen update.
+ *
+ * This MUST be a counter, not a flag: handlers nest (e.g. a timer tick
+ * arriving inside the NIC ISR's interrupt-enabled window), and an inner
+ * exit clearing a boolean would un-suppress the outer frame too early.
  */
 volatile int in_isr = 0;
 
 void _printk(int level, const char* fmt, ...)
 {
-    /* Level filtering: suppress messages above the threshold */
-    if (level > console_loglevel)
+    int to_terminal = (level <= console_loglevel);
+
+    /* Suppress unless: console-level message, or serial-only debug */
+    if (!to_terminal && !(serial_debug && level == LOG_DEBUG))
         return;
 
     char buf[256];
@@ -44,11 +60,11 @@ void _printk(int level, const char* fmt, ...)
     log_serial(buf);
 
     /*
-     * Terminal output -- skip if we are in an ISR.
-     * VGA text-mode PIO is too slow and may interact badly with
-     * reentrant interrupt handling.
+     * Terminal output -- skip if we are in an ISR or if this is an
+     * serial-debug-only message.  VGA text-mode PIO is too slow and
+     * may interact badly with reentrant interrupt handling.
      */
-    if (!in_isr)
+    if (to_terminal && !in_isr)
         terminal_writestring(buf);
 
     /* Store in the kernel ring buffer for dmesg retrieval */

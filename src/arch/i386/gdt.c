@@ -54,7 +54,7 @@ static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
     uint32_t limit = sizeof(tss_entry) - 1;
 
     /* TSS descriptor: DPL=3, Type=0x09 (Available 32-bit TSS) */
-    gdt_set_gate(num, base, limit, 0xE9, 0x00);
+    gdt_set_gate(num, base, limit, 0x89, 0x00);
 
     /* Initialize TSS with zeros */
     uint8_t* ptr = (uint8_t*)&tss_entry;

@@ -28,10 +28,11 @@ extern void int_to_string(int n, char* str);
 extern void kernel_fork_trampoline(void);
 
 /**
- * @brief Global pointers to the current task and the head of the ready queue.
+ * @brief Per-CPU ready queues and current task.
+ *
+ * Stored in cpus[] and accessed via cur_task() / rdy_queue() inline helpers.
+ * Each CPU owns its own queue and never touches another CPU's.
  */
-volatile task_t* current_task;
-volatile task_t* ready_queue;
 
 static int next_pid = 1;
 
@@ -42,22 +43,23 @@ static int next_pid = 1;
 void init_tasking() {
     __asm__ volatile("cli");
 
-    current_task = ready_queue = (task_t*)kmalloc(sizeof(task_t));
-    current_task->id = next_pid++;
-    current_task->esp = current_task->ebp = 0;
-    current_task->eip = 0;
-    current_task->page_directory = &kernel_directory;
-    current_task->kstack = alloc_kernel_stack(current_task->id);
-    current_task->cpu_ticks = 0;
-    current_task->next = NULL;
-    current_task->state = STATE_RUNNING;
-    current_task->parent_pid = 0;
-    current_task->exit_code = 0;
-    current_task->signal_pending = 0;
-    current_task->signal_blocked = 0;
+    set_cur_task((task_t*)kmalloc(sizeof(task_t)));
+    set_rdy_queue(cur_task());
+    cur_task()->id = next_pid++;
+    cur_task()->esp = cur_task()->ebp = 0;
+    cur_task()->eip = 0;
+    cur_task()->page_directory = &kernel_directory;
+    cur_task()->kstack = alloc_kernel_stack(cur_task()->id);
+    cur_task()->cpu_ticks = 0;
+    cur_task()->next = NULL;
+    cur_task()->state = STATE_RUNNING;
+    cur_task()->parent_pid = 0;
+    cur_task()->exit_code = 0;
+    cur_task()->signal_pending = 0;
+    cur_task()->signal_blocked = 0;
     for (int i = 0; i < 32; i++)
-        current_task->signal_handlers[i] = NULL;
-    strcpy((char*)current_task->name, "shell");
+        cur_task()->signal_handlers[i] = NULL;
+    strcpy((char*)cur_task()->name, "shell");
 
     __asm__ volatile("sti");
 }
@@ -123,7 +125,8 @@ static int deliver_signals(task_t* task)
  * Saves the current context and loads the next one using assembly magic.
  */
 void task_switch() {
-    if (!current_task) return;
+    task_t* ct = cur_task();
+    if (!ct) return;
 
     uint32_t esp, ebp, eip;
     __asm__ volatile("mov %%esp, %0" : "=r"(esp));
@@ -133,25 +136,25 @@ void task_switch() {
     eip = read_eip();
     if (eip == 0x12345) return;
 
-    current_task->eip = eip;
-    current_task->esp = esp;
-    current_task->ebp = ebp;
+    ct->eip = eip;
+    ct->esp = esp;
+    ct->ebp = ebp;
 
     /* Round-robin: Pick the next task in the ready queue */
-    volatile task_t* start = current_task;
-    current_task = current_task->next;
-    if (!current_task) current_task = ready_queue;
+    task_t* start = ct;
+    ct = ct->next;
+    if (!ct) ct = rdy_queue();
 
     /* Skip zombie tasks — they stay around for the parent to reap */
     {
-        while (current_task->state == STATE_ZOMBIE) {
-            current_task = current_task->next;
-            if (!current_task) current_task = ready_queue;
+        while (ct->state == STATE_ZOMBIE) {
+            ct = ct->next;
+            if (!ct) ct = rdy_queue();
             /* If we wrapped around and the ONLY non-zombie task is start
              * itself, the while-loop check re-evaluates start's state on the
              * next iteration.  But if start is ALSO zombie, every task is
              * zombie and there's nothing to schedule. */
-            if (current_task == start && current_task->state == STATE_ZOMBIE) {
+            if (ct == start && ct->state == STATE_ZOMBIE) {
                 /* All tasks are zombies — nothing to run */
                 for (;;) asm volatile("hlt");
             }
@@ -159,33 +162,36 @@ void task_switch() {
     }
 
     /* Deliver any pending signals before the task runs */
-    while (deliver_signals((task_t*)current_task)) {
-        task_t* terminated = (task_t*)current_task;
-        task_t* prev = (task_t*)ready_queue;
+    while (deliver_signals(ct)) {
+        task_t* terminated = ct;
+        task_t* prev = rdy_queue();
         if (prev == terminated) {
-            ready_queue = terminated->next;
+            set_rdy_queue(terminated->next);
         } else {
             while (prev && prev->next != terminated)
                 prev = prev->next;
             if (prev)
                 prev->next = terminated->next;
         }
-        current_task = terminated->next;
-        if (!current_task) current_task = ready_queue;
-        if (!current_task)
+        ct = terminated->next;
+        if (!ct) ct = rdy_queue();
+        if (!ct)
             panic_assert("All tasks terminated by signals", __FILE__, __LINE__);
     }
 
-    esp = current_task->esp;
-    ebp = current_task->ebp;
-    eip = current_task->eip;
+    /* Persist the selected task */
+    set_cur_task(ct);
 
-    if (current_task->kstack) {
-        set_kernel_stack(current_task->kstack + KSTACK_SIZE);
+    esp = ct->esp;
+    ebp = ct->ebp;
+    eip = ct->eip;
+
+    if (ct->kstack) {
+        set_kernel_stack(ct->kstack + KSTACK_SIZE);
     }
 
 
-    __asm__ volatile("         \n      mov %0, %%ebx;           \n      mov %1, %%esp;           \n      mov %2, %%ebp;           \n      mov %3, %%cr3;           \n      mov $0x12345, %%eax;     \n      sti;                     \n      jmp *%%ebx;              \n  " : : "b"(eip), "r"(esp), "r"(ebp), "r"(current_task->page_directory) : "eax");
+    __asm__ volatile("         \n      mov %0, %%ebx;           \n      mov %1, %%esp;           \n      mov %2, %%ebp;           \n      mov %3, %%cr3;           \n      mov $0x12345, %%eax;     \n      sti;                     \n      jmp *%%ebx;              \n  " : : "b"(eip), "r"(esp), "r"(ebp), "r"(ct->page_directory) : "eax");
 }
 
 /**
@@ -287,7 +293,7 @@ static void fork_child_entry(void* arg) {
 int fork(registers_t* regs) {
     __asm__ volatile("cli");
 
-    task_t* parent = (task_t*)current_task;
+    task_t* parent = cur_task();
 
     /* Allocate task_t via kmalloc so waitpid's kfree() matches.
      * Previously used pmm_alloc_block() which kfree() cannot free
@@ -366,8 +372,8 @@ int fork(registers_t* regs) {
     child->eip = (uint32_t)kernel_fork_trampoline;
 
 
-    /* Add child to end of ready queue */
-    task_t* tmp = (task_t*)ready_queue;
+    /* Add child to end of current CPU's ready queue */
+    task_t* tmp = rdy_queue();
     while (tmp->next) tmp = tmp->next;
     tmp->next = child;
 
@@ -404,22 +410,47 @@ __asm__(
  * @param arg  Opaque argument to pass to func.
  * @return Child PID on success, -1 on allocation failure.
  */
-int kernel_fork(void (*func)(void*), void* arg)
+/*
+ * kernel_fork_on - Create a new kernel task, targetting a specific CPU.
+ *
+ * @func: Function to execute.
+ * @arg:  Argument to pass to @func.
+ * @cpu:  Target logical CPU number (0 = BSP, or -1 = any).
+ *
+ * Only same-CPU queueing is supported right now.  Cross-CPU dispatch needs
+ * the mailbox hand-off (and a per-CPU TSS) to be safe; until then, an
+ * explicit foreign target is rejected rather than silently queued on the
+ * caller's CPU — the old behaviour broke the function's own contract and
+ * left waitpid() scanning a queue that never held the child.
+ *
+ * Return: child PID on success, or negative errno.
+ */
+int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
 {
-    __asm__ volatile("cli");
+    int target_cpu = (cpu < 0 || cpu >= cpu_count) ? cpu_id() : cpu;
 
-    task_t* parent = (task_t*)current_task;
+    if (target_cpu != cpu_id())
+        return -EINVAL;
+
+    /*
+     * Allocate and clone with interrupts ENABLED.
+     *
+     * In the old code the cli covered clone_page_directory too, creating a
+     * multi-millisecond interrupt hole that could cause timer IRQ starvation
+     * in the parent's subsequent waitpid yield loop.  No interrupt handler
+     * touches the PMM bitmap or the page tables during fork, so it is safe
+     * to let the timer fire through the clone.
+     */
+    task_t* parent = cur_task();
+
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
-    if (!child) {
-        __asm__ volatile("sti");
+    if (!child)
         return -ENOMEM;
-    }
 
-    /* Clone the page directory — deep-copy user pages, share kernel pages */
+    /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
     if (!new_dir) {
         kfree(child);
-        __asm__ volatile("sti");
         return -ENOMEM;
     }
 
@@ -436,34 +467,36 @@ int kernel_fork(void (*func)(void*), void* arg)
     for (int i = 0; i < 32; i++)
         child->signal_handlers[i] = parent->signal_handlers[i];
 
-    /* Allocate kernel stack for the child via PDE 1023 — no identity collision */
     child->kstack = alloc_kernel_stack(child->id);
     if (!child->kstack) {
         kfree(child);
-        __asm__ volatile("sti");
         return -ENOMEM;
     }
 
-    /*
-     * Set up the child's initial stack for the trampoline.
-     * Push arg first, then func on top — the trampoline pops func first (ebx),
-     * then arg (eax), then pushes arg back and calls *ebx (func(arg)).
-     */
+    /* Set up the child's initial stack for the trampoline. */
     uint32_t* cp = (uint32_t*)(child->kstack + KSTACK_SIZE);
-    *--cp = (uint32_t)arg;   /* arg — popped second */
-    *--cp = (uint32_t)func;  /* func — popped first */
+    *--cp = (uint32_t)arg;
+    *--cp = (uint32_t)func;
 
     child->esp = (uint32_t)cp;
     child->ebp = (uint32_t)cp;
     child->eip = (uint32_t)kernel_fork_trampoline;
 
-    /* Add child to end of ready queue */
-    task_t* tmp = (task_t*)ready_queue;
+    /* cli only for the queue modification — brief, no allocation. */
+    __asm__ volatile("cli");
+
+    /* Add child to this CPU's ready queue (cross-CPU rejected above). */
+    task_t* tmp = rdy_queue();
     while (tmp->next) tmp = tmp->next;
     tmp->next = child;
 
     __asm__ volatile("sti");
     return child->id;
+}
+
+int kernel_fork(void (*func)(void*), void* arg)
+{
+    return kernel_fork_on(func, arg, 0);
 }
 
 /**
@@ -475,7 +508,7 @@ int kernel_fork(void (*func)(void*), void* arg)
 void _task_exit(int exit_code) {
     __asm__ volatile("cli");
 
-    task_t* dying = (task_t*)current_task;
+    task_t* dying = cur_task();
 
     /* PID 1 (shell/init) cannot be killed this way */
     if (dying->id == 1) {
@@ -495,7 +528,7 @@ void _task_exit(int exit_code) {
 
     /* Reparent orphans: children of the dying task become children of init (PID 1) */
     {
-        for (task_t* scan = (task_t*)ready_queue; scan; scan = scan->next) {
+        for (task_t* scan = rdy_queue(); scan; scan = scan->next) {
             if (scan->parent_pid == dying->id) {
                 scan->parent_pid = 1;
                 extern void log_serial(const char* str);
@@ -535,12 +568,12 @@ void task_exit() {
 int waitpid(int pid, int* status, int options) {
     (void)options;
 
-    task_t* self = (task_t*)current_task;
+    task_t* self = cur_task();
 
     while (1) {
-        /* Scan the ready queue for a zombie child */
+        /* Scan this CPU's ready queue for a zombie child */
         task_t* prev = NULL;
-        for (task_t* scan = (task_t*)ready_queue; scan; scan = scan->next) {
+        for (task_t* scan = rdy_queue(); scan; scan = scan->next) {
             if (scan->state == STATE_ZOMBIE &&
                 scan->parent_pid == self->id &&
                 (pid == -1 || scan->id == pid)) {
@@ -575,7 +608,7 @@ int waitpid(int pid, int* status, int options) {
                 if (prev)
                     prev->next = scan->next;
                 else
-                    ready_queue = scan->next;
+                    set_rdy_queue(scan->next);
 
                 kfree(scan);
 
@@ -588,7 +621,7 @@ int waitpid(int pid, int* status, int options) {
                  * in the shared PDE 1023 page table. */
                 {
                     task_t* p = NULL;
-                    task_t* s = (task_t*)ready_queue;
+                    task_t* s = rdy_queue();
                     while (s) {
                         if (s->state == STATE_ZOMBIE &&
                             s->parent_pid == self->id && s->id != self->id) {
@@ -596,7 +629,7 @@ int waitpid(int pid, int* status, int options) {
                             if (p)
                                 p->next = dead->next;
                             else
-                                ready_queue = dead->next;
+                                set_rdy_queue(dead->next);
                             s = dead->next;
                             if (dead->kstack)
                                 free_kernel_stack(dead->id);
@@ -617,7 +650,7 @@ int waitpid(int pid, int* status, int options) {
         /* Check if any children exist at all */
         {
             int any = 0;
-            for (task_t* scan = (task_t*)ready_queue; scan; scan = scan->next) {
+            for (task_t* scan = rdy_queue(); scan; scan = scan->next) {
                 if (scan->parent_pid == self->id) {
                     any = 1;
                     break;
@@ -640,7 +673,7 @@ void _waitpid_done(void) {} /* marker for breakpoint */
  * @brief Print a list of all active processes to the terminal.
  */
 void task_list() {
-    task_t* t = (task_t*)ready_queue;
+    task_t* t = rdy_queue();
     char buf[12];
 
     terminal_writestring("PID  STATE     EIP         NAME\n");
@@ -674,7 +707,7 @@ void task_list() {
  * @brief Return the PID of the current task.
  */
 int getpid() {
-    return current_task->id;
+    return cur_task()->id;
 }
 
 /**
@@ -694,8 +727,8 @@ void* sys_signal(int sig, void* handler) {
     if (sig < 1 || sig > 31 || sig == SIGKILL) {
         return SIG_ERR;
     }
-    void* prev = current_task->signal_handlers[sig];
-    current_task->signal_handlers[sig] = handler;
+    void* prev = cur_task()->signal_handlers[sig];
+    cur_task()->signal_handlers[sig] = handler;
     return prev;
 }
 
@@ -711,13 +744,16 @@ int sys_kill(int pid, int sig) {
     /* Never kill PID 1 (the shell/init) */
     if (pid == 1) return -EPERM;
 
-    task_t* t = (task_t*)ready_queue;
-    while (t) {
-        if (t->id == pid) {
-            t->signal_pending |= (1 << sig);
-            return 0;
+    /* Scan ALL CPU ready queues for the target PID */
+    for (int i = 0; i < cpu_count; i++) {
+        task_t* t = (task_t*)cpus[i].ready_queue;
+        while (t) {
+            if (t->id == pid) {
+                t->signal_pending |= (1 << sig);
+                return 0;
+            }
+            t = t->next;
         }
-        t = t->next;
     }
     return -ESRCH;
 }

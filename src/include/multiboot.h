@@ -49,4 +49,18 @@ typedef struct multiboot_memory_map {
 	uint32_t type; /**< 1 = Available, others = Reserved. */
 } __attribute__((packed)) multiboot_memory_map_t;
 
+/**
+ * @struct multiboot_module
+ * @brief A single module loaded by the bootloader (e.g. a RAM disk).
+ *
+ * GRUB loads any `module` lines from its config into physical memory
+ * page-aligned and reports them here (physical addresses).
+ */
+typedef struct multiboot_module {
+	uint32_t start;
+	uint32_t end;
+	uint32_t cmdline;
+	uint32_t reserved;
+} __attribute__((packed)) multiboot_module_t;
+
 #endif // MULTIBOOT_H

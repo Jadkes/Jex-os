@@ -22,8 +22,9 @@
 #include "net.h"
 #include <string.h>
 
-/* Set to 1 for per-packet ISR/Poll debug logging */
-#define RTL8139_DEBUG 0
+/* Per-packet ISR/Poll debug logging (serial-only when the debug window
+ * from net_debug_enable() is open; fully suppressed otherwise). */
+#define RTL8139_DEBUG 1
 
 /* Forward declarations for functions used from other compilation units */
 extern void int_to_string(int n, char* str);
@@ -66,10 +67,13 @@ static uint8_t  tx_desc_used[4] = {0, 0, 0, 0};
 /* Our read offset in the RX ring buffer (we don't trust CAPR readback) */
 static uint16_t rx_offset = 0;
 
-/* Driver state */
+/* Driver state.  The counters are bumped from the ISR and read from
+ * shell commands (rtl8139_get_stats), so they must be volatile to keep
+ * the read side from caching a stale value across the IRQ. */
 static int driver_initialized = 0;
-static uint32_t rx_packet_count = 0;
-static uint32_t tx_packet_count = 0;
+static volatile uint32_t rx_packet_count = 0;
+static volatile uint32_t tx_packet_count = 0;
+static volatile uint32_t irq_count = 0;
 
 /**
  * Print a hex byte to the terminal.
@@ -90,6 +94,7 @@ static void print_hex_byte(uint8_t val)
 void rtl8139_handler(registers_t* regs)
 {
     uint16_t status = inw(io_base + RTL8139_REG_ISR);
+    irq_count++;
 
     if (RTL8139_DEBUG)
         pr_debug("ISR: status=0x%x ROK=0x%x TOK=0x%x\n", status,
@@ -265,9 +270,7 @@ int rtl8139_poll_rx(void)
     /* Save interrupt state before disabling — must restore on exit so
      * this function is safe to call from both shell (IF=1) and ISR
      * (IF=0) contexts.  In the ISR case we must NOT re-enable IF. */
-    uint32_t _eflags;
-    __asm__ volatile("pushf; pop %0" : "=r"(_eflags));
-    __asm__ volatile("cli");
+    uint32_t eflags = irq_save();
 
     int processed = 0;
     uint16_t offset = rx_offset;
@@ -333,8 +336,7 @@ int rtl8139_poll_rx(void)
     rx_offset = offset;
 
     /* Restore IF to the state on entry (IF=1 for shell, IF=0 for ISR) */
-    if (_eflags & 0x200)
-        __asm__ volatile("sti");
+    irq_restore(eflags);
     return processed;
 }
 
@@ -351,6 +353,18 @@ int rtl8139_poll_rx(void)
 void rtl8139_send_packet(void* data, uint32_t len)
 {
     tx_packet_count++;
+
+    if (RTL8139_DEBUG) {
+        uint8_t* f = (uint8_t*)data;
+        pr_debug("TX len=%u dst=%02x:%02x:%02x:%02x:%02x:%02x ethertype=0x%02x%02x\n",
+                 len, f[0], f[1], f[2], f[3], f[4], f[5], f[12], f[13]);
+    }
+
+    /* Claim the descriptor and program it atomically: sends happen from
+     * both shell context and the NIC ISR (e.g. TCP ACKs triggered by an
+     * incoming segment), and two concurrent sends must not share or
+     * overwrite a descriptor's TSAD mid-DMA. */
+    uint32_t eflags = irq_save();
 
     uint16_t tsd_port = (uint16_t)(io_base + RTL8139_REG_TSD0 + current_tx_desc * 4);
 
@@ -375,6 +389,8 @@ void rtl8139_send_packet(void* data, uint32_t len)
 
     /* Advance to next descriptor (0 → 1 → 2 → 3 → 0) */
     current_tx_desc = (current_tx_desc + 1) & 3;
+
+    irq_restore(eflags);
 }
 
 /* PCI device ID table for the RTL8139 driver */
@@ -437,6 +453,19 @@ uint32_t rtl8139_get_io_base(void)
 uint8_t rtl8139_get_irq(void)
 {
     return irq_num;
+}
+
+/*
+ * rtl8139_get_stats - Snapshot of driver activity counters.
+ * @irq: total ISR invocations since boot.
+ * @rx:  packets pulled from the RX ring (ISR + poll combined).
+ * @tx:  frames handed to the DMA engine.
+ */
+void rtl8139_get_stats(uint32_t* irq, uint32_t* rx, uint32_t* tx)
+{
+    if (irq) *irq = irq_count;
+    if (rx)  *rx  = rx_packet_count;
+    if (tx)  *tx  = tx_packet_count;
 }
 
 uint32_t rtl8139_get_rx_count(void)

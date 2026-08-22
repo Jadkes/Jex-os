@@ -94,4 +94,27 @@ static inline void io_wait(void)
     outb(0x80, 0);
 }
 
+/**
+ * @brief Disable interrupts, returning the previous EFLAGS value.
+ *
+ * Pair with irq_restore().  Unlike a bare cli/sti pair this is safe in
+ * code reachable from both task context (IF=1) and ISR context (IF=0):
+ * the restore re-enables only what the caller had enabled.
+ */
+static inline uint32_t irq_save(void)
+{
+    uint32_t flags;
+    asm volatile ("pushfl ; popl %0 ; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+/**
+ * @brief Restore the interrupt state captured by irq_save().
+ */
+static inline void irq_restore(uint32_t flags)
+{
+    if (flags & (1u << 9))   /* EFLAGS.IF */
+        asm volatile ("sti" ::: "memory");
+}
+
 #endif // PORTS_H

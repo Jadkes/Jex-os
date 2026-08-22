@@ -69,8 +69,10 @@ static void print_hex(char** p, char* end, uint32_t val, int upper,
     int len = 0;
 
     if (width == 0) {
-        /* No width given: print all 8 hex digits (no 0x prefix) */
-        for (int i = 7; i >= 0; i--)
+        /* No width given: print all 8 hex digits (no 0x prefix).
+         * Build least-significant nibble first — the output loop below
+         * reverses tmp, so this comes out MSB-first on the wire. */
+        for (int i = 0; i < 8; i++)
             tmp[len++] = digits[(val >> (i * 4)) & 0xF];
     } else {
         do {

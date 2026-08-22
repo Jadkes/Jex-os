@@ -31,8 +31,9 @@ page_directory_t kernel_directory;
  * use that; otherwise use the kernel directory (boot/init phase).
  */
 static page_directory_t* current_page_dir(void) {
-    if (current_task && current_task->page_directory)
-        return (page_directory_t*)current_task->page_directory;
+    task_t* t = cur_task();
+    if (t && t->page_directory)
+        return (page_directory_t*)t->page_directory;
     return &kernel_directory;
 }
 
@@ -449,6 +450,50 @@ void init_paging() {
     {
         uint32_t v = RECURSIVE_PDE_BASE;
         __asm__ volatile("invlpg (%0)" :: "r"(v));
+    }
+
+    /*
+     * Map APIC MMIO regions (LAPIC at 0xFEE00000, I/O APIC at 0xFEC00000).
+     * Both are above the 512 MB identity-map range (PDE 0-127) in PDE[1019]
+     * (0xFEC00000 - 0xFF000000).
+     *
+     * We do this MANUALLY instead of via map_page() because map_page() calls
+     * get_table() -> current_page_dir() -> cur_task() -> cpu_id() ->
+     * apic_read_id(), which reads the LAPIC ID register at 0xFEE00020.  But
+     * that page isn't mapped yet — we're trying to map it right now — so
+     * the read triggers a page fault, the fault handler calls
+     * current_page_dir() again, and we get a triple fault loop.
+     */
+    {
+        /* Allocate and zero a page table */
+        page_table_t* apic_pt = (page_table_t*)pmm_alloc_block();
+        if (apic_pt) {
+            memset(apic_pt, 0, sizeof(page_table_t));
+            uint32_t apic_pt_phys = (uint32_t)apic_pt;
+
+            /* I/O APIC at 0xFEC00000: PDE[1019], PTE[0] */
+            uint32_t ioapic_pte = (0xFEC00000u & 0xFFFFF000u) | 0x3u;
+            *(uint32_t*)apic_pt_phys = ioapic_pte;
+
+            /* Local APIC at 0xFEE00000: PDE[1019], PTE[0x200] */
+            uint32_t lapic_pte = (0xFEE00000u & 0xFFFFF000u) | 0x3u;
+            *(uint32_t*)(apic_pt_phys + 0x200 * 4) = lapic_pte;
+
+            /* Clear identity PTE for the page table frame */
+            identity_unmap_frame(apic_pt_phys);
+
+            /* Write PDE[1019] in the kernel directory */
+            uint32_t pde_val = ((apic_pt_phys >> 12) << 12)
+                             | (1u << 0)  /* present */
+                             | (1u << 1); /* rw */
+            *(uint32_t*)&kernel_directory.tables[1019] = pde_val;
+
+            /* Flush TLB for the new PDE through the recursive window */
+            {
+                uint32_t dummy = RECURSIVE_PDE_BASE + (1019u << 12);
+                __asm__ volatile("invlpg (%0)" :: "r"(dummy));
+            }
+        }
     }
 }
 

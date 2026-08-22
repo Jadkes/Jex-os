@@ -23,6 +23,7 @@
 #include "rtl8139.h"
 #include "net.h"
 #include "terminal.h"
+#include "task.h"
 #include "panic.h"
 #include "kernel/backtrace.h"
 #include "kernel/workqueue.h"
@@ -434,8 +435,17 @@ void ping_command(const char* arg) {
         return;
     }
 
-    uint32_t ip = resolve_or_parse(addr);
+    uint32_t ip;
+    if (verbose) {
+        /* Open the debug window: full packet trace -> serial only,
+         * stage markers + this stats line -> shell. */
+        net_debug_enable(1);
+        net_shell_progress = 1;
+    }
+    ip = resolve_or_parse(addr);
     if (ip == 0) {
+        if (verbose)
+            net_debug_enable(0);
         terminal_writestring("Could not resolve address\n");
         return;
     }
@@ -521,6 +531,21 @@ void ping_command(const char* arg) {
     } else {
         log_serial("PING: timeout\n");
         terminal_writestring("  No reply received (timeout)\n");
+    }
+
+    if (verbose) {
+        /* Close the debug window and summarize NIC activity on the shell */
+        uint32_t irq_n, rx_n, tx_n;
+        rtl8139_get_stats(&irq_n, &rx_n, &tx_n);
+        char b[16];
+        terminal_writestring("[ping] nic stats: irqs=");
+        int_to_string((int)irq_n, b); terminal_writestring(b);
+        terminal_writestring(" rx=");
+        int_to_string((int)rx_n, b); terminal_writestring(b);
+        terminal_writestring(" tx=");
+        int_to_string((int)tx_n, b); terminal_writestring(b);
+        terminal_writestring("\n");
+        net_debug_enable(0);
     }
 }
 
@@ -1396,38 +1421,48 @@ void execute_command() {
         }
     }
     else if (strcmp(shell_buffer, "top") == 0) {
+        /* Sum CPU ticks across all CPUs.  A task that is both linked in
+         * its ready queue and marked current (the normal state on a CPU)
+         * must be counted exactly once, or every percentage halves. */
         uint32_t total = 0;
-        task_t* task = (task_t*)ready_queue;
+        for (int ci = 0; ci < cpu_count; ci++) {
+            for (task_t* task = (task_t*)cpus[ci].ready_queue; task; task = task->next)
+                total += task->cpu_ticks;
 
-        while (task) {
-            total += task->cpu_ticks;
-            task = task->next;
+            task_t* cur = (task_t*)cpus[ci].current_task;
+            if (!cur) continue;
+            int found = 0;
+            for (task_t* scan = (task_t*)cpus[ci].ready_queue; scan; scan = scan->next)
+                if (scan == cur) { found = 1; break; }
+            if (!found)
+                total += cur->cpu_ticks;
         }
-        if (current_task)
-            total += current_task->cpu_ticks;
-
         if (total == 0) total = 1;
 
         terminal_writestring("PID  NAME       CPU%  STATE\n");
-        task = (task_t*)ready_queue;
-        while (task) {
-            uint32_t pct = (task->cpu_ticks * 100) / total;
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%-3d  %-10s %-4u  %s\n",
-                     task->id, task->name, pct, "RUNNING");
-            terminal_writestring(buf);
-            task = task->next;
-        }
-        /* Also show current_task if not in ready_queue */
-        if (current_task) {
-            int found = 0;
-            task = (task_t*)ready_queue;
-            while (task) { if (task == current_task) { found = 1; break; } task = task->next; }
-            if (!found) {
-                uint32_t pct = (current_task->cpu_ticks * 100) / total;
+        for (int ci = 0; ci < cpu_count; ci++) {
+            task_t* task = (task_t*)cpus[ci].ready_queue;
+            while (task) {
+                uint32_t pct = (task->cpu_ticks * 100) / total;
                 char buf[64];
                 snprintf(buf, sizeof(buf), "%-3d  %-10s %-4u  %s\n",
-                         current_task->id, current_task->name, pct, "RUNNING");
+                         task->id, task->name, pct, "RUNNING");
+                terminal_writestring(buf);
+                task = task->next;
+            }
+        }
+        /* current tasks not in ready_queue */
+        for (int ci = 0; ci < cpu_count; ci++) {
+            task_t* cur = (task_t*)cpus[ci].current_task;
+            if (!cur) continue;
+            int found = 0;
+            task_t* scan = (task_t*)cpus[ci].ready_queue;
+            while (scan) { if (scan == cur) { found = 1; break; } scan = scan->next; }
+            if (!found) {
+                uint32_t pct = (cur->cpu_ticks * 100) / total;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%-3d  %-10s %-4u  %s [CPU%d]\n",
+                         cur->id, cur->name, pct, "RUNNING", ci);
                 terminal_writestring(buf);
             }
         }

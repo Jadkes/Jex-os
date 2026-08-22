@@ -29,6 +29,7 @@ QEMU      = qemu-system-i386
 
 ## QEMU options shared by all run targets
 QEMU_OPTS = -serial stdio \
+            -smp 2 \
             -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 \
             -netdev user,id=net0,hostfwd=tcp::8080-:80 \
             -device rtl8139,netdev=net0
@@ -127,6 +128,7 @@ $(ISO): $(KERNEL) $(IMG)
 		echo 'set timeout=5' > iso/boot/grub/grub.cfg; \
 		echo 'menuentry "JexOS" {' >> iso/boot/grub/grub.cfg; \
 		echo '    multiboot /boot/jexos.bin' >> iso/boot/grub/grub.cfg; \
+		echo '    module /boot/jexos.img' >> iso/boot/grub/grub.cfg; \
 		echo '    boot' >> iso/boot/grub/grub.cfg; \
 		echo '}' >> iso/boot/grub/grub.cfg; \
 	fi

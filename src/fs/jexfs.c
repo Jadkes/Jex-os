@@ -17,10 +17,28 @@
 #define pr_fmt(fmt) "[JEXFS] " fmt
 #include "jexfs.h"
 #include "ide.h"
+#include "multiboot.h"
 #include "kernel/printk.h"
 #include "string.h"
 #include "terminal.h"
 #include <jexos/errno.h>
+
+extern multiboot_info_t *g_mboot_info;
+
+/*
+ * RAM-backed root image.  When a bootloader (GRUB) loads the JexFS image
+ * into memory as a multiboot module, block I/O is served from RAM instead
+ * of the IDE disk.  This lets JexOS boot from a single CD/floppy with no
+ * attached IDE disk.  NULL means "use the IDE primary master".
+ */
+static uint8_t *ramdisk_base;
+static uint32_t ramdisk_blocks;
+
+void jexfs_set_ramdisk(void *base, uint32_t bytes)
+{
+    ramdisk_base   = (uint8_t *)base;
+    ramdisk_blocks = (bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+}
 
 static inline int jfs_memcmp(const void *a, const void *b, uint32_t len) {
     const unsigned char *ca = (const unsigned char *)a;
@@ -31,6 +49,7 @@ static inline int jfs_memcmp(const void *a, const void *b, uint32_t len) {
 }
 
 static struct jex_superblock sb;
+static int jexfs_mounted = 0;
 uint32_t cwd_inode = 1;
 
 static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
@@ -39,12 +58,20 @@ static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
 
 void read_block(uint32_t block, uint8_t *buffer)
 {
+    if (ramdisk_base && block < ramdisk_blocks) {
+        memcpy(buffer, ramdisk_base + block * BLOCK_SIZE, BLOCK_SIZE);
+        return;
+    }
     ide_read_sector(block * 2, buffer);
     ide_read_sector(block * 2 + 1, buffer + 512);
 }
 
 void write_block(uint32_t block, const uint8_t *buffer)
 {
+    if (ramdisk_base && block < ramdisk_blocks) {
+        memcpy(ramdisk_base + block * BLOCK_SIZE, buffer, BLOCK_SIZE);
+        return;
+    }
     ide_write_sector(block * 2, buffer);
     ide_write_sector(block * 2 + 1, buffer + 512);
 }
@@ -138,6 +165,7 @@ void jexfs_write_inode(uint32_t idx, struct jex_inode *inode)
 
 void jexfs_stat(int inode_idx, struct jex_inode *inode)
 {
+    if (!jexfs_mounted) { memset(inode, 0, sizeof(*inode)); return; }
     jexfs_read_inode((uint32_t)inode_idx, inode);
 }
 
@@ -292,6 +320,7 @@ static int jexfs_find_entry(uint32_t dir_ino, const char *name, uint16_t name_le
 
 int jexfs_open(const char *name)
 {
+    if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return (int)cwd_inode;
     uint32_t dir = (name[0] == '/') ? 1 : cwd_inode;
     if (name[0] == '/') name++;
@@ -301,6 +330,7 @@ int jexfs_open(const char *name)
 
 int jexfs_read(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
 {
+    if (!jexfs_mounted) return -ENODEV;
     struct jex_inode inode;
     jexfs_read_inode((uint32_t)inode_idx, &inode);
     if (offset >= inode.size) return 0;
@@ -328,6 +358,7 @@ int jexfs_read(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
 int jexfs_write(int inode_idx, const void *buffer,
                 uint32_t size, uint32_t offset)
 {
+    if (!jexfs_mounted) return -ENODEV;
     struct jex_inode inode;
     jexfs_read_inode((uint32_t)inode_idx, &inode);
 
@@ -363,6 +394,7 @@ int jexfs_write(int inode_idx, const void *buffer,
 
 int jexfs_create(const char *name)
 {
+    if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return -EINVAL;
     uint16_t nl = (uint16_t)strlen(name);
     if (nl > 255) return -ENAMETOOLONG;
@@ -386,6 +418,7 @@ int jexfs_create(const char *name)
 
 int jexfs_mkdir(const char *name)
 {
+    if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return -EINVAL;
     uint16_t nl = (uint16_t)strlen(name);
     if (nl > 255) return -ENAMETOOLONG;
@@ -513,6 +546,7 @@ write_entry:
 
 int jexfs_remove(const char *name)
 {
+    if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return -EINVAL;
     uint16_t nl = (uint16_t)strlen(name);
 
@@ -584,6 +618,7 @@ not_found:
 
 int jexfs_rename(const char *old_name, const char *new_name)
 {
+    if (!jexfs_mounted) return -ENODEV;
     if (!old_name || !new_name) return -EINVAL;
     uint16_t old_nl = (uint16_t)strlen(old_name);
     uint16_t new_nl = (uint16_t)strlen(new_name);
@@ -636,6 +671,7 @@ int jexfs_rename(const char *old_name, const char *new_name)
 
 int jexfs_get_size(int inode_idx)
 {
+    if (!jexfs_mounted) return 0;
     struct jex_inode inode;
     jexfs_read_inode((uint32_t)inode_idx, &inode);
     return (int)inode.size;
@@ -643,6 +679,7 @@ int jexfs_get_size(int inode_idx)
 
 void jexfs_list_dir(uint32_t inode_idx)
 {
+    if (!jexfs_mounted) { terminal_writestring("(no JEXFS)\n"); return; }
     struct jex_inode di;
     jexfs_read_inode(inode_idx, &di);
     if ((di.mode & JEXFS_TYPE_MASK) != JEXFS_TYPE_DIR) return;
@@ -681,6 +718,27 @@ list_end:
 void jexfs_init(void)
 {
     pr_info("Mounting JexFS v2...\n");
+
+    /* A GRUB-loaded multiboot module carries the root image in RAM.
+     * Probe each module's superblock before falling back to the IDE disk. */
+    if (g_mboot_info->flags & (1 << 3)) {
+        multiboot_module_t *mod = (multiboot_module_t *)g_mboot_info->mods_addr;
+        for (uint32_t i = 0; i < g_mboot_info->mods_count; i++, mod++) {
+            uint32_t size = mod->end - mod->start;
+            if (size < 2 * BLOCK_SIZE)
+                continue;
+            struct jex_superblock *probe =
+                (struct jex_superblock *)(mod->start + BLOCK_SIZE);
+            if (probe->magic == JEXFS_MAGIC &&
+                probe->inode_size == JEXFS_INODE_SIZE) {
+                jexfs_set_ramdisk((void *)mod->start, size);
+                pr_info("Root image from module @ 0x%08x, %u bytes\n",
+                        mod->start, size);
+                break;
+            }
+        }
+    }
+
     uint8_t buf[BLOCK_SIZE];
     read_block(1, buf);
     memcpy(&sb, buf, sizeof(sb));
@@ -695,6 +753,7 @@ void jexfs_init(void)
     }
 
     cwd_inode = 1;
+    jexfs_mounted = 1;
     pr_info("Mounted: %u blocks, %u inodes, data at block %u\n",
             sb.total_blocks, sb.total_inodes, sb.data_start);
 }

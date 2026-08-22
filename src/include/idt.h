@@ -37,6 +37,12 @@ struct idt_ptr_struct
 
 typedef struct idt_ptr_struct idt_ptr_t;
 
+/* Shared IDT table and IDTR image (defined in idt.c).
+ * APs reload the IDTR from this in ap_startup — their reset state points
+ * at the real-mode IVT, which is fatal on any protected-mode exception. */
+extern idt_entry_t idt_entries[256];
+extern idt_ptr_t   idt_ptr;
+
 /**
  * @brief Initialize the IDT and load it into the CPU.
  */

@@ -176,7 +176,15 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
 #define NETLOG_UDP  (1 << 3)
 #define NETLOG_ALL  (NETLOG_ARP | NETLOG_IP | NETLOG_ICMP | NETLOG_UDP)
 
+/* Expand an IP4()-built address into four octet args for printf:
+ *   pr_info("dst=%u.%u.%u.%u\n", IP_SPLIT(ip)); */
+#define IP_SPLIT(ip) \
+    ((unsigned)((ip) & 0xFF)), ((unsigned)(((ip) >> 8) & 0xFF)), \
+    ((unsigned)(((ip) >> 16) & 0xFF)), ((unsigned)(((ip) >> 24) & 0xFF))
+
 void netlog_set_flags(int flags);
+void net_debug_enable(int on);
+extern int net_shell_progress;
 void net_init(void);
 void net_process_packet(uint8_t* data, uint32_t len);
 int  net_ping(uint32_t dest_ip);

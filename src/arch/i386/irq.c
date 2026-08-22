@@ -9,6 +9,8 @@
 #include "idt.h"
 #include "init.h"
 #include "ports.h"
+#include "apic.h"
+#include "kernel/printk.h"
 #include <stddef.h>
 
 /* Assembly IRQ stubs declared in interrupts.s */
@@ -93,23 +95,29 @@ early_init(init_irq);
  */
 void irq_handler(registers_t regs)
 {
-    /* Notify printk that we are in ISR context (skip slow terminal PIO) */
-    extern volatile int in_isr;
-    in_isr = 1;
+    /* Notify printk that we are in ISR context (skip slow terminal PIO).
+     * Depth counter, not a flag: handlers nest, so the innermost exit
+     * must not un-suppress the outer frame. */
+    in_isr++;
 
     /*
-     * Send End of Interrupt (EOI) to the PICs BEFORE calling the handler.
+     * Send End of Interrupt (EOI) BEFORE calling the handler.
      *
      * Critical: the handler (e.g. timer_callback) may call task_switch(),
      *  which switches to a different task and NEVER returns to this function.
-     *  If EOI was after the handler, the PIC's In-Service Register bit would
-     *  stay set forever, blocking ALL further interrupts (timer, keyboard, etc.).
+     *  If EOI was after the handler, the PIC/APIC In-Service Register bit
+     *  would stay set forever, blocking ALL further interrupts.
+     *
+     * In APIC mode we write the LAPIC EOI register.  In legacy PIC mode
+     * we write the master (and slave, if needed) PIC EOI ports.
      */
-    if (regs.int_no >= 40)
-    {
-        outb(0xA0, 0x20); /* Slave PIC EOI */
+    if (using_apic) {
+        apic_eoi();
+    } else {
+        if (regs.int_no >= 40)
+            outb(0xA0, 0x20); /* Slave PIC EOI */
+        outb(0x20, 0x20);     /* Master PIC EOI */
     }
-    outb(0x20, 0x20); /* Master PIC EOI */
 
     /* Execute custom handler if one is registered */
     void (*handler)(registers_t*);
@@ -119,6 +127,5 @@ void irq_handler(registers_t regs)
         handler(&regs);
     }
 
-    /* Restore ISR context flag */
-    in_isr = 0;
+    in_isr--;
 }

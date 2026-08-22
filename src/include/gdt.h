@@ -83,6 +83,11 @@ typedef struct tss_entry_struct tss_entry_t;
  */
 extern tss_entry_t tss_entry;
 
+/* Shared GDT table and IDTR-style descriptor (defined in gdt.c).
+ * APs reload these in ap_startup so every CPU runs the same descriptors. */
+extern gdt_entry_t gdt_entries[6];
+extern gdt_ptr_t   gdt_ptr;
+
 /**
  * @brief Initialize the GDT and load it into the CPU.
  */

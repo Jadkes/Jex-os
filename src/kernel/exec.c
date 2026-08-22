@@ -181,10 +181,11 @@ int execve_file(const char* filename, char** argv, char** envp)
     log_serial(filename);
     log_serial("\n");
     /* Log current task's page directory vs CR3 */
+    task_t* ct_log = cur_task();
     log_serial("[EXEC] current_task pid=");
-    log_hex_serial(current_task->id);
+    log_hex_serial(ct_log ? ct_log->id : 0);
     log_serial(" page_directory=0x");
-    log_hex_serial((uint32_t)current_task->page_directory);
+    log_hex_serial(ct_log ? (uint32_t)ct_log->page_directory : 0);
     log_serial(" CR3=0x");
     {
         uint32_t cr3;
@@ -283,16 +284,16 @@ int execve_file(const char* filename, char** argv, char** envp)
         /* Print TSS.ESP0 and current task info for crash debugging */
         {
             extern tss_entry_t tss_entry;
-            extern volatile task_t* current_task;
+            task_t* ct_esp = cur_task();
             log_serial("[EXEC] TSS.ESP0=0x");
             log_hex_serial(tss_entry.esp0);
             log_serial(" task.kstack_top=0x");
-            if (current_task && current_task->kstack)
-                log_hex_serial(current_task->kstack + KSTACK_SIZE);
+            if (ct_esp && ct_esp->kstack)
+                log_hex_serial(ct_esp->kstack + KSTACK_SIZE);
             else
                 log_serial("NULL");
             log_serial(" pid=");
-            log_hex_serial(current_task ? current_task->id : 0);
+            log_hex_serial(ct_esp ? ct_esp->id : 0);
             log_serial("\n");
         }
 

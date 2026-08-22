@@ -8,6 +8,7 @@
 #include "net.h"
 #include "dhcp.h"
 #include "rtl8139.h"
+#include "ports.h"
 #include "terminal.h"
 #include "init.h"
 #include "serial.h"
@@ -52,13 +53,30 @@ static volatile int verbose_net_flags = NETLOG_OFF;
 
 static void netlog_write(const char* prefix, const char* msg)
 {
-    pr_info("%s: %s\n", prefix, msg);
+    /* Detail trace: serial-only when the debug window is open (ping -v) */
+    pr_debug("%s: %s\n", prefix, msg);
 }
 
 void netlog_set_flags(int flags)
 {
     verbose_net_flags = flags;
     pr_info("verbose logging %s\n", flags ? "enabled" : "disabled");
+}
+
+/*
+ * Verbose-debug window control (used by `ping -v`).
+ *
+ * enable=1 turns on every NETLOG trace flag and opens the serial-only
+ * DEBUG channel, so full packet-level detail floods serial while the
+ * VGA shell only sees the explicit pr_info progress lines below.
+ * enable=0 closes the window and restores quiet defaults.
+ */
+void net_debug_enable(int on)
+{
+    verbose_net_flags = on ? NETLOG_ALL : NETLOG_OFF;
+    serial_debug = on;
+    if (!on)
+        net_shell_progress = 0;
 }
 
 /* Checksum & helpers */
@@ -174,7 +192,7 @@ void arp_dump(void)
     int count = 0;
 
     /* Disable interrupts while walking the cache (ISR may modify it) */
-    __asm__ volatile("cli");
+    uint32_t _irqf1 = irq_save();
 
     for (int i = 0; i < ARP_CACHE_SIZE; i++)
         if (arp_cache[i].valid) count++;
@@ -218,7 +236,7 @@ void arp_dump(void)
     }
 
     /* Re-enable interrupts now that the cache walk is done */
-    __asm__ volatile("sti");
+    irq_restore(_irqf1);
 }
 
 /* Routing */
@@ -573,18 +591,19 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
         }
     }
 
-    /* Look up handler by destination port.
-     * Disable interrupts so the table doesn't change under us. */
+    /* Look up handler by destination port and dispatch with interrupts
+     * still disabled — we are inside the NIC ISR, and re-enabling IF here
+     * would let a timer tick nest into this frame mid-dispatch (and let
+     * the level-triggered NIC line re-assert recursively).  Both current
+     * handlers (dns/dhcp) only stash data and set flags, so holding IF=0
+     * across the call is safe. */
     __asm__ volatile("cli");
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == dest_port) {
             if (dest_port == DNS_CLIENT_PORT)
                 pr_debug("DNS handler found\n");
-            /* Snapshot handler + userdata before re-enabling interrupts,
-             * since the handler may itself register/unregister. */
             udp_callback_t h = udp_handlers[i].handler;
             void* udata      = udp_handlers[i].userdata;
-            __asm__ volatile("sti");
             h(
                 ((ip_header_t*)data)->src_ip,
                 udp->src_port,
@@ -594,7 +613,6 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
             return;
         }
     }
-    __asm__ volatile("sti");
 }
 
 /** 
@@ -607,13 +625,13 @@ static void handle_udp(uint8_t* data, uint32_t len, uint32_t ip_hdr)
  */
 int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
 {
-    __asm__ volatile("cli");
+    uint32_t _irqf2 = irq_save();
     /* Overwrite existing entry if the port is already registered */
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == port) {
             udp_handlers[i].handler  = handler;
             udp_handlers[i].userdata = userdata;
-            __asm__ volatile("sti");
+            irq_restore(_irqf2);
             return 0;
         }
     }
@@ -628,11 +646,11 @@ int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
              * before the ISR can see active=1. */
             __asm__ volatile("" ::: "memory");
             udp_handlers[i].active   = 1;
-            __asm__ volatile("sti");
+            irq_restore(_irqf2);
             return 0;
         }
     }
-    __asm__ volatile("sti");
+    irq_restore(_irqf2);
     return -1;      /* Table full */
 }
 
@@ -643,15 +661,15 @@ int net_udp_register(uint16_t port, udp_callback_t handler, void* userdata)
  */
 void net_udp_unregister(uint16_t port)
 {
-    __asm__ volatile("cli");
+    uint32_t _irqf3 = irq_save();
     for (int i = 0; i < UDP_MAX_HANDLERS; i++) {
         if (udp_handlers[i].active && udp_handlers[i].port == port) {
             udp_handlers[i].active = 0;
-            __asm__ volatile("sti");
+            irq_restore(_irqf3);
             return;
         }
     }
-    __asm__ volatile("sti");
+    irq_restore(_irqf3);
 }
 
 /** 
@@ -709,9 +727,9 @@ int net_send_udp(uint32_t dest_ip, uint16_t dest_port, uint16_t src_port,
      * RFC 768: if computed checksum is 0, send 0xFFFF (0 means "no checksum").
      */
     {
-        __asm__ volatile("cli");
+        uint32_t _irqf4 = irq_save();
         uint16_t csum = udp_checksum(OUR_IP, dest_ip, (const uint16_t*)udp, udp_len);
-        __asm__ volatile("sti");
+        irq_restore(_irqf4);
         udp->checksum = (csum == 0) ? 0xFFFF : csum;
     }
 
@@ -836,8 +854,10 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
     /* Learn the sender's MAC for future replies */
     arp_add(ip->src_ip, src_mac);
 
-    /* Only accept packets addressed to us */
-    if (ip->dest_ip != OUR_IP)
+    /* Only accept packets addressed to us, or the limited broadcast
+     * (255.255.255.255) that DHCP OFFER/ACK arrive on while our IP is
+     * still unconfigured. */
+    if (ip->dest_ip != OUR_IP && ip->dest_ip != 0xFFFFFFFFu)
         return;
 
     /* Dispatch to the appropriate L4 protocol handler */
@@ -964,6 +984,13 @@ static volatile int dns_pending   = 0;
 static uint16_t     dns_xid       = 0;
 static uint8_t      dns_reply[512];
 static uint16_t     dns_reply_len = 0;
+
+/* When set, net_dns_resolve prints one-line stage markers to the VGA
+ * shell (the full trace still goes to serial only). */
+int net_shell_progress = 0;
+
+#define DNS_PROGRESS(fmt, ...) \
+    do { if (net_shell_progress) pr_info("dns: " fmt "\n", ##__VA_ARGS__); } while (0)
 
 /* tcpdump-lite */
 
@@ -1296,6 +1323,8 @@ uint32_t net_dns_resolve(const char* hostname)
     uint32_t result = 0;
 
     for (int attempt = 0; attempt < 3 && result == 0; attempt++) {
+        DNS_PROGRESS("attempt %d: query %uB -> %u.%u.%u.%u", attempt + 1,
+                     qlen, IP_SPLIT(DNS_SERVER));
         if (attempt > 0)
             pr_debug("retry %d\n", attempt + 1);
 
@@ -1307,6 +1336,7 @@ uint32_t net_dns_resolve(const char* hostname)
 
         if (ret < 0) {
             pr_debug("ARP not cached, sending request\n");
+            DNS_PROGRESS("arp miss -> requesting MAC");
             uint8_t our_mac[6];
             rtl8139_get_mac(our_mac);
             uint8_t broadcast[ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
@@ -1340,11 +1370,13 @@ uint32_t net_dns_resolve(const char* hostname)
 
             if (arp_find(DNS_SERVER) < 0) {
                 pr_debug("ARP resolution timed out after 30s\n");
+                DNS_PROGRESS("ARP TIMED OUT (no reply from gateway)");
                 net_udp_unregister(DNS_CLIENT_PORT);
                 continue;  /* Try next retry */
             }
 
             pr_debug("ARP resolved, sending query\n");
+            DNS_PROGRESS("arp ok");
 
             dns_pending   = 0;
             dns_reply_len = 0;
@@ -1353,6 +1385,7 @@ uint32_t net_dns_resolve(const char* hostname)
 
         if (ret < 0) {
             pr_debug("UDP send failed even after ARP\n");
+            DNS_PROGRESS("udp send FAILED");
             net_udp_unregister(DNS_CLIENT_PORT);
             continue;
         }
@@ -1373,12 +1406,14 @@ uint32_t net_dns_resolve(const char* hostname)
         if (dns_pending) {
             __asm__ volatile("" ::: "memory");
             pr_debug("response received\n");
+            DNS_PROGRESS("reply %uB, parsing", dns_reply_len);
             result = dns_parse_response((const uint8_t*)dns_reply, dns_reply_len);
             net_udp_unregister(DNS_CLIENT_PORT);
             break;  /* Success — exit retry loop */
         }
 
         pr_debug("response timed out\n");
+        DNS_PROGRESS("no reply in 20s (rx polled, see serial)");
         net_udp_unregister(DNS_CLIENT_PORT);
     }
 
@@ -1391,9 +1426,11 @@ uint32_t net_dns_resolve(const char* hostname)
 static volatile int dhcp_pending = 0;
 static uint32_t     dhcp_xid     = 0;
 
-/* Scratch buffer for the raw DHCP reply (UDP payload) */
+/* Scratch buffer for the raw DHCP reply (UDP payload).  Written by the
+ * DHCP handler in ISR context before dhcp_pending is set, read by the
+ * waiting task after it observes the flag. */
 static uint8_t      dhcp_reply[512];
-static uint32_t     dhcp_reply_len = 0;
+static volatile uint32_t dhcp_reply_len = 0;
 
 /*
  * dhcp_handler - UDP callback for DHCP replies on port 68.
@@ -1553,10 +1590,10 @@ static void dhcp_send_msg(uint8_t msg_type, const uint8_t* our_mac,
     /* UDP checksum (RFC 768).  Zero source IP in pseudo-header is
      * valid per RFC 2131 for clients without an IP yet. */
     {
-        __asm__ volatile("cli");
+        uint32_t _irqf5 = irq_save();
         uint16_t csum = udp_checksum(0, broadcast_ip,
                                        (const uint16_t*)udp, udp_len);
-        __asm__ volatile("sti");
+        irq_restore(_irqf5);
         udp->checksum = (csum == 0) ? 0xFFFF : csum;
     }
 

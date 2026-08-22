@@ -44,6 +44,7 @@
 #include "kernel/vsnprintf.h"
 #include "devtmpfs.h"
 #include "jexfs.h"
+#include "smp.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -60,7 +61,11 @@ static void print_banner(void)
     char buf[128];
 
     terminal_writestring("\n");
-    terminal_writestring("JexOS v0.7.4 \x97 i386 \n");
+    /* Show CPU count (updated by smp_init) */
+    char cpuinfo[64];
+    snprintf(cpuinfo, sizeof(cpuinfo), "JexOS v0.7.4 \x97 i386 \x97 %d CPU%s\n",
+             cpu_count, cpu_count > 1 ? "s" : "");
+    terminal_writestring(cpuinfo);
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
     log_serial("JexOS v0.7.4");
 
@@ -83,7 +88,7 @@ static void print_banner(void)
         terminal_writestring(")\n");
     }
 
-    terminal_writestring("FS: JexFS v1, 1.44 MB\n");
+    terminal_writestring("FS: JexFS v2, 4 MB (RAM rootfs)\n");
     terminal_writestring("\n");
 }
 
@@ -125,6 +130,10 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
 
     /* CWD starts at root */
     cwd_inode = 1;
+
+    /* SMP boot: scan ACPI, init APIC, wake APs. Runs before interrupts
+     * are enabled and before the timer is initialized. */
+    smp_init();
 
     /* 13. System Timer — needs explicit frequency parameter, kept manual */
     pr_info("Initializing Timer...\n");

@@ -79,6 +79,20 @@ isr128:
     jmp isr_common_stub
 
 /**
+ * @brief Spurious APIC interrupt vector (0xFF).
+ *
+ * The LAPIC spurious vector is armed at 0xFF by apic_init().  A gate must
+ * exist for it — an unhandled vector during interrupt delivery escalates to
+ * a double fault.  The C handler returns without EOI per the SDM.
+ */
+.global isr255
+isr255:
+    cli
+    push $0
+    push $255
+    jmp isr_common_stub
+
+/**
  * @brief Common handler for Exceptions and Syscalls.
  */
 isr_common_stub:
