@@ -8,6 +8,19 @@
 
 .section .text
 .extern isr_handler
+.extern df_panic_handler
+
+/*
+ * df_panic_stub - entry point of the double-fault task gate.
+ *
+ * The CPU loaded everything from df_tss, so no register here is
+ * meaningful; the goal is to report and stop, not to recover.
+ */
+.global df_panic_stub
+df_panic_stub:
+    call df_panic_handler
+1:  hlt
+    jmp 1b
 
 /**
  * @brief Macro for ISRs that do not provide an error code.

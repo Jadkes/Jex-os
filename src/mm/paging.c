@@ -6,6 +6,7 @@
  * Handles virtual-to-physical mapping and Page Fault exceptions.
  */
 
+#include "gdt.h"
 #include "kernel/printk.h"
 #include "paging.h"
 #include "pmm.h"
@@ -421,6 +422,9 @@ void init_paging() {
 
     /* Load the Page Directory into CR3 */
     asm volatile("mov %0, %%cr3" :: "r"(&kernel_directory));
+    /* The #DF task gate reloads CR3 from its TSS; hand it the kernel
+     * directory so the landing pad can actually run. */
+    df_tss_set_cr3((uint32_t)&kernel_directory);
 
     /* Enable Paging (Set Bit 31 of CR0) */
     uint32_t cr0;

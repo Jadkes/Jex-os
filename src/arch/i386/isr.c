@@ -7,6 +7,7 @@
 
 #include "isr.h"
 #include "idt.h"
+#include "gdt.h"
 #include "init.h"
 #include "paging.h"
 #include "syscall.h"
@@ -55,7 +56,11 @@ void isr_install()
     idt_set_gate(2, (uint32_t)isr2, 0x08, 0x8E); idt_set_gate(3, (uint32_t)isr3, 0x08, 0x8E);
     idt_set_gate(4, (uint32_t)isr4, 0x08, 0x8E); idt_set_gate(5, (uint32_t)isr5, 0x08, 0x8E);
     idt_set_gate(6, (uint32_t)isr6, 0x08, 0x8E); idt_set_gate(7, (uint32_t)isr7, 0x08, 0x8E);
-    idt_set_gate(8, (uint32_t)isr8, 0x08, 0x8E); idt_set_gate(9, (uint32_t)isr9, 0x08, 0x8E);
+    /* Vector 8 is a TASK GATE to the dedicated #DF TSS: when the
+     * current stack itself is broken this is the only way the handler
+     * can still run.  Flags 0x85 = present, DPL0, type 5 (task gate);
+     * base/selector fields below are ignored by the CPU for gates. */
+    idt_set_gate(8, 0, df_tss_selector(), 0x85); idt_set_gate(9, (uint32_t)isr9, 0x08, 0x8E);
     idt_set_gate(10, (uint32_t)isr10, 0x08, 0x8E); idt_set_gate(11, (uint32_t)isr11, 0x08, 0x8E);
     idt_set_gate(12, (uint32_t)isr12, 0x08, 0x8E); idt_set_gate(13, (uint32_t)isr13, 0x08, 0x8E);
     idt_set_gate(14, (uint32_t)isr14, 0x08, 0x8E); idt_set_gate(15, (uint32_t)isr15, 0x08, 0x8E);
@@ -88,6 +93,29 @@ early_init(isr_install);
  * Routes system calls to the syscall handler, page faults to the paging manager,
  * debug/breakpoint events to the GDB stub, and halts on unhandled exceptions.
  */
+/**
+ * @brief Double-fault landing pad (runs on the dedicated #DF stack).
+ *
+ * Everything is suspect by definition, so output goes straight at the
+ * UART with no locks, no klog ring, and no pointer chasing beyond CR2.
+ */
+void df_panic_handler(void)
+{
+    const char* msg = "\n*** DOUBLE FAULT ***\n"
+                      "kernel stack overrun or fault while faulting\n"
+                      "system halted (no recovery)\n";
+    for (const char* c = msg; *c; c++)
+        write_serial(*c);
+
+    uint32_t cr2;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    const char* hex = "0123456789ABCDEF";
+    const char* pre = "cr2=0x";
+    for (const char* c = pre; *c; c++) write_serial(*c);
+    for (int i = 28; i >= 0; i -= 4) write_serial(hex[(cr2 >> i) & 0xF]);
+    write_serial('\n');
+}
+
 void isr_handler(registers_t *regs)
 {
     /* Spurious APIC interrupt (vector 0xFF): by definition it has no real

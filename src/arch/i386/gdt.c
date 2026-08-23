@@ -19,6 +19,18 @@ gdt_ptr_t   gdt_ptr;
 /* One TSS per CPU — each core LTRs its own descriptor at startup */
 tss_entry_t tss_entries[NR_CPUS];
 
+/*
+ * Double-fault landing pad.  Vector 8 gets a TASK GATE targeting this
+ * TSS: if a fault fires while the current stack is unusable (kernel
+ * stack overrun, bad SS), an interrupt gate could not even push its
+ * frame and the CPU would triple-fault silently.  The task gate
+ * switches to this known-good stack instead, so the machine reports
+ * the fault and halts rather than rebooting with no logs.
+ */
+tss_entry_t df_tss __attribute__((aligned(16)));
+static uint8_t df_stack[16 * 1024] __attribute__((aligned(16)));
+extern void df_panic_stub(void);
+
 /**
  * @brief Set the value of a GDT gate.
  * 
@@ -103,9 +115,29 @@ void init_gdt()
     for (int i = 0; i < NR_CPUS; i++)
         write_tss(GDT_TSS_IDX + i, i, SEG_KERNEL_DATA, 0x0);
 
+    /* The #DF landing pad: kernel segments, its own stack, interrupts
+     * off (eflags.IF=0), halted after reporting.  CR3 is filled in by
+     * df_tss_set_cr3() once paging exists; until then a #DF would have
+     * nowhere sane to run -- but paging is up within a microsecond of
+     * the GDT, so the window is negligible. */
+    memset(&df_tss, 0, sizeof(df_tss));
+    df_tss.esp   = (uint32_t)(df_stack + sizeof(df_stack));
+    df_tss.cs    = SEG_KERNEL_CODE;
+    df_tss.ss = df_tss.ds = df_tss.es = df_tss.fs = df_tss.gs = SEG_KERNEL_DATA;
+    df_tss.eflags = 0x00000002;
+    df_tss.eip   = (uint32_t)df_panic_stub;
+    df_tss.iomap_base = sizeof(df_tss);
+    gdt_set_gate(GDT_DF_TSS_IDX, (uint32_t)&df_tss, sizeof(df_tss) - 1,
+                 SEG_ACCESS_TSS, 0x00);
+
     /* Load the GDT and this CPU's (BSP) TSS into registers */
     gdt_flush((uint32_t)&gdt_ptr);
     tss_flush();
 }
 
 early_init(init_gdt);
+
+void df_tss_set_cr3(uint32_t cr3)
+{
+    df_tss.cr3 = cr3;
+}

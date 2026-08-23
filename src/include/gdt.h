@@ -16,7 +16,8 @@
  * can LTR its own task register without colliding on a busy descriptor. */
 #define GDT_BASE_ENTRIES  5
 #define GDT_TSS_IDX       GDT_BASE_ENTRIES
-#define GDT_NUM_ENTRIES   (GDT_BASE_ENTRIES + NR_CPUS)
+#define GDT_DF_TSS_IDX    (GDT_BASE_ENTRIES + NR_CPUS)
+#define GDT_NUM_ENTRIES   (GDT_BASE_ENTRIES + NR_CPUS + 1)
 
 #define SEG_KERNEL_CODE   0x08
 #define SEG_KERNEL_DATA   0x10
@@ -65,6 +66,18 @@ typedef struct gdt_ptr_struct gdt_ptr_t;
 static inline uint16_t tss_selector(int cpu) {
     return (uint16_t)((GDT_TSS_IDX + cpu) << 3);
 }
+
+/* Selector of the dedicated double-fault TSS (task gate target). */
+static inline uint16_t df_tss_selector(void) {
+    return (uint16_t)(GDT_DF_TSS_IDX << 3);
+}
+
+/**
+ * @brief Arm the double-fault landing pad with a valid page directory.
+ * Call once paging is live; a task-gate switch reloads CR3 from the
+ * TSS, so it must point at the kernel directory.
+ */
+void df_tss_set_cr3(uint32_t cr3);
 
 /**
  * @struct tss_entry_struct
