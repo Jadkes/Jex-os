@@ -12,6 +12,7 @@
 #include "ports.h"
 #include "task.h"
 #include "kernel/printk.h"
+#include "apic.h"
 /**
  * @brief Global system tick counter.
  * Marked volatile because it is modified within an interrupt handler.
@@ -28,15 +29,62 @@ void timer_callback(registers_t *regs)
 {
     system_ticks++;
 
-    /* Track per-task CPU usage for the top command */
+    /*
+     * Preemption moves to the per-CPU LAPIC timers once they run: they
+     * fire on every core, while IRQ0 only ever reaches the BSP through
+     * the I/O APIC routing.  The PIT stays up as the wall-clock source.
+     */
+    if (!lapic_timer_armed()) {
+        task_t* t = cur_task();
+        if (t)
+            t->cpu_ticks++;
+        task_switch();
+    }
+
+    (void)regs;
+}
+
+/**
+ * @brief LAPIC timer interrupt handler (vector 48).
+ *
+ * Runs on whichever CPU's timer expired and preempts that CPU only.
+ * system_ticks stays PIT-owned so wall-clock time is counted once.
+ *
+ * @param regs State of CPU registers.
+ */
+void lapic_timer_tick(registers_t *regs)
+{
     task_t* t = cur_task();
     if (t)
         t->cpu_ticks++;
-
-    /* Trigger the scheduler to possibly switch tasks */
     task_switch();
 
     (void)regs;
+}
+
+/**
+ * @brief Arm the LAPIC timer on the calling CPU and register its handler.
+ *
+ * Registration happens once; arming is per-CPU and safe to call from
+ * every core as it comes online.
+ */
+void init_lapic_timer(void)
+{
+    if (!using_apic) return;   /* PIC-only box: PIT keeps preemption */
+
+
+    static int registered = 0;
+    if (!registered) {
+        registered = 1;
+        register_interrupt_handler(16, lapic_timer_tick);  /* vector 48 */
+    }
+
+    /* BSP calibrates on first call; APs arrive after smp_timers_go()
+     * with the interval already set and skip straight to arming. */
+    if (!lapic_timer_interval)
+        lapic_timer_calibrate();
+
+    lapic_timer_arm();
 }
 
 /**

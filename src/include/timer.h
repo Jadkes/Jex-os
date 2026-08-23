@@ -11,6 +11,8 @@
 #include <stdint.h>
 
 /** Tick rate: PIT runs at 100 Hz by default */
+extern volatile uint32_t system_ticks;
+
 #define TICKS_PER_SEC 100
 
 /** Derived tick period, used by sleep() conversions */
@@ -24,6 +26,9 @@
  * @param frequency Hertz (e.g., 100 for 10ms ticks).
  */
 void init_timer(uint32_t frequency);
+
+/* Arm this CPU's LAPIC timer (registers the vector-48 handler once). */
+void init_lapic_timer(void);
 
 /**
  * @brief Block the current execution for a specified duration.

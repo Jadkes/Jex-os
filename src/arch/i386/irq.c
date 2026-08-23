@@ -22,7 +22,7 @@ extern void irq12(); extern void irq13(); extern void irq14(); extern void irq15
 /**
  * @brief Table of registered IRQ callback functions.
  */
-void* irq_routines[16] =
+void* irq_routines[32] =   /* 16 PIC IRQs + extra vectors (LAPIC timer at 48) */
 {
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0
@@ -83,6 +83,10 @@ void init_irq()
     idt_set_gate(45, (uint32_t)irq13, 0x08, 0x8E);
     idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E);
     idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
+
+    /* Per-CPU LAPIC timer — vector 48, outside the PIC remap range */
+    extern void irq_vec48();
+    idt_set_gate(48, (uint32_t)irq_vec48, 0x08, 0x8E);
 }
 
 early_init(init_irq);
@@ -98,7 +102,7 @@ void irq_handler(registers_t regs)
     /* Notify printk that we are in ISR context (skip slow terminal PIO).
      * Depth counter, not a flag: handlers nest, so the innermost exit
      * must not un-suppress the outer frame. */
-    in_isr++;
+    __sync_fetch_and_add(&in_isr, 1);
 
     /*
      * Send End of Interrupt (EOI) BEFORE calling the handler.
@@ -121,11 +125,14 @@ void irq_handler(registers_t regs)
 
     /* Execute custom handler if one is registered */
     void (*handler)(registers_t*);
-    handler = irq_routines[regs.int_no - IRQ_VECTOR_BASE];
+    if (regs.int_no - IRQ_VECTOR_BASE < (int)(sizeof(irq_routines) / sizeof(irq_routines[0])))
+        handler = irq_routines[regs.int_no - IRQ_VECTOR_BASE];
+    else
+        handler = NULL;
     if (handler)
     {
         handler(&regs);
     }
 
-    in_isr--;
+    __sync_fetch_and_sub(&in_isr, 1);
 }

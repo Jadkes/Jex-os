@@ -42,6 +42,13 @@
 #define LAPIC_TIMER_CCR  0x390   /* Current Count Register */
 #define LAPIC_TIMER_DCR  0x3E0   /* Divide Configuration */
 
+/* LVT timer bits */
+#define LAPIC_LVT_PERIODIC   (1 << 17)
+#define LAPIC_LVT_MASKED     (1 << 16)
+
+/* Vector for the per-CPU LAPIC timer, above the PIC IRQ range (32-47) */
+#define LAPIC_TIMER_VECTOR   0x30
+
 /* Spurious Vector Register bits */
 #define APIC_SPURIOUS_ENABLE  (1 << 8)
 
@@ -117,6 +124,37 @@ void apic_eoi(void);
  * Return: APIC ID (bits 31-24 of LAPIC ID register, shifted down).
  */
 uint32_t apic_read_id(void);
+
+/*
+ * lapic_timer_calibrate - Measure the LAPIC timer against PIT ticks.
+ *
+ * Runs a masked one-shot from 0xFFFFFFFF across ~100ms of system_ticks,
+ * then stores the periodic interval that reproduces TICKS_PER_SEC.
+ * Call once on the BSP before arming any CPU.
+ */
+void lapic_timer_calibrate(void);
+
+/* Ticks per PIT slice from the last calibration (0 = not calibrated).
+ * Shared so APs skip straight to arming with the BSP's measurement. */
+extern uint32_t lapic_timer_interval;
+
+/*
+ * lapic_timer_arm - Start this CPU's LAPIC timer in periodic mode.
+ *
+ * Uses the interval computed by lapic_timer_calibrate(); every core
+ * calls this for itself once it may take timer interrupts.
+ */
+void lapic_timer_arm(void);
+
+/*
+ * lapic_timer_armed - True once at least one LAPIC timer is running.
+ *
+ * The PIT handler checks this to hand preemption duty over.
+ */
+int lapic_timer_armed(void);
+
+/* lapic_timer_armed_count - Number of CPUs with a running LAPIC timer. */
+int lapic_timer_armed_count(void);
 
 /*
  * apic_send_init_ipi - Send an INIT IPI to a specific APIC ID.

@@ -155,6 +155,15 @@ IRQ   13,   45
 IRQ   14,   46
 IRQ   15,   47
 
+/* LAPIC timer — vector 48, outside the PIC remapped range.  Same frame
+ * layout as the PIC stubs so irq_handler's EOI-first logic applies. */
+.global irq_vec48
+irq_vec48:
+    cli
+    push $0
+    push $48
+    jmp irq_common_stub
+
 /**
  * @brief Common handler for Hardware IRQs.
  */

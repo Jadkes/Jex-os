@@ -23,6 +23,7 @@
 #include "irq.h"
 #include "kernel/printk.h"
 #include "ports.h"
+#include "timer.h"
 
 int using_apic = 0;
 
@@ -235,6 +236,69 @@ static void apic_wait_icr_idle(void)
 {
     while (lapic_read(LAPIC_ICR_LOW) & ICR_DELIVERY_PENDING)
         __asm__ volatile("pause");
+}
+
+/* ── Per-CPU LAPIC timer ──────────────────────────────── */
+
+uint32_t lapic_timer_interval;  /* ticks per scheduler slice */
+static volatile int lapic_timers_running;
+
+void lapic_timer_calibrate(void)
+{
+    /* One-shot from 0xFFFFFFFF with divide-by-16 while system_ticks
+     * advances one tenth of a second; the countdown delta is the
+     * raw timer rate over that window. */
+    const uint32_t WINDOW_TICKS = TICKS_PER_SEC / 10;
+
+    lapic_write(LAPIC_TIMER_DCR, 0x3);                       /* /16 */
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | LAPIC_LVT_MASKED);
+    lapic_write(LAPIC_TIMER_ICR, 0xFFFFFFFF);
+
+    /* system_ticks advances only from PIT interrupts, so the window
+     * must be measured with IF=1 regardless of caller context.  The
+     * timer LVT is masked above, so vector 48 cannot fire mid-window.
+     * BSP-only by construction (APs reuse the computed interval). */
+    uint32_t eflags;
+    __asm__ volatile("pushfl; popl %0; sti" : "=r"(eflags));
+
+    uint32_t start = system_ticks;
+    while ((uint32_t)(system_ticks - start) < WINDOW_TICKS)
+        __asm__ volatile("pause");
+
+    __asm__ volatile("pushl %0; popfl" :: "r"(eflags));
+
+    uint32_t elapsed = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CCR);
+    if (!elapsed) {
+        pr_err("LAPIC timer did not count; keeping PIT preemption\n");
+        return;
+    }
+
+    /* Scale back to one PIT tick period and round up */
+    lapic_timer_interval = (elapsed / WINDOW_TICKS) + 1;
+    pr_info("LAPIC timer calibrated: %u ticks/slice\n",
+            lapic_timer_interval);
+}
+
+void lapic_timer_arm(void)
+{
+    if (!lapic_timer_interval)
+        return;
+
+    lapic_write(LAPIC_TIMER_DCR, 0x3);                       /* /16 */
+    lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | LAPIC_LVT_PERIODIC);
+    lapic_write(LAPIC_TIMER_ICR, lapic_timer_interval);
+
+    __sync_fetch_and_add(&lapic_timers_running, 1);
+}
+
+int lapic_timer_armed(void)
+{
+    return lapic_timers_running > 0;
+}
+
+int lapic_timer_armed_count(void)
+{
+    return lapic_timers_running;
 }
 
 void apic_send_init_ipi(uint8_t lapic_id)
