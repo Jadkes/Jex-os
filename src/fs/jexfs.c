@@ -490,7 +490,10 @@ static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
         while (bo + 5 <= BLOCK_SIZE && off < di.size) {
             struct jex_dir_entry *de = (struct jex_dir_entry *)(buf + bo);
             if (de->inode == 0 && de->name_len == 0) {
-                found_off = (int)off; goto write_entry;
+                /* Zeroed gap: only take it if the new name fits the block */
+                if (bo + 5 + name_len <= BLOCK_SIZE) {
+                    found_off = (int)off; goto write_entry;
+                }
             }
             if (de->inode == 0 && de->name_len >= name_len) {
                 found_off = (int)off; goto write_entry;
@@ -526,6 +529,7 @@ write_entry:
         uint32_t bo = (uint32_t)found_off % BLOCK_SIZE;
         uint32_t phys = jexfs_bmap(&di, lb);
         if (phys == 0) return -EIO;
+        if (bo + 5 + name_len > BLOCK_SIZE) return -EIO; /* never write past the block */
 
         read_block(phys, buf);
         struct jex_dir_entry *de = (struct jex_dir_entry *)(buf + bo);
