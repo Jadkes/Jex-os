@@ -4,6 +4,28 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## ✅ Completed Milestones
 
+### master (post-v0.7.5) — Real SMP Scheduling, Allocator Hardening, Serial Boot Log
+
+### True SMP
+- [x] **Spinlocks**: PMM bitmap, kheap slabs, kernel-stack slots, PID handout and the task lists serialize on real locks (`spinlock.h`), not IF games
+- [x] **Per-CPU TSS**: GDT grew one TSS slot per core (`GDT_BASE_ENTRIES + NR_CPUS`); each AP LTRs its own at startup, so ring-3 interrupts work off-BSP
+- [x] **LAPIC Timer**: calibrated against PIT ticks on the BSP (interrupt-forced measure window), go-flag handshake arms every core's own periodic timer; PIT keeps wall-clock duty only
+- [x] **APs Run the Scheduler**: seeded idle task reuses the AP boot stack; park loop pause-spins (hlt would never wake at IF=0), then sti and round-robin its queue
+- [x] **Load Spreading**: `fork`/`kernel_fork` place children on the shortest ready queue, cross-cpu
+- [x] **Global Tasking Correctness**: one `tasklist_lock` covers switch/fork/exit-reparent/waitpid-reap/kill/pid-lookup across all CPUs' queues; signal bits set atomically against the keyboard ISR; shell `top` scans under `tasks_lock`
+- [x] **Stack-Slot Recycling**: `free_kernel_stack()` derives the slot from the stack's virtual address — waitpid can free stacks handed out by any CPU, no more fixed per-pid slots dying past 128 tasks
+
+### Allocator & Driver Hardening (bug audit)
+- [x] **rtl8139 Drain Unification**: ISR and poll paths share `rtl8139_drain_rx()` — one full lap past wraps, CAPR written with the documented gap, frame copies capped at RX_MAX_FRAME
+- [x] **jexfs Block-End Guard**: dir_insert requires the entry to fit before writing; write_entry backs it with -EIO instead of straddling into the next block
+- [x] **IP Length Validation**: handle_ip rejects frames whose ip_tot_len is smaller than the header or larger than what arrived; tcp sanity-checks the segment offset
+- [x] **slab_free Validation**: negative/misaligned offsets, out-of-range indices and double frees are rejected instead of silently corrupting the bitmap
+
+### Boot Diagnostics
+- [x] **Serial-Only Boot Log**: `pr_serial()` writes linux-style boot lines (multiboot info, memory totals, cpu/timer status, NIC/IP/FS summary) to `-serial stdio` while VGA output stays byte-for-byte unchanged
+- [x] **Console Lock**: log_serial holds a lock per message — no more torn lines from BSP/AP racing on the wire
+- [x] **Atomic ISR Depth Counter**: `in_isr` increments atomically now that every core dispatches IRQs
+
 ### master (post-v0.7.4) — SMP, IO/APIC, Clock Fixes
 
 ### Interactivity & Hardening
@@ -135,7 +157,8 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **LAPIC Timer**: per-CPU tick source armed after PIT calibration; PIT keeps wall-clock duty only
 - [x] **Per-CPU TSS**: GDT grew one TSS slot per core, each AP LTRs its own at startup — ring-3 interrupts work off-BSP
 - [ ] **Page-Directory Teardown on Reap**: waitpid still leaks cloned address spaces (see TODO in task.c)
-- [ ] **Atomic Console Writes**: serial lines from BSP and AP interleave mid-line
+- [x] **Atomic Console Writes**: log_serial locks whole messages; serial output is line-clean with both cores logging
+- [ ] **SMP Runtime Soak**: exercise fork-heavy loops, Ctrl+C storms and `top` on both cores for a while before trusting it (FPU corruption and TLB shootdown above are the known sharp edges)
 
 ### Networking
 - [ ] **TCP Window Scaling**: Advertise and handle window sizes
