@@ -10,6 +10,7 @@
 #include "irq.h"
 #include "init.h"
 #include "ports.h"
+#include "task.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -133,6 +134,18 @@ void keyboard_callback(registers_t *regs) {
             else if (c == 'n' || c == 'N') c = CTRL('N');
             else if (c == 'x' || c == 'X') c = CTRL('X');
             else if (c == 'z' || c == 'Z') c = CTRL('Z');
+        }
+
+        /* Ctrl+C while a foreground child runs delivers SIGINT instead of
+         * buffering the keystroke — the shell is parked in waitpid() and
+         * would not consume it until the child exits anyway. */
+        if (c == CTRL('C') && fg_child_pid > 0) {
+            task_t* fg = task_from_pid(fg_child_pid);
+            if (fg) {
+                fg->signal_pending |= (1 << SIGINT);
+                terminal_writestring("^C\n");
+                return;
+            }
         }
 
         if (c != 0) {

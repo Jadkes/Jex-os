@@ -135,6 +135,13 @@ int task_kill(int pid);
 void* sys_signal(int sig, void* handler);
 int   sys_kill(int pid, int sig);
 
+/* PID of the shell's foreground child, or 0 when the shell owns the console.
+ * The keyboard ISR turns Ctrl+C into SIGINT for this task. */
+extern volatile int fg_child_pid;
+
+/* Find a task by PID across every CPU ready queue, NULL if absent. */
+task_t* task_from_pid(int pid);
+
 /**
  * @brief Per-CPU current-task and ready-queue accessors.
  *

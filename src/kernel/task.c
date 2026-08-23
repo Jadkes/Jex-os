@@ -761,3 +761,18 @@ int sys_kill(int pid, int sig) {
 int task_kill(int pid) {
     return sys_kill(pid, SIGTERM);
 }
+
+/* Set by the shell around waitpid() for a child, cleared afterwards.
+ * Read by the keyboard ISR to route Ctrl+C. */
+volatile int fg_child_pid = 0;
+
+task_t* task_from_pid(int pid) {
+    for (int i = 0; i < cpu_count; i++) {
+        task_t* t = (task_t*)cpus[i].ready_queue;
+        while (t) {
+            if (t->id == pid) return t;
+            t = t->next;
+        }
+    }
+    return NULL;
+}

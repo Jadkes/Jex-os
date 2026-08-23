@@ -6,6 +6,13 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ### master (post-v0.7.4) — SMP, IO/APIC, Clock Fixes
 
+### Interactivity & Hardening
+- [x] **Ctrl+C → SIGINT**: keyboard ISR signals the shell's foreground child (`fg_child_pid` set around waitpid); ^C at the prompt abandons the line
+- [x] **cpuinfo command**: CPUID vendor/family/features plus per-core LAPIC id, online state and current task
+- [x] **Per-CPU top**: per-core summary block (lapic id, BSP/AP, ready depth, running task)
+- [x] **IDE Sector Cache**: 64-line LRU cache in front of PIO reads, write-through updates, IRQ-guarded
+- [x] **Syscall Pointer Audit**: user buffers/strings/argv validated for range AND page mapping before kernel dereference; signal handler pointers bounded; fork debug print removed
+
 ### SMP Bring-up
 - [x] **ACPI Discovery**: checksum-validated RSDP scan (EBDA → FSEG spec order), MADT parse for CPUs/LAPIC/IOAPIC
 - [x] **AP Wake**: real-mode trampoline at 0x1000, INIT-SIPI sequence with PIT-calibrated delays, second SIPI only if the AP missed the first
@@ -144,8 +151,19 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **Keyboard Buffering**: Ring buffer, no dropped keys under load
 - [x] **Signal Handling**: sys_signal/sys_kill, delivery in scheduler
 - [x] **SMP**: two CPUs booting, per-CPU run queues, IOAPIC routing (see master milestone above)
+- [ ] **TFTP Fetch**: pull files into JexFS from QEMU's built-in TFTP server — no hostfwd gymnastics
+- [ ] **Boot CI**: GitHub Actions builds the ISO on every push and boots it headless; fail if the clock self-test line is wrong
+- [ ] **fork-per-connection serve**: combine fork() with passive-open TCP for concurrent HTTP
+- [ ] **PS/2 Mouse Driver**: QEMU emulates it; a text-mode cursor is the gateway drug to GUI
 - [ ] **AHCI / SATA**: Faster disk I/O
 - [ ] **USB Keyboard/Mouse**: Beyond PS/2
+
+### Deep End
+- [ ] **Grow TCC toward real C**: pointers and structs would let the OS compile non-toy programs of itself
+- [ ] **VESA/VBE Graphics**: 640x480 framebuffer, then a logo splash or tiny paint app
+- [ ] **HPET / TSC-deadline Clockevent**: retire the PIT entirely, microsecond sleeps
+- [ ] **Stack Canaries per Task**: guard pages exist; canaries complete the set
+- [ ] **Screensaver**: starfield in text mode with block glyphs. Pure fun, zero risk
 
 ### Polish
 - [x] **Ctrl+L**: Clear screen shortcut

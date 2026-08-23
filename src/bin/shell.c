@@ -120,7 +120,7 @@ static char tab_name_buf[32][256];
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp", "history", "top", "reboot", "shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp",     "history", "top", "cpuinfo", "sleep", "spin", "reboot","shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
 };
 
 /**
@@ -808,6 +808,73 @@ static void more_prompt(int* line_count)
 }
 
 /**
+ * @brief Non-blocking Ctrl+C check for shell-level loops.
+ *
+ * The keyboard ISR buffers keystrokes whenever no foreground child owns
+ * the console, so a busy shell loop can simply poll the ring buffer and
+ * look for CTRL('C').  Consumes any other buffered key as well.
+ */
+static int got_ctrl_c(void) {
+    if (!keyboard_has_data()) return 0;
+    return keyboard_read() == CTRL('C');
+}
+
+/* sleep() slice length — short enough that ^C feels instant */
+#define SLEEP_SLICE_MS 50
+
+/**
+ * @brief Show CPU identification and per-core SMP state.
+ */
+static void cpuinfo_command(void) {
+    uint32_t eax, ebx, ecx, edx;
+    char buf[96];
+
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(0));
+    char vendor[13];
+    ((uint32_t*)vendor)[0] = ebx;
+    ((uint32_t*)vendor)[1] = edx;
+    ((uint32_t*)vendor)[2] = ecx;
+    vendor[12] = '\0';
+    terminal_writestring("vendor:  ");
+    terminal_writestring(vendor);
+    terminal_writestring("\n");
+
+    /* Leaf 1: processor signature and feature bits */
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
+    uint32_t family = (eax >> 8) & 0xF;
+    uint32_t model  = (eax >> 4) & 0xF;
+    if (family == 0xF) family += (eax >> 20) & 0xFF;
+    if (family == 0x6 || family == 0xF) model += ((eax >> 16) & 0xF) << 4;
+
+    snprintf(buf, sizeof(buf), "silicon: family %u, model %u, stepping %u\n",
+             family, model, eax & 0xF);
+    terminal_writestring(buf);
+    snprintf(buf, sizeof(buf),
+             "features:%s%s%s%s%s%s%s%s\n",
+             (edx & (1 << 0))  ? " fpu" : "",
+             (edx & (1 << 4))  ? " tsc" : "",
+             (edx & (1 << 5))  ? " msr" : "",
+             (edx & (1 << 6))  ? " pae" : "",
+             (edx & (1 << 9))  ? " apic" : "",
+             (edx & (1 << 25)) ? " sse" : "",
+             (edx & (1 << 26)) ? " sse2" : "",
+             (ecx & (1 << 31)) ? " hypervisor" : "");
+    terminal_writestring(buf);
+
+    char lap[16];
+    for (int ci = 0; ci < cpu_count; ci++) {
+        task_t* cur = (task_t*)cpus[ci].current_task;
+        format_hex(cpus[ci].lapic_id, lap);
+        snprintf(buf, sizeof(buf),
+                 "cpu%d: lapic %s %s online=%d cur=%s\n",
+                 ci, lap, cpus[ci].is_bsp ? "[BSP]" : "[AP ]",
+                 cpus[ci].online,
+                 cur ? cur->name : "(idle)");
+        terminal_writestring(buf);
+    }
+}
+
+/**
  * @brief Display help text.
  */
 void help_command() {
@@ -875,6 +942,12 @@ void help_command() {
     terminal_writestring("  music     - Start Jexos Tune\n");
     more_prompt(&hlp_line);
     terminal_writestring("  uptime    - Show system uptime\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  cpuinfo   - CPU vendor, features and per-core state\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  sleep <s> - Pause the shell for s seconds (Ctrl+C skips)\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  spin      - Busy-loop until Ctrl+C\n");
     more_prompt(&hlp_line);
     terminal_writestring("  dmesg     - Print kernel log buffer\n");
     more_prompt(&hlp_line);
@@ -1248,6 +1321,31 @@ void execute_command() {
     }
     else if (strncmp(shell_buffer, "vix ", 4) == 0) start_editor(shell_buffer + 4);
     else if (strcmp(shell_buffer, "music") == 0) play_tune();
+    else if (strcmp(shell_buffer, "spin") == 0) {
+        terminal_writestring("spinning (Ctrl+C to stop) ");
+        /* Dot every 250 ms so it's obvious the loop is alive but the
+         * scheduler still gets us preempted on every tick */
+        uint32_t last_dot = get_ticks();
+        while (!got_ctrl_c()) {
+            uint32_t now = get_ticks();
+            if (now - last_dot >= TICKS_PER_SEC / 4) {
+                terminal_putchar('.');
+                last_dot = now;
+            }
+        }
+        terminal_writestring(" caught ^C\n");
+    }
+    else if (strncmp(shell_buffer, "sleep ", 6) == 0) {
+        int secs = atoi(shell_buffer + 6);
+        if (secs <= 0) { terminal_writestring("Usage: sleep <seconds>\n"); }
+        else {
+            /* Sleep in slices so Ctrl+C can cut a long nap short */
+            for (int left = secs * 1000; left > 0; left -= SLEEP_SLICE_MS) {
+                if (got_ctrl_c()) { terminal_writestring("^C\n"); return; }
+                sleep(left < SLEEP_SLICE_MS ? left : SLEEP_SLICE_MS);
+            }
+        }
+    }
     else if (strcmp(shell_buffer, "reboot") == 0) reboot();
     else if (strcmp(shell_buffer, "shutdown") == 0) shutdown();
      else if (strcmp(shell_buffer, "poweroff") == 0) shutdown();
@@ -1261,7 +1359,9 @@ void execute_command() {
         int pid = kernel_fork(tcc_wrapper, (void*)filename);
         if (pid > 0) {
             int status;
+            fg_child_pid = pid;
             waitpid(pid, &status, 0);
+            fg_child_pid = 0;
         } else {
             terminal_writestring("fork failed\n");
         }
@@ -1301,7 +1401,9 @@ void execute_command() {
         if (pid > 0) {
             /* Parent — wait for the child to exit */
             int status;
+            fg_child_pid = pid;
             waitpid(pid, &status, 0);
+            fg_child_pid = 0;
         } else {
             terminal_writestring("fork failed\n");
         }
@@ -1480,6 +1582,26 @@ void execute_command() {
                 terminal_writestring(buf);
             }
         }
+
+        /* Per-core summary: what each CPU is running and how much work waits */
+        terminal_writestring("--- per-cpu ---\n");
+        char lap[16];
+        for (int ci = 0; ci < cpu_count; ci++) {
+            task_t* cur = (task_t*)cpus[ci].current_task;
+            int ready = 0;
+            for (task_t* scan = (task_t*)cpus[ci].ready_queue; scan; scan = scan->next)
+                ready++;
+            format_hex(cpus[ci].lapic_id, lap);
+            char buf[96];
+            snprintf(buf, sizeof(buf), "cpu%d lapic=%s %s online=%d ready=%d cur=%s\n",
+                     ci, lap, cpus[ci].is_bsp ? "BSP" : "AP ",
+                     cpus[ci].online, ready,
+                     cur ? cur->name : "(idle)");
+            terminal_writestring(buf);
+        }
+    }
+    else if (strcmp(shell_buffer, "cpuinfo") == 0) {
+        cpuinfo_command();
     }
     else if (strncmp(shell_buffer, "tcpdump", 7) == 0) {
         int count = 5;
@@ -1704,6 +1826,16 @@ void shell_input(char key) {
         print_logo();
         print_prompt();
         shell_refresh_line();
+        return;
+    }
+
+    /* Ctrl+C at the prompt abandons the line being typed */
+    if (key == CTRL('C')) {
+        shell_buffer[0] = '\0';
+        buffer_len = 0;
+        cursor_pos = 0;
+        terminal_putchar('\n');
+        print_prompt();
         return;
     }
 
