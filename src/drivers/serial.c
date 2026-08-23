@@ -2,6 +2,7 @@
 #include <ports.h>
 #include <config.h>
 #include "klog.h"
+#include "spinlock.h"
 
 /**
  * @file serial.c
@@ -61,8 +62,16 @@ char read_serial() {
  * @brief Writes a null-terminated string to the serial port.
  * @param str The string to write.
  */
+static spinlock_t serial_lock = SPINLOCK_INIT;
+
 void log_serial(const char* str) {
+    /* Hold the whole message: two cores logging concurrently tear
+     * lines apart on the wire (seen with AP-alive vs BSP summary). */
+    uint32_t flags;
+    spin_lock_irqsave(&serial_lock, &flags);
     for (int i = 0; str[i] != '\0'; i++) write_serial(str[i]);
+    spin_unlock_irqrestore(&serial_lock, flags);
+
     klog_write(KLOG_LEVEL_INFO, str);
 }
 

@@ -70,3 +70,16 @@ void _printk(int level, const char* fmt, ...)
     /* Store in the kernel ring buffer for dmesg retrieval */
     klog_write(level, buf);
 }
+
+void _printk_serial_only(int level, const char* fmt, ...)
+{
+    char buf[256];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    log_serial(buf);
+    klog_write(level, buf);
+}

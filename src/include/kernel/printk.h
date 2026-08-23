@@ -50,6 +50,16 @@ extern int serial_debug;
  */
 void _printk(int level, const char* fmt, ...);
 
+/*
+ * _printk_serial_only - serial/klog-only logging
+ *
+ * Same formatting as _printk but never touches the VGA terminal and
+ * ignores console_loglevel.  Used for boot diagnostics that would
+ * clutter the screen: the extra verbosity goes to the serial console
+ * only, keeping VGA output identical.
+ */
+void _printk_serial_only(int level, const char* fmt, ...);
+
 /* pr_* convenience macros */
 #define pr_emerg(fmt, ...)   _printk(LOG_EMERG,   pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_alert(fmt, ...)   _printk(LOG_ALERT,   pr_fmt(fmt), ##__VA_ARGS__)
@@ -60,6 +70,7 @@ void _printk(int level, const char* fmt, ...);
 #define pr_notice(fmt, ...)  _printk(LOG_NOTICE,  pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_info(fmt, ...)    _printk(LOG_INFO,    pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_debug(fmt, ...)   _printk(LOG_DEBUG,   pr_fmt(fmt), ##__VA_ARGS__)
+#define pr_serial(fmt, ...)  _printk_serial_only(LOG_INFO, pr_fmt(fmt), ##__VA_ARGS__)
 #define pr_cont(fmt, ...)    _printk(LOG_INFO,    fmt, ##__VA_ARGS__)
 
 /* ISR context flag -- set by IRQ entry, cleared on exit */
