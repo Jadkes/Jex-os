@@ -21,6 +21,7 @@ typedef enum {
     STATE_READY,        /**< Task is waiting to be scheduled. */
     STATE_RUNNING,      /**< Task is currently executing. */
     STATE_SLEEPING,     /**< Task is waiting for a timer or event. */
+    STATE_BLOCKED,      /**< Task is parked on a mutex/completion wait list. */
     STATE_ZOMBIE        /**< Task has finished but not yet cleaned up. */
 } task_state_t;
 
@@ -40,6 +41,9 @@ typedef struct task {
     char name[16];                      /**< Human-readable task name */
     uint32_t cpu_ticks;                 /**< CPU ticks consumed (for top command). */
     struct task* next;                  /**< Next task in the linked scheduler list. */
+    struct task* wait_next;             /**< FIFO linkage while blocked on a sync object.
+                                             The scheduler list keeps the task linked;
+                                             this chain belongs to the lock's waiter queue. */
 
     int parent_pid;                     /**< PID of the parent process (0 for init). */
     int exit_code;                      /**< Exit code set by task_exit (valid in ZOMBIE state). */
@@ -71,6 +75,19 @@ void init_tasking();
  * @brief Force a context switch to the next ready task.
  */
 void task_switch();
+
+/**
+ * @brief Park the calling task (BLOCKED) and yield once.
+ * The caller must already be enqueued on a wait list under the sync
+ * object's own lock.  Returns after being woken; re-check conditions.
+ */
+void task_block_current(void);
+
+/**
+ * @brief Wake a blocked task so the scheduler can run it again.
+ * Safe from ISR or any CPU; no-op for non-blocked tasks.
+ */
+void task_wake(task_t* t);
 
 /**
  * @brief Create a new process by duplicating the current one.
