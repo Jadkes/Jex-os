@@ -95,7 +95,9 @@ extern void kernel_fork_trampoline(void);
  * Each CPU owns its own queue and never touches another CPU's.
  */
 
-static int next_pid = 1;
+/* PIDs come from any CPU (fork, AP idle spawn); the atomic return form
+ * makes duplicate ids impossible instead of merely unlikely. */
+static uint32_t next_pid = 1;
 
 /**
  * @brief Per-CPU idle body — sleeps until the LAPIC timer preempts.
@@ -119,7 +121,7 @@ void init_tasking() {
     set_cur_task((task_t*)kmalloc(sizeof(task_t)));
     set_rdy_queue(cur_task());
     cur_task()->wait_next = NULL;
-    cur_task()->id = next_pid++;
+    cur_task()->id = atomic_inc_return(&next_pid);
     cur_task()->esp = cur_task()->ebp = 0;
     cur_task()->eip = 0;
     cur_task()->page_directory = &kernel_directory;
@@ -198,6 +200,14 @@ static int deliver_signals(task_t* task)
  * @brief Switch execution to the next ready task.
  * Saves the current context and loads the next one using assembly magic.
  */
+/* Live tasks are RUNNING (executing now or preempted in place) or
+ * READY (spawned, not yet run).  Both are schedulable; BLOCKED and
+ * ZOMBIE are not. */
+static int task_is_runnable(const task_t* t)
+{
+    return t->state == STATE_READY || t->state == STATE_RUNNING;
+}
+
 /**
  * @brief Park the calling task until task_wake() names it.
  *
@@ -274,13 +284,13 @@ void task_switch() {
      * blocked ones sit on a mutex/completion wait list.  Both stay
      * linked so their queue position survives. */
     {
-        while (ct->state != STATE_READY) {
+        while (!task_is_runnable(ct)) {
             ct = ct->next;
             if (!ct) ct = rdy_queue();
             /* Wrapped the ring and start itself is not runnable:
              * nothing is schedulable anywhere.  A wake (ISR or other
              * CPU) will set someone READY; the next tick picks it up. */
-            if (ct == start && ct->state != STATE_READY) {
+            if (ct == start && !task_is_runnable(ct)) {
                 spin_unlock_irqrestore(&tasklist_lock, tl_flags);
                 for (;;) asm volatile("hlt");
             }
@@ -297,8 +307,8 @@ void task_switch() {
         do {
             ct = ct->next;
             if (!ct) ct = rdy_queue();
-        } while (ct->state != STATE_READY && ct != scan_from);
-        if (ct->state != STATE_READY)
+        } while (!task_is_runnable(ct) && ct != scan_from);
+        if (!task_is_runnable(ct))
             panic_assert("No runnable task after signal delivery", __FILE__, __LINE__);
     }
 
@@ -435,7 +445,7 @@ int fork(registers_t* regs) {
 
     uint32_t flags;
     spin_lock_irqsave(&pid_lock, &flags);
-    child->id = next_pid++;
+    child->id = atomic_inc_return(&next_pid);
     spin_unlock_irqrestore(&pid_lock, flags);
     child->page_directory = new_dir;
     child->cpu_ticks = 0;
@@ -574,7 +584,7 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
 
     uint32_t flags;
     spin_lock_irqsave(&pid_lock, &flags);
-    child->id = next_pid++;
+    child->id = atomic_inc_return(&next_pid);
     spin_unlock_irqrestore(&pid_lock, flags);
 
     child->page_directory = new_dir;
@@ -957,7 +967,7 @@ void task_spawn_idle(int cpu_index)
 
     uint32_t flags;
     spin_lock_irqsave(&pid_lock, &flags);
-    idle->id = next_pid++;   /* must land after the memset above */
+    idle->id = atomic_inc_return(&next_pid); /* after the memset above */
     spin_unlock_irqrestore(&pid_lock, flags);
 
     idle->page_directory = (page_directory_t*)c->page_directory;
