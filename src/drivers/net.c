@@ -858,6 +858,15 @@ static void handle_ip(uint8_t* data, uint32_t len, const uint8_t* src_mac)
         return;
     }
 
+    /* The claimed datagram length must fit inside what actually arrived.
+     * Every L4 handler below trusts ip_tot for its payload extent, so a
+     * forged header could otherwise make them read past the frame. */
+    uint32_t ip_tot = ntohs(ip->total_len);
+    if (ip_tot < ip_hdr || ip_tot > len) {
+        pr_debug("ip total_len out of bounds\n");
+        return;
+    }
+
     /* Learn the sender's MAC for future replies */
     arp_add(ip->src_ip, src_mac);
 

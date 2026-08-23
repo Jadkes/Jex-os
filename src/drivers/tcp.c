@@ -206,6 +206,8 @@ void handle_tcp(uint8_t* data, uint32_t len, uint32_t ip_hdr,
     }
 
     uint32_t seg_data_offset = (seg->data_offset >> 4) * 4;
+    if (seg_data_offset < sizeof(tcp_header_t) || seg_data_offset > ip_tot - ip_hdr)
+        return;
     uint32_t tcp_payload_len = ip_tot - ip_hdr - seg_data_offset;
 
     uint32_t seg_seq = ntohl(seg->seq_num);
