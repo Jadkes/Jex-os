@@ -302,8 +302,22 @@ void shell_load_history() {
  * @brief Play a short start-up tune.
  */
 void play_tune() {
-    beep(392, 100); beep(523, 100); beep(659, 100);
-    beep(784, 300); beep(659, 150); beep(784, 400);
+    /* Victory fanfare.  Timer ticks now run at their nominal 100 Hz, so
+     * these durations play true; short silences between notes give the
+     * melody articulation instead of one legato blur. */
+    static const struct { uint32_t freq; uint32_t ms; } notes[] = {
+        { 392, 100 },   /* G4  rising pickup      */
+        { 523, 100 },   /* C5                     */
+        { 659, 100 },   /* E5                     */
+        { 784, 220 },   /* G5  peak               */
+        { 659, 100 },   /* E5                     */
+        { 784, 500 },   /* G5  held — big finish  */
+    };
+
+    for (uint32_t i = 0; i < sizeof(notes) / sizeof(notes[0]); i++) {
+        beep(notes[i].freq, notes[i].ms);
+        sleep(30);      /* articulation gap */
+    }
 }
 
 void int_to_string(int n, char* str) {
