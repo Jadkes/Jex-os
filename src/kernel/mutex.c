@@ -12,7 +12,9 @@
 #include "kernel/mutex.h"
 #include "kernel/completion.h"
 #include "task.h"
+#include "ports.h"
 #include "kernel/printk.h"
+#include "panic.h"
 #include <stddef.h>
 
 /* ── Mutex ────────────────────────────────────────────── */
@@ -48,8 +50,22 @@ static task_t* mutex_waiter_pop(mutex_t* m)
     return t;
 }
 
+/* Sleeping with IF=0 or inside an ISR would park forever: no tick can
+ * preempt us and the waker's task_wake flips a task that will never be
+ * scheduled.  Turn that silent deadlock into a named panic instead. */
+static void assert_can_sleep(const mutex_t* m)
+{
+    if (in_isr || !interrupts_enabled()) {
+        pr_err("mutex '%s': sleep attempted in %s\n",
+               m->name ? m->name : "?",
+               in_isr ? "ISR" : "irqs-off region");
+        panic_assert("atomic-context sleep", __FILE__, __LINE__);
+    }
+}
+
 void mutex_lock(mutex_t* m)
 {
+    assert_can_sleep(m);
     for (;;) {
         uint32_t flags;
         spin_lock_irqsave(&m->lock, &flags);

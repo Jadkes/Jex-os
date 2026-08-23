@@ -146,6 +146,16 @@ static inline uint32_t irq_save(void)
 }
 
 /**
+ * @brief Report whether interrupts are currently enabled (EFLAGS.IF).
+ */
+static inline int interrupts_enabled(void)
+{
+    uint32_t flags;
+    asm volatile ("pushfl ; popl %0" : "=r"(flags) :: "memory");
+    return (flags >> 9) & 1;
+}
+
+/**
  * @brief Restore the interrupt state captured by irq_save().
  */
 static inline void irq_restore(uint32_t flags)
