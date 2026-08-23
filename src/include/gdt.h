@@ -9,10 +9,14 @@
 #define GDT_H
 
 #include <stdint.h>
+#include "smp.h"
 
-/* GDT layout: index = entry number; selector = index << 3 | RPL */
-#define GDT_NUM_ENTRIES   6
-#define GDT_TSS_IDX       5
+/* GDT layout: index = entry number; selector = index << 3 | RPL.
+ * One TSS slot per CPU follows the five base descriptors so every core
+ * can LTR its own task register without colliding on a busy descriptor. */
+#define GDT_BASE_ENTRIES  5
+#define GDT_TSS_IDX       GDT_BASE_ENTRIES
+#define GDT_NUM_ENTRIES   (GDT_BASE_ENTRIES + NR_CPUS)
 
 #define SEG_KERNEL_CODE   0x08
 #define SEG_KERNEL_DATA   0x10
@@ -57,6 +61,11 @@ struct gdt_ptr_struct
 
 typedef struct gdt_ptr_struct gdt_ptr_t;
 
+/* Selector of the calling CPU's TSS descriptor. */
+static inline uint16_t tss_selector(int cpu) {
+    return (uint16_t)((GDT_TSS_IDX + cpu) << 3);
+}
+
 /**
  * @struct tss_entry_struct
  * @brief Task State Segment (TSS) structure.
@@ -100,11 +109,11 @@ typedef struct tss_entry_struct tss_entry_t;
 /**
  * @brief The Task State Segment instance used for ring transitions.
  */
-extern tss_entry_t tss_entry;
+extern tss_entry_t tss_entries[NR_CPUS];
 
 /* Shared GDT table and IDTR-style descriptor (defined in gdt.c).
  * APs reload these in ap_startup so every CPU runs the same descriptors. */
-extern gdt_entry_t gdt_entries[6];
+extern gdt_entry_t gdt_entries[GDT_NUM_ENTRIES];
 extern gdt_ptr_t   gdt_ptr;
 
 /**

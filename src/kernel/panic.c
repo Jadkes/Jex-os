@@ -9,6 +9,7 @@
  */
 
 #include "panic.h"
+#include "smp.h"
 #include "kernel/backtrace.h"
 #include "terminal.h"
 #include "serial.h"
@@ -193,7 +194,7 @@ void panic_handler(registers_t* regs)
 
     /* Crash debug: TSS.ESP0, current task, ready queue */
     log_serial("TSS.ESP0=");
-    log_hex_serial(tss_entry.esp0);
+    log_hex_serial(tss_entries[cpu_id()].esp0);
     log_serial(" ");
     task_t* ct = cur_task();
     if (ct) {

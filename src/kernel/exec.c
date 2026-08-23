@@ -283,10 +283,10 @@ int execve_file(const char* filename, char** argv, char** envp)
 
         /* Print TSS.ESP0 and current task info for crash debugging */
         {
-            extern tss_entry_t tss_entry;
+            extern tss_entry_t tss_entries[NR_CPUS];
             task_t* ct_esp = cur_task();
             log_serial("[EXEC] TSS.ESP0=0x");
-            log_hex_serial(tss_entry.esp0);
+            log_hex_serial(tss_entries[cpu_id()].esp0);
             log_serial(" task.kstack_top=0x");
             if (ct_esp && ct_esp->kstack)
                 log_hex_serial(ct_esp->kstack + KSTACK_SIZE);

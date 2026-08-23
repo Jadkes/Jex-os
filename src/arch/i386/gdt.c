@@ -5,6 +5,7 @@
 
 #include "gdt.h"
 #include "init.h"
+#include "string.h"
 #include <stddef.h>
 
 /* Assembly helper functions */
@@ -12,9 +13,11 @@ extern void gdt_flush(uint32_t);
 extern void tss_flush();
 
 /* The GDT table and pointer */
-gdt_entry_t gdt_entries[6];
+gdt_entry_t gdt_entries[GDT_NUM_ENTRIES];
 gdt_ptr_t   gdt_ptr;
-tss_entry_t tss_entry;
+
+/* One TSS per CPU — each core LTRs its own descriptor at startup */
+tss_entry_t tss_entries[NR_CPUS];
 
 /**
  * @brief Set the value of a GDT gate.
@@ -45,23 +48,23 @@ static void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t acc
  * @param ss0 Kernel stack segment selector.
  * @param esp0 Kernel stack pointer.
  */
-static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
+static void write_tss(int32_t num, int cpu, uint16_t ss0, uint32_t esp0)
 {
-    uint32_t base = (uint32_t) &tss_entry;
-    uint32_t limit = sizeof(tss_entry) - 1;
+    tss_entry_t* tss = &tss_entries[cpu];
+    uint32_t base = (uint32_t)tss;
+    uint32_t limit = sizeof(*tss) - 1;
 
     gdt_set_gate(num, base, limit, SEG_ACCESS_TSS, 0x00);
 
-    uint8_t* ptr = (uint8_t*)&tss_entry;
-    for(size_t i = 0; i < sizeof(tss_entry); i++) ptr[i] = 0;
+    memset(tss, 0, sizeof(*tss));
 
-    tss_entry.ss0  = ss0;
-    tss_entry.esp0 = esp0;
+    tss->ss0  = ss0;
+    tss->esp0 = esp0;
 
     /* Set default segments for user mode transitions */
-    tss_entry.cs   = SEG_USER_CODE;
-    tss_entry.ss = tss_entry.ds = tss_entry.es = tss_entry.fs = tss_entry.gs = SEG_USER_DATA;
-    tss_entry.iomap_base = sizeof(tss_entry);
+    tss->cs   = SEG_USER_CODE;
+    tss->ss = tss->ds = tss->es = tss->fs = tss->gs = SEG_USER_DATA;
+    tss->iomap_base = sizeof(*tss);
 }
 
 /**
@@ -72,7 +75,8 @@ static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
  */
 void set_kernel_stack(uint32_t stack)
 {
-    tss_entry.esp0 = stack;
+    /* Interrupts from ring 3 on this CPU land on ITS stack */
+    tss_entries[cpu_id()].esp0 = stack;
 }
 
 /**
@@ -96,9 +100,10 @@ void init_gdt()
     gdt_set_gate(4, 0, 0xFFFFFFFF, SEG_ACCESS_UDATA, SEG_FLAGS_4GB);
 
     /* Initially set esp0 to 0, it will be updated in kernel_main */
-    write_tss(GDT_TSS_IDX, SEG_KERNEL_DATA, 0x0);
+    for (int i = 0; i < NR_CPUS; i++)
+        write_tss(GDT_TSS_IDX + i, i, SEG_KERNEL_DATA, 0x0);
 
-    /* Load the GDT and TSS into CPU registers */
+    /* Load the GDT and this CPU's (BSP) TSS into registers */
     gdt_flush((uint32_t)&gdt_ptr);
     tss_flush();
 }
