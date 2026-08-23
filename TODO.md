@@ -4,7 +4,21 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## ✅ Completed Milestones
 
-### master (post-v0.7.5) — Real SMP Scheduling, Allocator Hardening, Serial Boot Log
+### master — Blocking Sync, FS Serialization, Fault Reporting
+
+- [x] **Sleeping Mutexes**: `mutex_t` parks losers on a FIFO under the scheduler (new `STATE_BLOCKED` skipped by every pick loop), atomic fast path, direct ownership handoff on unlock, zombie waiters dropped so unlock can't resurrect corpses; `sys_kill` un-parks its target so SIGKILL reaches blocked tasks
+- [x] **Completions**: task↔ISR handshake primitive — signal from any context wakes all waiters, first consumes the flag, signal-before-wait is not lost (no driver uses one yet; IDE still PIO-polls)
+- [x] **Atomic API**: `kernel/atomic.h` wraps the __sync builtins (`inc/dec/add/xchg/cmpxchg/or/and`) on `uint32_t`; migrated isr depth, lapic timer count, keyboard/sigkill signal races and rtl8139 packet counters off raw builtins
+- [x] **SPSC Ring Buffer**: `ringbuf.h` byte queue (producer owns head, consumer owns tail, power-of-2 mask); keyboard driver rebuilt on it
+- [x] **IDE Sleeping Lock**: PIO transfers hold a mutex instead of cli — contending tasks sleep while timers keep ticking on both cores; sector cache on its own short spinlock with in-progress fill marks
+- [x] **JexFS Coarse Lock**: one mutex over all metadata ops (`_nolock` cores + wrappers); ls/tab-completion hold it across whole scans via `jexfs_read_inode_raw()` — concurrent create/remove can no longer tear walks or bitmaps
+- [x] **Sleep Asserts**: mutex_lock from an ISR or irqs-off region panics naming the lock instead of deadlocking silently
+- [x] **PID Atomics**: next_pid via `atomic_inc_return` everywhere — duplicate ids impossible by construction, boot ordering no longer load-bearing
+- [x] **Double-Fault Landing Pad**: vector 8 is a task gate to a dedicated TSS with a private 16k stack and kernel segments; reports over raw serial with CR2 and halts instead of triple-faulting mute; paging hands it the kernel directory
+- [x] **Scheduler Runnable Fix**: pick loops required STATE_READY but executing tasks are STATE_RUNNING across preemption — first timer tick ever hlt'd forever mid-boot; `task_is_runnable()` accepts both, verified by full two-core boot (armed=2, self-test 5/5)
+- [x] **i486 Baseline**: -march=i386 has no cmpxchg so general __sync ops became unlinked libgcc calls; i486 makes them all inline locked instructions (cpuid was already required for SMP)
+
+### master (post-v0.7.4) — Real SMP Scheduling, Allocator Hardening, Serial Boot Log
 
 ### True SMP
 - [x] **Spinlocks**: PMM bitmap, kheap slabs, kernel-stack slots, PID handout and the task lists serialize on real locks (`spinlock.h`), not IF games
@@ -97,7 +111,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ### Shell & UX
 - [x] **Tab Completion**: Auto-complete filenames and commands
-- [x] **Persistent Command History**: `.history` survives reboots
+- [x] **Command History**: `.history` saved and reloaded within a session (RAM-backed fs: it dies with the power)
 - [x] **Dynamic Prompt**: Color-coded, directory-aware
 - [x] **Uptime**: System uptime command
 - [x] **Top**: Per-task CPU usage monitor
@@ -128,7 +142,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **arp/netlog/tcpdump/nicregs**: Network diagnostics
 
 ### Storage
-- [x] **JexFS**: Persistent filesystem with hierarchy
+- [x] **JexFS**: RAM-backed rootfs with hierarchy (image reloads every boot; flushing to the hda data disk is open work)
 - [x] **VFS Layer**: Mount point dispatch
 - [x] **devtmpfs/sysfs**: Virtual filesystems
 - [x] **IDE PIO Driver**: ATA disk access
@@ -138,7 +152,6 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **Initcall Framework**: Automatic driver/subsystem initialization
 - [x] **Multitasking**: Round-robin scheduler
 - [x] **Memory Isolation**: Private page directories per process
-- [x] **Stack Guard Pages**: Overflow detection
 - [x] **kallsyms**: Symbol table for backtraces
 - [x] **vsnprintf/snprintf**: Safe formatted output
 - [x] **Workqueue**: Deferred execution
@@ -159,6 +172,10 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [ ] **Page-Directory Teardown on Reap**: waitpid still leaks cloned address spaces (see TODO in task.c)
 - [x] **Atomic Console Writes**: log_serial locks whole messages; serial output is line-clean with both cores logging
 - [ ] **SMP Runtime Soak**: exercise fork-heavy loops, Ctrl+C storms and `top` on both cores for a while before trusting it (FPU corruption and TLB shootdown above are the known sharp edges)
+- [ ] **Wire Completions to Hardware**: completion_t exists but nothing signals one; IRQ-driven IDE transfers would be the first real user
+- [ ] **Kernel-Resident Apps**: ping/serve/vix live in kernel space where a bug takes the machine down — migrate to the ring-3 user/ tree (needs console syscalls, then ELF injection into the rootfs image)
+- [ ] **Userspace Socket API**: networking is kernel-builtin only; syscalls or a socket fs before ring-3 programs can speak IP
+- [ ] **Serial Input Path**: UART RX has no IRQ handler or ring — the serial console is output-only
 
 ### Networking
 - [ ] **TCP Window Scaling**: Advertise and handle window sizes
@@ -190,7 +207,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [ ] **Grow TCC toward real C**: pointers and structs would let the OS compile non-toy programs of itself
 - [ ] **VESA/VBE Graphics**: 640x480 framebuffer, then a logo splash or tiny paint app
 - [ ] **HPET / TSC-deadline Clockevent**: retire the PIT entirely, microsecond sleeps
-- [ ] **Stack Canaries per Task**: guard pages exist; canaries complete the set
+- [ ] **Stack Guard Pages & Canaries**: neither exists yet; overflow today smashes adjacent memory silently
 - [ ] **Screensaver**: starfield in text mode with block glyphs. Pure fun, zero risk
 
 ### Polish

@@ -1,8 +1,8 @@
 # JexOS
 
 A 32-bit x86 hobby OS written from scratch: freestanding C,
-a full network stack, multitasking, a persistent filesystem, and a
-self-hosting TCC compiler.
+a full network stack, symmetric multiprocessing, multitasking, a
+filesystem, and a self-hosting TCC compiler.
 
 ## Screenshots
 
@@ -21,10 +21,15 @@ self-hosting TCC compiler.
 - **SMP** — both CPUs run the scheduler: ACPI MADT discovery, INIT-SIPI bring-up,
   per-CPU run queues with load-spreading forks, per-CPU LAPIC timer preemption,
   spinlock-guarded allocators and task lists, one TSS per core, IOAPIC routing
-- **Shell** — tab completion, persistent history, `ps`/`kill`/`top`, vix editor
+- **Synchronization** — sleeping mutexes with FIFO handoff, completions for
+  task↔ISR handshakes, spinlocks for short sections, atomics everywhere shared
+  state crosses CPUs; illegal sleeps (mutex under ISR/irqs-off) panic loudly
+  instead of deadlocking quietly
+- **Shell** — tab completion, command history, `ps`/`kill`/`top`, vix editor
 - **Debugging** — panic screen with register dump and stack trace, `dmesg`,
-  GDB stub, ftrace-lite, lockdep; linux-style boot log on the serial console
-  (`-serial stdio`) while VGA output stays clean
+  GDB stub, ftrace-lite, lockdep; a dedicated-stack double-fault landing pad
+  reports crashes that would otherwise reset silently; linux-style boot log on
+  the serial console (`-serial stdio`) while VGA output stays clean
 
 ## Build & Run
 
@@ -48,12 +53,22 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] Self-hosting TCC
 - [x] TCP server (passive open)
 - [x] SMP scheduling on all CPUs (spinlocks, per-CPU timers, load spreading)
+- [ ] JexFS persistence: flush dirty blocks to the hda data disk (the rootfs
+      currently resets from the multiboot module every boot)
 - [ ] Pipes & redirection
 - [ ] TLB shootdown IPIs and FPU state saving between CPUs
 
 ## Status
 
-master: SMP is real. Both CPUs wake through the trampoline, seed an idle
+master: the kernel grew real blocking synchronization. Mutexes park losers
+on a FIFO and hand off directly on unlock (no thundering herd), completions
+cover task↔ISR events, JexFS metadata runs under one coarse sleeping lock so
+concurrent file operations cannot tear the bitmaps, and IDE transfers hold a
+mutex instead of freezing every timer on the machine. PIDs come from an
+atomic counter, the scheduler treats READY/RUNNING uniformly, and vector 8
+lands on its own stack to log double faults instead of rebooting mute.
+
+Earlier: SMP is real. Both CPUs wake through the trampoline, seed an idle
 task, arm their own LAPIC timer (calibrated against the PIT) and preempt
 their own ready queues; fork spreads children onto the shortest queue and
 waitpid reaps zombies across every CPU. Shared allocators and the task
