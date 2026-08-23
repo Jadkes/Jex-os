@@ -7,6 +7,9 @@
  */
 
 #include "keyboard.h"
+#include "kernel/atomic.h"
+#include "ringbuf.h"
+#include "spinlock.h"
 #include "irq.h"
 #include "init.h"
 #include "ports.h"
@@ -91,10 +94,16 @@ unsigned char kbdus_shifted[128] = {
 bool shift_held = false;
 bool ctrl_held = false;
 
-/* Keyboard ring buffer — ISR writes, shell reads */
-static volatile char kbd_buffer[KBD_BUF_SIZE];
-static volatile uint16_t kbd_head = 0;   /* Written by ISR */
-static volatile uint16_t kbd_tail = 0;   /* Written by shell consumer */
+/* Keyboard ring buffer — ISR produces, shell consumes (SPSC, no locks) */
+static ringbuf_t kbd_ring;
+static volatile uint8_t kbd_storage[KBD_BUF_SIZE];
+
+/*
+ * flush() moves both indices, so it needs the IRQ mask rather than the
+ * SPSC single-owner rule.  A plain cli/sti pair would clobber a caller
+ * that already had interrupts off; irq_save captures the real state.
+ */
+static spinlock_t kbd_ring_lock = SPINLOCK_INIT;
 
 /**
  * @brief Keyboard Interrupt Callback (IRQ1).
@@ -142,21 +151,14 @@ void keyboard_callback(registers_t *regs) {
         if (c == CTRL('C') && fg_child_pid > 0) {
             task_t* fg = task_from_pid(fg_child_pid);
             if (fg) {
-                __sync_fetch_and_or(&fg->signal_pending, 1u << SIGINT);
+                atomic_or(&fg->signal_pending, 1u << SIGINT);
                 terminal_writestring("^C\n");
                 return;
             }
         }
 
-        if (c != 0) {
-            /* Write to ring buffer (ISR producer, shell consumer) */
-            uint16_t next_head = (kbd_head + 1) % KBD_BUF_SIZE;
-            if (next_head != kbd_tail) {  /* Buffer not full */
-                kbd_buffer[kbd_head] = c;
-                kbd_head = next_head;
-            }
-            /* If buffer full, character is dropped silently */
-        }
+        if (c != 0)
+            ringbuf_put(&kbd_ring, (uint8_t)c);  /* full -> dropped */
     }
     (void)regs;
 }
@@ -166,6 +168,7 @@ void keyboard_callback(registers_t *regs) {
  * Registers the keyboard_callback as the handler for IRQ1.
  */
 void init_keyboard() {
+    ringbuf_init(&kbd_ring, kbd_storage, KBD_BUF_SIZE);
     register_interrupt_handler(1, keyboard_callback);
 }
 
@@ -175,10 +178,7 @@ void init_keyboard() {
  */
 int keyboard_read(void)
 {
-    if (kbd_head == kbd_tail) return -1;  /* Empty */
-    char c = kbd_buffer[kbd_tail];
-    kbd_tail = (kbd_tail + 1) % KBD_BUF_SIZE;
-    return c;
+    return ringbuf_get(&kbd_ring);
 }
 
 /**
@@ -187,7 +187,7 @@ int keyboard_read(void)
  */
 int keyboard_has_data(void)
 {
-    return (kbd_head != kbd_tail) ? 1 : 0;
+    return ringbuf_has_data(&kbd_ring);
 }
 
 /**
@@ -199,10 +199,10 @@ int keyboard_has_data(void)
  */
 void keyboard_flush(void)
 {
-    __asm__ volatile("cli");
-    kbd_head = 0;
-    kbd_tail = 0;
-    __asm__ volatile("sti");
+    uint32_t flags;
+    spin_lock_irqsave(&kbd_ring_lock, &flags);
+    ringbuf_reset(&kbd_ring);
+    spin_unlock_irqrestore(&kbd_ring_lock, flags);
 }
 
 early_init(init_keyboard);

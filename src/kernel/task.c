@@ -6,6 +6,7 @@
  */
 
 #include "task.h"
+#include "kernel/atomic.h"
 #include "kheap.h"
 #include "pmm.h"
 
@@ -117,6 +118,7 @@ void init_tasking() {
 
     set_cur_task((task_t*)kmalloc(sizeof(task_t)));
     set_rdy_queue(cur_task());
+    cur_task()->wait_next = NULL;
     cur_task()->id = next_pid++;
     cur_task()->esp = cur_task()->ebp = 0;
     cur_task()->eip = 0;
@@ -196,6 +198,49 @@ static int deliver_signals(task_t* task)
  * @brief Switch execution to the next ready task.
  * Saves the current context and loads the next one using assembly magic.
  */
+/**
+ * @brief Park the calling task until task_wake() names it.
+ *
+ * Marks the task BLOCKED and yields once.  The caller must already be
+ * on a sync object's waiter list (under that object's lock) BEFORE
+ * calling this, so no wakeup can be lost between the park and the
+ * yield.  Always returns in a runnable state; callers re-check their
+ * condition in a loop.
+ */
+void task_block_current(void)
+{
+    task_t* self = cur_task();
+
+    uint32_t flags;
+    spin_lock_irqsave(&tasklist_lock, &flags);
+    if (self->state == STATE_RUNNING)
+        self->state = STATE_BLOCKED;
+    spin_unlock_irqrestore(&tasklist_lock, flags);
+
+    /* A waker may have flipped us back READY between the unlock and
+     * here (we run with IF=1); switching then is harmless -- the next
+     * tick reschedules us immediately. */
+    task_switch();
+}
+
+/**
+ * @brief Make a blocked task schedulable again.
+ *
+ * Safe from any context: ISR, other CPU, or syscall path.  Waking an
+ * already-runnable/zombie task is a no-op.
+ */
+void task_wake(task_t* t)
+{
+    if (!t)
+        return;
+
+    uint32_t flags;
+    spin_lock_irqsave(&tasklist_lock, &flags);
+    if (t->state == STATE_BLOCKED)
+        t->state = STATE_READY;
+    spin_unlock_irqrestore(&tasklist_lock, flags);
+}
+
 void task_switch() {
     task_t* ct = cur_task();
     if (!ct) return;
@@ -225,24 +270,24 @@ void task_switch() {
     ct = ct->next;
     if (!ct) ct = rdy_queue();
 
-    /* Skip zombie tasks — they stay around for the parent to reap */
+    /* Skip tasks that cannot run right now: zombies await reaping,
+     * blocked ones sit on a mutex/completion wait list.  Both stay
+     * linked so their queue position survives. */
     {
-        while (ct->state == STATE_ZOMBIE) {
+        while (ct->state != STATE_READY) {
             ct = ct->next;
             if (!ct) ct = rdy_queue();
-            /* If we wrapped around and the ONLY non-zombie task is start
-             * itself, the while-loop check re-evaluates start's state on the
-             * next iteration.  But if start is ALSO zombie, every task is
-             * zombie and there's nothing to schedule. */
-            if (ct == start && ct->state == STATE_ZOMBIE) {
-                /* All tasks are zombies — nothing to run */
+            /* Wrapped the ring and start itself is not runnable:
+             * nothing is schedulable anywhere.  A wake (ISR or other
+             * CPU) will set someone READY; the next tick picks it up. */
+            if (ct == start && ct->state != STATE_READY) {
                 spin_unlock_irqrestore(&tasklist_lock, tl_flags);
                 for (;;) asm volatile("hlt");
             }
         }
     }
 
-    /* Deliver any pending signals before the task runs */
+    /* Deliver any pending signals before the candidate runs */
     while (deliver_signals(ct)) {
         /* ct was terminated: leave the zombie LINKED so waitpid() can
          * find and reap it (unlinking here made killed children vanish —
@@ -252,9 +297,9 @@ void task_switch() {
         do {
             ct = ct->next;
             if (!ct) ct = rdy_queue();
-        } while (ct->state == STATE_ZOMBIE && ct != scan_from);
-        if (ct->state == STATE_ZOMBIE)
-            panic_assert("All tasks terminated by signals", __FILE__, __LINE__);
+        } while (ct->state != STATE_READY && ct != scan_from);
+        if (ct->state != STATE_READY)
+            panic_assert("No runnable task after signal delivery", __FILE__, __LINE__);
     }
 
     spin_unlock_irqrestore(&tasklist_lock, tl_flags);
@@ -379,6 +424,7 @@ int fork(registers_t* regs) {
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
     if (!child)
         return -ENOMEM;
+    child->wait_next = NULL;
 
     /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
@@ -517,6 +563,7 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
     if (!child)
         return -ENOMEM;
+    child->wait_next = NULL;
 
     /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
@@ -774,6 +821,7 @@ void task_list() {
         if (t->state == STATE_RUNNING) terminal_writestring("RUNNING ");
         else if (t->state == STATE_READY) terminal_writestring("READY   ");
         else if (t->state == STATE_SLEEPING) terminal_writestring("SLEEP   ");
+        else if (t->state == STATE_BLOCKED) terminal_writestring("BLOCKED ");
         else if (t->state == STATE_ZOMBIE) terminal_writestring("ZOMBIE  ");
         else terminal_writestring("UNKNOWN ");
 
@@ -842,7 +890,12 @@ int sys_kill(int pid, int sig) {
         while (t) {
             if (t->id == pid) {
                 /* Atomic: the keyboard ISR sets SIGINT on this same word */
-                __sync_fetch_and_or(&t->signal_pending, 1u << sig);
+                atomic_or(&t->signal_pending, 1u << sig);
+                /* A parked target must become schedulable to see the
+                 * signal; delivery happens on its way through the
+                 * scheduler. */
+                if (t->state == STATE_BLOCKED)
+                    t->state = STATE_READY;
                 spin_unlock_irqrestore(&tasklist_lock, flags);
                 return 0;
             }

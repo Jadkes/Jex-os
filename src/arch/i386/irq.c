@@ -11,6 +11,7 @@
 #include "ports.h"
 #include "apic.h"
 #include "kernel/printk.h"
+#include "kernel/atomic.h"
 #include <stddef.h>
 
 /* Assembly IRQ stubs declared in interrupts.s */
@@ -102,7 +103,7 @@ void irq_handler(registers_t regs)
     /* Notify printk that we are in ISR context (skip slow terminal PIO).
      * Depth counter, not a flag: handlers nest, so the innermost exit
      * must not un-suppress the outer frame. */
-    __sync_fetch_and_add(&in_isr, 1);
+    atomic_inc(&in_isr);
 
     /*
      * Send End of Interrupt (EOI) BEFORE calling the handler.
@@ -134,5 +135,5 @@ void irq_handler(registers_t regs)
         handler(&regs);
     }
 
-    __sync_fetch_and_sub(&in_isr, 1);
+    atomic_dec(&in_isr);
 }

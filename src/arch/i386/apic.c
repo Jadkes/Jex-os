@@ -18,6 +18,7 @@
 
 #define pr_fmt(fmt) "[APIC] " fmt
 #include "apic.h"
+#include "kernel/atomic.h"
 #include "acpi.h"
 #include "pci.h"
 #include "irq.h"
@@ -288,7 +289,7 @@ void lapic_timer_arm(void)
     lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR | LAPIC_LVT_PERIODIC);
     lapic_write(LAPIC_TIMER_ICR, lapic_timer_interval);
 
-    __sync_fetch_and_add(&lapic_timers_running, 1);
+    atomic_inc(&lapic_timers_running);
 }
 
 int lapic_timer_armed(void)
