@@ -11,6 +11,7 @@
 
 #define pr_fmt(fmt) "[RTL8139] " fmt
 #include "kernel/printk.h"
+#include "kernel/atomic.h"
 #include "rtl8139.h"
 #include "init.h"
 #include "ports.h"
@@ -71,9 +72,11 @@ static uint16_t rx_offset = 0;
  * shell commands (rtl8139_get_stats), so they must be volatile to keep
  * the read side from caching a stale value across the IRQ. */
 static int driver_initialized = 0;
-static volatile uint32_t rx_packet_count = 0;
-static volatile uint32_t tx_packet_count = 0;
-static volatile uint32_t irq_count = 0;
+/* Counters are touched from the NIC ISR and task context on either
+ * CPU; all updates go through the atomic wrappers. */
+static uint32_t rx_packet_count = 0;
+static uint32_t tx_packet_count = 0;
+static uint32_t irq_count = 0;
 
 /**
  * Print a hex byte to the terminal.
@@ -165,7 +168,7 @@ static int rtl8139_drain_rx(void)
 void rtl8139_handler(registers_t* regs)
 {
     uint16_t status = inw(io_base + RTL8139_REG_ISR);
-    irq_count++;
+    atomic_inc(&irq_count);
 
     if (RTL8139_DEBUG)
         pr_debug("ISR: status=0x%x ROK=0x%x TOK=0x%x\n", status,
@@ -175,7 +178,7 @@ void rtl8139_handler(registers_t* regs)
     outw(io_base + RTL8139_REG_ISR, status);
 
         if (status & RTL8139_ISR_ROK) {
-        rx_packet_count += rtl8139_drain_rx();
+        rx_packet_count = atomic_add(&rx_packet_count, (uint32_t)rtl8139_drain_rx());
     }
 
 if (status & RTL8139_ISR_TOK) {
@@ -295,7 +298,7 @@ int rtl8139_poll_rx(void)
     uint32_t eflags = irq_save();
 
     int processed = rtl8139_drain_rx();
-    rx_packet_count += processed;
+    rx_packet_count = atomic_add(&rx_packet_count, (uint32_t)processed);
 
     /* Restore IF to the state on entry (IF=1 for shell, IF=0 for ISR) */
     irq_restore(eflags);
@@ -314,7 +317,7 @@ int rtl8139_poll_rx(void)
  */
 void rtl8139_send_packet(void* data, uint32_t len)
 {
-    tx_packet_count++;
+    atomic_inc(&tx_packet_count);
 
     if (RTL8139_DEBUG) {
         uint8_t* f = (uint8_t*)data;

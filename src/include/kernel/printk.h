@@ -10,6 +10,8 @@
 #ifndef PRINTK_H
 #define PRINTK_H
 
+#include <stdint.h>
+
 #include <stdarg.h>
 
 /* Log levels (Linux-compatible numeric constants) */
@@ -74,6 +76,6 @@ void _printk_serial_only(int level, const char* fmt, ...);
 #define pr_cont(fmt, ...)    _printk(LOG_INFO,    fmt, ##__VA_ARGS__)
 
 /* ISR context flag -- set by IRQ entry, cleared on exit */
-extern volatile int in_isr;
+extern volatile uint32_t in_isr;
 
 #endif /* PRINTK_H */

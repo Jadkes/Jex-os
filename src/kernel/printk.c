@@ -39,7 +39,7 @@ int serial_debug = 0;
  * arriving inside the NIC ISR's interrupt-enabled window), and an inner
  * exit clearing a boolean would un-suppress the outer frame too early.
  */
-volatile int in_isr = 0;
+volatile uint32_t in_isr = 0;
 
 void _printk(int level, const char* fmt, ...)
 {

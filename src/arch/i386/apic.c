@@ -242,7 +242,7 @@ static void apic_wait_icr_idle(void)
 /* ── Per-CPU LAPIC timer ──────────────────────────────── */
 
 uint32_t lapic_timer_interval;  /* ticks per scheduler slice */
-static volatile int lapic_timers_running;
+static volatile uint32_t lapic_timers_running;
 
 void lapic_timer_calibrate(void)
 {

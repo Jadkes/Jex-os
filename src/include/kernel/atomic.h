@@ -20,7 +20,7 @@
  * atomic_inc - Increment an integer atomically
  * @v: pointer to the value
  */
-static inline void atomic_inc(volatile int* v)
+static inline void atomic_inc(volatile uint32_t* v)
 {
     __sync_fetch_and_add(v, 1);
 }
@@ -29,7 +29,7 @@ static inline void atomic_inc(volatile int* v)
  * atomic_dec - Decrement an integer atomically
  * @v: pointer to the value
  */
-static inline void atomic_dec(volatile int* v)
+static inline void atomic_dec(volatile uint32_t* v)
 {
     __sync_fetch_and_sub(v, 1);
 }
@@ -38,7 +38,7 @@ static inline void atomic_dec(volatile int* v)
  * atomic_inc_return - Increment and return the new value
  * @v: pointer to the value
  */
-static inline int atomic_inc_return(volatile int* v)
+static inline uint32_t atomic_inc_return(volatile uint32_t* v)
 {
     return __sync_add_and_fetch(v, 1);
 }
@@ -47,7 +47,7 @@ static inline int atomic_inc_return(volatile int* v)
  * atomic_dec_return - Decrement and return the new value
  * @v: pointer to the value
  */
-static inline int atomic_dec_return(volatile int* v)
+static inline uint32_t atomic_dec_return(volatile uint32_t* v)
 {
     return __sync_sub_and_fetch(v, 1);
 }
@@ -57,9 +57,9 @@ static inline int atomic_dec_return(volatile int* v)
  * @v: pointer to the value
  * @n: amount to add
  */
-static inline void atomic_add(volatile int* v, int n)
+static inline uint32_t atomic_add(volatile uint32_t* v, uint32_t n)
 {
-    __sync_fetch_and_add(v, n);
+    return __sync_fetch_and_add(v, n);
 }
 
 /**
@@ -67,7 +67,7 @@ static inline void atomic_add(volatile int* v, int n)
  * @v: pointer to the value
  * @n: new value
  */
-static inline int atomic_xchg(volatile int* v, int n)
+static inline uint32_t atomic_xchg(volatile uint32_t* v, uint32_t n)
 {
     return __sync_lock_test_and_set(v, n);
 }
@@ -81,7 +81,7 @@ static inline int atomic_xchg(volatile int* v, int n)
  * Compare the return against @expected to know whether the swap
  * happened.
  */
-static inline int atomic_cmpxchg(volatile int* v, int expected, int desired)
+static inline uint32_t atomic_cmpxchg(volatile uint32_t* v, uint32_t expected, uint32_t desired)
 {
     return __sync_val_compare_and_swap(v, expected, desired);
 }
