@@ -145,8 +145,11 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
 
     /* Enable interrupts globally (STI instruction) */
-    __asm__ volatile("sti"); 
-    
+    __asm__ volatile("sti");
+
+    /* First boot line proving the clock actually runs at 100 Hz. */
+    timer_selftest();
+
     pr_info("Starting Shell...\n");
 
     /* 13. Print boot banner then Enter the Shell. */

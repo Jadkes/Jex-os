@@ -30,4 +30,10 @@ void sleep(uint32_t ms);
  */
 uint32_t get_ticks();
 
+/**
+ * @brief Measure the delivered tick rate against a 50 ms channel-2
+ *        stopwatch and log it.  Call once after interrupts are enabled.
+ */
+void timer_selftest(void);
+
 #endif // TIMER_H

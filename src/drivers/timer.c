@@ -11,6 +11,7 @@
 #include "irq.h"
 #include "ports.h"
 #include "task.h"
+#include "kernel/printk.h"
 /**
  * @brief Global system tick counter.
  * Marked volatile because it is modified within an interrupt handler.
@@ -57,8 +58,12 @@ void init_timer(uint32_t frequency)
     /* PIT base frequency is 1.193182 MHz */
     uint32_t divisor = 1193180 / frequency;
 
-    /* Send control byte: Channel 0, access lo/hi byte, square wave mode, 16-bit binary */
-    outb(0x43, 0x36);
+    /* Send control byte: Channel 0, access lo/hi byte, rate generator
+     * (mode 2), 16-bit binary.  Mode 3's square wave toggles twice per
+     * period and QEMU's cascade-line path delivers an extra edge for it,
+     * doubling the tick rate; mode 2 pulses OUT low once per period,
+     * giving exactly one rising edge per tick. */
+    outb(0x43, 0x34);
 
     /* Send divisor bytes */
     uint8_t l = (uint8_t)(divisor & 0xFF);
@@ -102,4 +107,35 @@ void sleep(uint32_t ms)
 uint32_t get_ticks()
 {
     return system_ticks;
+}
+
+/**
+ * @brief Verify the delivered tick rate against an independent stopwatch.
+ *
+ * Runs channel 2 as a 50 ms one-shot (1.193182 MHz * 0.05 = 59659 counts)
+ * and counts how many timer callbacks arrive before OUT2 rises.  This
+ * measures what sleep() actually experiences — if the clock is misrouted
+ * or double-delivered it shows up in this one boot line instead of as
+ * subtly-fast music.  Must be called with interrupts enabled; exits
+ * within 50 ms even if no ticks ever arrive (the PIT runs on its own).
+ */
+void timer_selftest(void)
+{
+    uint8_t port61 = inb(0x61);
+    /* Gate channel 2 on, keep the speaker output (bit 1) off. */
+    outb(0x61, (uint8_t)((port61 & ~0x02) | 0x01));
+
+    outb(0x43, 0xB0);               /* ch2, lo/hi access, mode 0 */
+    outb(0x42, 59659 & 0xFF);
+    outb(0x42, (59659 >> 8) & 0xFF);
+
+    uint32_t start_ticks = system_ticks;
+    while (!(inb(0x61) & 0x20))     /* OUT2 high at terminal count */
+        __asm__ volatile("pause");
+    uint32_t elapsed = system_ticks - start_ticks;
+
+    outb(0x61, port61);             /* restore speaker gating */
+
+    pr_info("clock self-test: %u ticks in a 50 ms window (expected 5)\n",
+            elapsed);
 }
