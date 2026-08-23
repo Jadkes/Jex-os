@@ -4,6 +4,29 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## ✅ Completed Milestones
 
+### master (post-v0.7.4) — SMP, IO/APIC, Clock Fixes
+
+### SMP Bring-up
+- [x] **ACPI Discovery**: checksum-validated RSDP scan (EBDA → FSEG spec order), MADT parse for CPUs/LAPIC/IOAPIC
+- [x] **AP Wake**: real-mode trampoline at 0x1000, INIT-SIPI sequence with PIT-calibrated delays, second SIPI only if the AP missed the first
+- [x] **Per-CPU State**: `cpus[]` with per-CPU ready queues, current task, kernel stacks, cloned page directories
+- [x] **IO/APIC Ownership**: 8259 masked, all IRQs through the IOAPIC; PCI INTx routed via PIIX3 PIRQ cookies to GSI 16–19
+- [x] **cpu_id() Safety Net**: logs once if a CPU's LAPIC ID has no cpus[] entry
+
+### Clock & Timing
+- [x] **Cascade-line PIT Fix**: QEMU's PIIX3 delivers PIT ticks on GSI 2 (vector 34), not GSI 0 — timer registered on both slots
+- [x] **Rate-generator Mode**: mode 3's square wave double-delivered on the cascade path (~2× tick rate); mode 2 gives one edge per tick
+- [x] **Boot Self-test**: delivered ticks counted against a 50 ms channel-2 stopwatch every boot
+- [x] **sleep() IF Hygiene**: hlt requires interrupts enabled; caller state captured and restored around the wait
+
+### Robustness
+- [x] **irq_save/irq_restore**: EFLAGS-capturing interrupt guards replace bare cli/sti across net/tcp/timer/rtl8139 paths reachable from ISR context
+- [x] **TX Descriptor Lock**: rtl8139 send packet claim is atomic vs. ISR-triggered ACK sends
+- [x] **in_isr Nesting Counter**: nested handlers no longer un-suppress outer frames' VGA output
+- [x] **UDP Dispatch Under Lock**: callbacks run with IF=0 instead of nesting interrupts mid-ISR
+- [x] **top Accounting Fix**: queued-current task counted once, percentages sum correctly
+- [x] **Named Hardware Constants**: PIT/PIC/VGA/UART/GDT/syscall magic numbers replaced tree-wide
+
 ### v0.6.5 — TCP Hardening, HTTP Server, DHCP Client
 
 ### TCP & Network Stack
@@ -95,6 +118,13 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## 🎯 Current Goals
 
+### SMP Follow-ups
+- [ ] **Spinlocks / Mutexes**: shared kernel structures (ARP cache, TCP tables, kheap) are currently protected by global IF games only
+- [ ] **Load Balancing**: APs sit idle in hlt; push ready tasks to the second CPU
+- [ ] **IPI Reschedule**: wake a CPU's scheduler remotely instead of polling
+- [ ] **LAPIC Timer**: per-CPU tick source, drop the PIT cascade workaround
+- [ ] **Atomic Console Writes**: serial lines from BSP and AP interleave mid-line
+
 ### Networking
 - [ ] **TCP Window Scaling**: Advertise and handle window sizes
 - [ ] **Checksum Validation**: Verify on receive, not just on send
@@ -113,11 +143,12 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **Slab Allocator**: Power-of-2 size classes, O(1) kfree, PMM fallback
 - [x] **Keyboard Buffering**: Ring buffer, no dropped keys under load
 - [x] **Signal Handling**: sys_signal/sys_kill, delivery in scheduler
-- [ ] **Single core optimisation**: Because a lot of cpu's means a lot of bugs, better rely on 1
+- [x] **SMP**: two CPUs booting, per-CPU run queues, IOAPIC routing (see master milestone above)
 - [ ] **AHCI / SATA**: Faster disk I/O
 - [ ] **USB Keyboard/Mouse**: Beyond PS/2
 
 ### Polish
 - [x] **Ctrl+L**: Clear screen shortcut
+- [x] **Music Tempo**: play_tune rescored for the now-correct clock
 - [ ] **Scrollback**: Terminal history buffer
 - [ ] **Color Themes**: Customizable palette
