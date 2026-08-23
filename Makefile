@@ -35,7 +35,7 @@ QEMU_OPTS = -serial stdio \
             -device rtl8139,netdev=net0
 
 ## Architecture 
-CFLAGS    = -m32 -march=i386 -ffreestanding -std=gnu99 -fno-pie -fno-stack-protector
+CFLAGS    = -m32 -march=i486 -ffreestanding -std=gnu99 -fno-pie -fno-stack-protector
 CFLAGS   += -O2 -Wall -Wextra
 CFLAGS   += -fno-omit-frame-pointer
 CFLAGS   += -Isrc/include -Isrc/tests
