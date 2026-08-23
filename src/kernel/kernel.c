@@ -45,6 +45,7 @@
 #include "devtmpfs.h"
 #include "jexfs.h"
 #include "smp.h"
+#include "apic.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -67,12 +68,15 @@ static void print_banner(void)
              cpu_count, cpu_count > 1 ? "s" : "");
     terminal_writestring(cpuinfo);
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
-    log_serial("JexOS v0.7.4");
+    log_serial("JexOS v0.7.4\n");
 
     /* RAM size from Multiboot info (safe in protected mode) */
     uint32_t ram_kb = g_mboot_info->mem_lower + g_mboot_info->mem_upper;
     snprintf(buf, sizeof(buf), "RAM: %u KB\n", ram_kb);
     terminal_writestring(buf);
+
+    /* Serial mirror of the banner facts; VGA stays as before */
+    pr_serial("sys: RAM %u KB\n", ram_kb);
 
     /* RTL8139 MAC address — check if driver is initialized */
     if (rtl8139_is_initialized()) {
@@ -86,9 +90,15 @@ static void print_banner(void)
                 terminal_putchar(':');
         }
         terminal_writestring(")\n");
+
+        pr_serial("sys: eth0 RTL8139 %02x:%02x:%02x:%02x:%02x:%02x ip %u.%u.%u.%u\n",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                  our_ip & 0xFF, (our_ip >> 8) & 0xFF,
+                  (our_ip >> 16) & 0xFF, (our_ip >> 24) & 0xFF);
     }
 
     terminal_writestring("FS: JexFS v2, 4 MB (RAM rootfs)\n");
+    pr_serial("sys: fs JexFS v2 rootfs, shell starting\n");
     terminal_writestring("\n");
 }
 
@@ -113,6 +123,10 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     g_mboot_magic = magic;
     g_mboot_info = mboot_info;
 
+    /* Serial-only boot diagnostics (VGA output stays unchanged) */
+    pr_serial("boot: multiboot magic=0x%08x flags=0x%08x\n",
+              magic, mboot_info->flags);
+
     /* Initcalls in section order:
      *   early_initcalls:  CPU setup, interrupt controllers, memory management
      *   device_initcalls: drivers, filesystems, higher-level subsystems */
@@ -122,6 +136,10 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
 
     devtmpfs_init();
     fs_mount("/sys", "devtmpfs");
+
+    pr_serial("mem: %u/%u MB used, %u KB free\n",
+              pmm_get_used_memory() >> 20, pmm_get_total_memory() >> 20,
+              pmm_get_free_memory() >> 10);
 
     /* CWD starts at root */
     cwd_inode = 1;
@@ -134,6 +152,13 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     pr_info("Initializing Timer...\n");
     init_timer(100);
 
+    /* Calibrate the LAPIC timer against the now-running PIT, arm the
+     * BSP's and signal the APs (waiting in their idle loops) to arm
+     * theirs.  Preemption is per-CPU from here on. */
+    init_lapic_timer();
+    smp_timers_go();
+
+
     /* Kernel stack for the initial task */
     pr_info("Setup Stack...\n");
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
@@ -144,6 +169,18 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
 
     /* First boot line proving the clock actually runs at 100 Hz. */
     timer_selftest();
+
+    /* Sampled late enough that every AP has spun out of its park loop
+     * and armed its own timer -- an immediate read raced them. */
+    int online_cpus = 0;
+    for (int i = 0; i < cpu_count; i++)
+        if (cpus[i].online || cpus[i].is_bsp)
+            online_cpus++;
+    pr_serial("smp: %d/%d CPUs online, lapic timers armed=%d\n",
+              online_cpus, cpu_count, lapic_timer_armed_count());
+
+    pr_serial("task: pid %d on cpu%d, kstack top 0x%08x\n",
+              cur_task() ? cur_task()->id : 0, cpu_id(), kernel_stack_top);
 
     pr_info("Starting Shell...\n");
 
