@@ -37,6 +37,20 @@ static page_directory_t* current_page_dir(void) {
     return &kernel_directory;
 }
 
+int paging_is_mapped(const void* virtualaddr) {
+    uint32_t addr = (uint32_t)virtualaddr;
+    uint32_t pdi = addr >> 22;
+    uint32_t pti = (addr >> 12) & 0x3FF;
+    page_directory_t* dir = current_page_dir();
+
+    if (!dir->tables[pdi].present)
+        return 0;
+    /* 4MB pages are fully mapped by the PDE alone */
+    if (dir->tables[pdi].page_size)
+        return 1;
+    return PTE_PTR(pdi)[pti].present != 0;
+}
+
 /**
  * @brief Get or create a page table in a specific directory.
  *

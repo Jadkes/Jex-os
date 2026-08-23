@@ -198,6 +198,17 @@ page_directory_t* clone_page_directory(page_directory_t* src);
 void paging_unmap_page(void* virtualaddr);
 
 /**
+ * @brief Test whether a virtual address is mapped in the current page directory.
+ *
+ * Read-only probe: never allocates or faults.  Used by the syscall layer to
+ * validate user pointers before the kernel dereferences them.
+ *
+ * @param virtualaddr Address to test (any offset within the page works)
+ * @return 1 if mapped, 0 if not
+ */
+int paging_is_mapped(const void* virtualaddr);
+
+/**
  * @brief Handler for Page Fault exceptions (Interrupt 14).
  * @param regs The CPU state at the time of the fault.
  */

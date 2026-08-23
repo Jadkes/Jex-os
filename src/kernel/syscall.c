@@ -33,6 +33,69 @@ static int is_valid_user_ptr(const void* ptr, uint32_t len) {
     return 1;
 }
 
+/* Upper bounds keep the page-probe loops below finite no matter what a
+ * hostile caller passes in. */
+#define MAX_USER_IO_BYTES   (16 * 1024 * 1024)
+#define MAX_USER_STR_LEN    4096
+#define MAX_USER_ARGV_COUNT 64
+
+extern int paging_is_mapped(const void* virtualaddr);
+
+/**
+ * @brief Check a user buffer for range AND mapping.
+ *
+ * is_valid_user_ptr alone only proves the address lies below 0xC0000000 —
+ * an unmapped hole would still fault inside fs_read with kernel privileges.
+ * This walks every page the buffer touches and demands it be present in
+ * the calling task's directory.
+ */
+static int user_io_ok(const void* buf, uint32_t len) {
+    if (!is_valid_user_ptr(buf, len)) return 0;
+    if (len > MAX_USER_IO_BYTES) return 0;
+    if (len == 0) return 1;
+
+    uint32_t addr = (uint32_t)buf;
+    uint32_t last = addr + len - 1;
+    for (uint32_t page = addr & ~0xFFFu; ; page += 0x1000) {
+        if (!paging_is_mapped((const void*)page)) return 0;
+        if (page >= last) break;
+    }
+    return 1;
+}
+
+/**
+ * @brief Check that a NUL-terminated user string is fully readable.
+ *
+ * Probes each new page before reading bytes from it, so a string whose
+ * tail sits in unmapped memory fails validation instead of faulting.
+ */
+static int user_str_ok(const char* str) {
+    if (!is_valid_user_ptr(str, 1)) return 0;
+    uint32_t addr = (uint32_t)str;
+    if (!paging_is_mapped(str)) return 0;
+
+    for (uint32_t i = 0; i < MAX_USER_STR_LEN; i++) {
+        if (((addr + i) & 0xFFF) == 0 && !paging_is_mapped(str + i)) return 0;
+        if (str[i] == '\0') return 1;
+    }
+    return 0; /* ran off without a terminator */
+}
+
+/**
+ * @brief Check a NULL-terminated argv/envp array of user strings.
+ */
+static int user_argv_ok(char** argv) {
+    if (!argv) return 1; /* NULL argv/envp is legal */
+
+    for (int i = 0; i < MAX_USER_ARGV_COUNT; i++) {
+        if (!paging_is_mapped(&argv[i])) return 0;
+        char* arg = argv[i];
+        if (!arg) return 1; /* terminator reached */
+        if (!user_str_ok(arg)) return 0;
+    }
+    return 0; /* no terminator within the cap */
+}
+
 extern void terminal_writestring(const char* data);
 extern void isr128();
 
@@ -48,7 +111,7 @@ void syscall_handler(registers_t *regs)
     if (regs->eax == SYS_PRINT)
     {
         /* EBX = Pointer to string */
-        if (!is_valid_user_ptr((const void*)regs->ebx, 1))
+        if (!user_str_ok((const char*)regs->ebx))
             return;
         terminal_writestring((const char*)regs->ebx);
     }
@@ -60,7 +123,7 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == SYS_OPEN)
     {
         /* EBX = filename, ECX = flags */
-        if (!is_valid_user_ptr((const void*)regs->ebx, 1)) {
+        if (!user_str_ok((const char*)regs->ebx)) {
             regs->eax = -1;
             return;
         }
@@ -69,7 +132,7 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == SYS_READ)
     {
         /* EBX = fd, ECX = buffer, EDX = size */
-        if (!is_valid_user_ptr((void*)regs->ecx, regs->edx)) {
+        if (!user_io_ok((void*)regs->ecx, regs->edx)) {
             regs->eax = -1;
             return;
         }
@@ -78,7 +141,7 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == SYS_WRITE)
     {
         /* EBX = fd, ECX = buffer, EDX = size */
-        if (!is_valid_user_ptr((const void*)regs->ecx, regs->edx)) {
+        if (!user_io_ok((const void*)regs->ecx, regs->edx)) {
             regs->eax = -1;
             return;
         }
@@ -104,7 +167,9 @@ void syscall_handler(registers_t *regs)
     else if (regs->eax == SYS_EXECVE)
     {
         /* EBX = filename, ECX = argv, EDX = envp */
-        if (!is_valid_user_ptr((const void*)regs->ebx, 1)) {
+        if (!user_str_ok((const char*)regs->ebx) ||
+            !user_argv_ok((char**)regs->ecx) ||
+            !user_argv_ok((char**)regs->edx)) {
             regs->eax = -1;
             return;
         }
@@ -117,7 +182,6 @@ void syscall_handler(registers_t *regs)
     }
     else if (regs->eax == SYS_FORK)
     {
-        terminal_writestring("[SYSCALL] calling fork()\n");
         regs->eax = fork(regs);
     }
     else if (regs->eax == SYS_WAITPID)
@@ -192,7 +256,11 @@ void syscall_handler(registers_t *regs)
     }
     else if (regs->eax == SYS_SIGNAL)
     {
-        /* EBX = sig, ECX = handler */
+        /* EBX = sig, ECX = handler (SIG_DFL/SIG_IGN sentinels allowed) */
+        if ((uint32_t)regs->ecx >= 0xC0000000) {
+            regs->eax = (uint32_t)-1;
+            return;
+        }
         regs->eax = (uint32_t)sys_signal((int)regs->ebx, (void*)regs->ecx);
     }
     else if (regs->eax == SYS_KILL)
