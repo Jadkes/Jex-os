@@ -142,7 +142,7 @@ void keyboard_callback(registers_t *regs) {
         if (c == CTRL('C') && fg_child_pid > 0) {
             task_t* fg = task_from_pid(fg_child_pid);
             if (fg) {
-                fg->signal_pending |= (1 << SIGINT);
+                __sync_fetch_and_or(&fg->signal_pending, 1u << SIGINT);
                 terminal_writestring("^C\n");
                 return;
             }

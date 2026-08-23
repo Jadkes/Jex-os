@@ -76,6 +76,10 @@ void ap_startup(void);
 /* ap_scheduler_loop - Per-CPU idle/scheduler loop for APs. */
 void ap_scheduler_loop(void);
 
+/* smp_timers_go - Let parked APs arm their LAPIC timers (BSP call,
+ * after init_lapic_timer()). */
+void smp_timers_go(void);
+
 /* Mailbox API */
 int  mailbox_send(int target_cpu, mailbox_slot_t* msg);
 int  mailbox_recv(mailbox_t* mb, mailbox_slot_t* msg);

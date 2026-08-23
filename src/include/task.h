@@ -142,6 +142,14 @@ extern volatile int fg_child_pid;
 /* Find a task by PID across every CPU ready queue, NULL if absent. */
 task_t* task_from_pid(int pid);
 
+/* Serialize read-side scans of any CPU's ready queue from outside
+ * task.c (ps/top/cpuinfo).  Not nestable with itself. */
+void tasks_lock(void);
+void tasks_unlock(void);
+
+/* Create the idle task for an AP before it is woken (BSP-only call). */
+void task_spawn_idle(int cpu_index);
+
 /**
  * @brief Per-CPU current-task and ready-queue accessors.
  *

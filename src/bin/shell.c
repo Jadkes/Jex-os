@@ -168,8 +168,12 @@ void shell_autocomplete() {
     if (word_start == 0) {
         /* Complete a command name */
         for (int i = 0; shell_commands[i]; i++) {
-            if (strncmp(shell_buffer + word_start, shell_commands[i], (size_t)word_len) == 0)
+            if (strncmp(shell_buffer + word_start, shell_commands[i], (size_t)word_len) == 0) {
+                /* Empty word matches every command — cap the array */
+                if (match_count >= (int)(sizeof(matches) / sizeof(matches[0])))
+                    break;
                 matches[match_count++] = shell_commands[i];
+            }
         }
     } else {
         /* Complete a filename from the current directory */
@@ -521,8 +525,10 @@ void ping_command(const char* arg) {
 
     if (net_get_ping_responses() > before) {
         uint32_t rtt = get_ticks() - start;
+        char rtt_buf[16];
+        int_to_string((int)(rtt * 10), rtt_buf);
         log_serial("PING: reply received (RTT=");
-        log_hex_serial(rtt * 10);
+        log_serial(rtt_buf);
         log_serial(" ms)\n");
         if (verbose) {
             char buf[16];
@@ -1341,7 +1347,7 @@ void execute_command() {
         else {
             /* Sleep in slices so Ctrl+C can cut a long nap short */
             for (int left = secs * 1000; left > 0; left -= SLEEP_SLICE_MS) {
-                if (got_ctrl_c()) { terminal_writestring("^C\n"); return; }
+                if (got_ctrl_c()) { terminal_writestring("^C\n"); break; }
                 sleep(left < SLEEP_SLICE_MS ? left : SLEEP_SLICE_MS);
             }
         }
@@ -1380,19 +1386,24 @@ void execute_command() {
         int fd = fs_open(filename, 0);
         if (fd < 0) terminal_writestring("Source not found.\n");
         else {
-            char* source = (char*)kmalloc(4096); int bytes = fs_read(fd, source, 4095);
-            source[bytes] = '\0'; fs_close(fd);
-            tcc_state_t* tcc = tcc_new();
-            if (tcc && tcc_compile_string(tcc, source) == 0) {
-                uint8_t* elf_data; uint32_t elf_size;
-                if (tcc_output_memory(tcc, &elf_data, &elf_size) == 0) {
-                    fs_create(output_file); int out_fd = fs_open(output_file, 0);
-                    fs_write(out_fd, elf_data, elf_size); fs_close(out_fd);
-                    terminal_writestring("Compiled: "); terminal_writestring(output_file); terminal_writestring("\n");
-                }
-            } else terminal_writestring("Compilation failed\n");
-            if (tcc) tcc_delete(tcc);
-            kfree(source);
+            char* source = (char*)kmalloc(4096);
+            if (!source) { fs_close(fd); terminal_writestring("Out of memory\n"); }
+            else {
+                int bytes = fs_read(fd, source, 4095);
+                if (bytes < 0) bytes = 0;
+                source[bytes] = '\0'; fs_close(fd);
+                tcc_state_t* tcc = tcc_new();
+                if (tcc && tcc_compile_string(tcc, source) == 0) {
+                    uint8_t* elf_data; uint32_t elf_size;
+                    if (tcc_output_memory(tcc, &elf_data, &elf_size) == 0) {
+                        fs_create(output_file); int out_fd = fs_open(output_file, 0);
+                        fs_write(out_fd, elf_data, elf_size); fs_close(out_fd);
+                        terminal_writestring("Compiled: "); terminal_writestring(output_file); terminal_writestring("\n");
+                    }
+                } else terminal_writestring("Compilation failed\n");
+                if (tcc) tcc_delete(tcc);
+                kfree(source);
+            }
         }
     }
     else if (strncmp(shell_buffer, "./", 2) == 0) {
@@ -1541,6 +1552,7 @@ void execute_command() {
          * its ready queue and marked current (the normal state on a CPU)
          * must be counted exactly once, or every percentage halves. */
         uint32_t total = 0;
+        tasks_lock();   /* queues may be reaped on another core mid-scan */
         for (int ci = 0; ci < cpu_count; ci++) {
             for (task_t* task = (task_t*)cpus[ci].ready_queue; task; task = task->next)
                 total += task->cpu_ticks;
@@ -1599,6 +1611,7 @@ void execute_command() {
                      cur ? cur->name : "(idle)");
             terminal_writestring(buf);
         }
+        tasks_unlock();
     }
     else if (strcmp(shell_buffer, "cpuinfo") == 0) {
         cpuinfo_command();

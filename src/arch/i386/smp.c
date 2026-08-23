@@ -30,6 +30,8 @@
 #include "gdt.h"
 #include "idt.h"
 #include "ports.h"
+#include "task.h"
+#include "timer.h"
 #include "kernel/printk.h"
 #include <string.h>
 
@@ -100,6 +102,28 @@ static void* clone_kernel_dir(void)
     }
 
     return new_dir;
+}
+
+/* ── Per-CPU timer start handshake ────────────────────── */
+
+/*
+ * Set once the BSP has calibrated and armed its LAPIC timer; every AP
+ * parked in ap_scheduler_loop() watches for it and arms its own.
+ */
+static volatile int lapic_timers_go;
+
+/**
+ * @brief Release APs to arm their LAPIC timers (BSP-only call).
+ *
+ * The BSP must have run init_lapic_timer() first so calibration data
+ * exists.  Without SMP (single core) this is a no-op — nothing polls.
+ */
+void smp_timers_go(void)
+{
+    if (cpu_count < 2)
+        return;
+    __asm__ volatile("" ::: "memory");
+    lapic_timers_go = 1;
 }
 
 /* ── CPU ID ───────────────────────────────────────────── */
@@ -267,16 +291,17 @@ void ap_startup(void)
      * double-faults, and triple-faults — with zero diagnostics.  The kernel
      * GDT uses the same selector values as the trampoline GDT (0x08/0x10),
      * so the swap is invisible to the running code.
-     *
-     * NOTE: deliberately NO tss_flush()/ltr here.  There is one global TSS
-     * whose GDT descriptor the BSP already marked busy via LTR — loading
-     * the same selector from a second CPU raises #GP(selector).  Each CPU's
-     * task register therefore stays at 0, which is fine only as long as APs
-     * never take ring transitions.  Per-CPU TSS + GDT slot is required
-     * before APs can schedule user tasks.
      */
     gdt_flush((uint32_t)&gdt_ptr);
     idt_flush((uint32_t)&idt_ptr);
+
+    /*
+     * Load THIS cpu's TSS descriptor.  Every core owns a distinct GDT
+     * slot now, so there is no busy-bit collision with the BSP's — ring-3
+     * interrupts on this CPU get a valid ESP0 from the moment it runs.
+     */
+    int me_early = cpu_id();
+    __asm__ volatile("ltr %%ax" : : "a"(tss_selector(me_early)));
 
     /* cpu_id() reads the LAPIC ID register — reachable because the
      * trampoline already installed this CPU's cloned page directory. */
@@ -309,8 +334,20 @@ void ap_startup(void)
 
 void ap_scheduler_loop(void)
 {
+    /* Spin until the BSP finishes LAPIC timer calibration.  No hlt
+     * here: we run with IF=0 and every tick source routes to the BSP,
+     * so a halted core would never wake to see the flag go up.  The
+     * window is one calibration period (~100 ms). */
+    while (!lapic_timers_go)
+        __asm__ volatile("pause");
+
+    /* Arm this core's timer and open the door for preemption: from the
+     * first tick task_switch() round-robins this CPU's queue, which the
+     * BSP seeded with an idle task plus whatever fork() placed here. */
+    init_lapic_timer();
+    __asm__ volatile("sti");
+
     while (1) {
-        /* Halt until the BSP sends an IPI to wake us. */
         __asm__ volatile("hlt");
     }
 }
@@ -393,18 +430,19 @@ void smp_init(void)
             continue;
         }
 
-        /* Allocate a kernel stack (using PID-offset 10+i in PDE 1023). */
-        int stack_id = 10 + i;
-        uint32_t stack_base = alloc_kernel_stack(stack_id);
+        /* Allocate a kernel stack from the shared pool in PDE 1023. */
+        uint32_t stack_base = alloc_kernel_stack();
         if (!stack_base) {
             pr_err("AP %d: cannot allocate kernel stack, skipping\n", i);
             continue;
         }
         cpus[i].kstack_top = stack_base + KSTACK_SIZE;
 
+        /* Seed the AP's queue with an idle task (reusing its boot stack)
+         * BEFORE the wake, so the first timer tick has something to run. */
+        task_spawn_idle(i);
+
         /* Wake the AP. */
         wake_ap(i);
     }
-
-    pr_info("SMP: %d CPU(s) online\n", cpu_count);
 }

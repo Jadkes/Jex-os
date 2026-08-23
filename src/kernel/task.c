@@ -15,8 +15,68 @@
 #include "gdt.h"
 #include "panic.h"
 #include "isr.h"
+#include "ports.h"
+#include "spinlock.h"
+#include "kernel/printk.h"
 #include "kernel/backtrace.h"
 #include <jexos/errno.h>
+
+extern void log_serial(const char* str);
+extern void log_hex_serial(uint32_t n);
+
+/*
+ * Cross-CPU mutual exclusion for everything that touches any ready
+ * queue: fork/exit appends, waitpid reaps, kill/pid lookups, ps-style
+ * scans, and the scheduler's own queue walk in task_switch().  A local
+ * cli cannot do this job once two cores mutate the lists concurrently.
+ */
+static spinlock_t tasklist_lock = SPINLOCK_INIT;
+
+/* Hands out PIDs atomically across CPUs */
+static spinlock_t pid_lock = SPINLOCK_INIT;
+
+/**
+ * @brief Serialize cross-CPU task-queue scans for code outside task.c
+ *        (shell ps/top/cpuinfo).  Nesting is NOT supported.
+ */
+void tasks_lock(void)   { spin_lock(&tasklist_lock); }
+void tasks_unlock(void) { spin_unlock(&tasklist_lock); }
+
+/**
+ * @brief Pick the online CPU with the shortest ready queue.
+ *
+ * Called with tasklist_lock held so queue lengths are stable.
+ * @return CPU index for a new task.
+ */
+static int pick_cpu_by_load(void)
+{
+    int best = 0;
+    int best_len = -1;
+    for (int i = 0; i < cpu_count; i++) {
+        /* cpus[0].online is never set (only APs signal it) */
+        if (i != 0 && !cpus[i].online) continue;
+        int len = 0;
+        for (task_t* t = (task_t*)cpus[i].ready_queue; t; t = t->next) len++;
+        if (best_len < 0 || len < best_len) { best_len = len; best = i; }
+    }
+    return best;
+}
+
+/**
+ * @brief Append a task to the tail of a CPU's ready queue.
+ * Caller holds tasklist_lock.
+ */
+static void queue_append(int cpu_index, task_t* t)
+{
+    task_t* q = (task_t*)cpus[cpu_index].ready_queue;
+    if (!q) {
+        cpus[cpu_index].ready_queue = (struct task*)t;
+        return;
+    }
+    while (q->next) q = q->next;
+    q->next = t;
+}
+
 
 extern page_directory_t kernel_directory;
 extern uint32_t read_eip();
@@ -37,6 +97,18 @@ extern void kernel_fork_trampoline(void);
 static int next_pid = 1;
 
 /**
+ * @brief Per-CPU idle body — sleeps until the LAPIC timer preempts.
+ *
+ * Runs as a normal ring-0 task on its CPU's queue; the periodic tick
+ * saves this context like any other and gives the CPU to real work.
+ */
+static void idle_loop(void)
+{
+    for (;;)
+        __asm__ volatile("sti; hlt");
+}
+
+/**
  * @brief Initialize multitasking.
  * Creates the first task (Kernel/Shell) and starts the scheduler.
  */
@@ -49,7 +121,7 @@ void init_tasking() {
     cur_task()->esp = cur_task()->ebp = 0;
     cur_task()->eip = 0;
     cur_task()->page_directory = &kernel_directory;
-    cur_task()->kstack = alloc_kernel_stack(cur_task()->id);
+    cur_task()->kstack = alloc_kernel_stack();
     cur_task()->cpu_ticks = 0;
     cur_task()->next = NULL;
     cur_task()->state = STATE_RUNNING;
@@ -140,7 +212,15 @@ void task_switch() {
     ct->esp = esp;
     ct->ebp = ebp;
 
-    /* Round-robin: Pick the next task in the ready queue */
+    /*
+     * Pick the next task under the global lock — other CPUs mutate this
+     * queue concurrently.  The lock is dropped before the context jump:
+     * the choice below is already final, and holding a spinlock across a
+     * switch would freeze whichever CPU preempts us mid-jump.
+     */
+    uint32_t tl_flags;
+    spin_lock_irqsave(&tasklist_lock, &tl_flags);
+
     task_t* start = ct;
     ct = ct->next;
     if (!ct) ct = rdy_queue();
@@ -156,6 +236,7 @@ void task_switch() {
              * zombie and there's nothing to schedule. */
             if (ct == start && ct->state == STATE_ZOMBIE) {
                 /* All tasks are zombies — nothing to run */
+                spin_unlock_irqrestore(&tasklist_lock, tl_flags);
                 for (;;) asm volatile("hlt");
             }
         }
@@ -163,21 +244,20 @@ void task_switch() {
 
     /* Deliver any pending signals before the task runs */
     while (deliver_signals(ct)) {
-        task_t* terminated = ct;
-        task_t* prev = rdy_queue();
-        if (prev == terminated) {
-            set_rdy_queue(terminated->next);
-        } else {
-            while (prev && prev->next != terminated)
-                prev = prev->next;
-            if (prev)
-                prev->next = terminated->next;
-        }
-        ct = terminated->next;
-        if (!ct) ct = rdy_queue();
-        if (!ct)
+        /* ct was terminated: leave the zombie LINKED so waitpid() can
+         * find and reap it (unlinking here made killed children vanish —
+         * unreapable, leaking their stack and task struct).  Hop to the
+         * next non-zombie candidate instead. */
+        task_t* scan_from = ct;
+        do {
+            ct = ct->next;
+            if (!ct) ct = rdy_queue();
+        } while (ct->state == STATE_ZOMBIE && ct != scan_from);
+        if (ct->state == STATE_ZOMBIE)
             panic_assert("All tasks terminated by signals", __FILE__, __LINE__);
     }
+
+    spin_unlock_irqrestore(&tasklist_lock, tl_flags);
 
     /* Persist the selected task */
     set_cur_task(ct);
@@ -291,28 +371,26 @@ static void fork_child_entry(void* arg) {
  * @return Child PID for the parent, -1 on error. (The child never returns from this call.)
  */
 int fork(registers_t* regs) {
-    __asm__ volatile("cli");
-
     task_t* parent = cur_task();
 
     /* Allocate task_t via kmalloc so waitpid's kfree() matches.
      * Previously used pmm_alloc_block() which kfree() cannot free
      * (ptr_to_slab sees task_t.id as "magic" — never matches). */
     task_t* child = (task_t*)kmalloc(sizeof(task_t));
-    if (!child) {
-        __asm__ volatile("sti");
+    if (!child)
         return -ENOMEM;
-    }
 
     /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
     if (!new_dir) {
         kfree(child);
-        __asm__ volatile("sti");
         return -ENOMEM;
     }
 
+    uint32_t flags;
+    spin_lock_irqsave(&pid_lock, &flags);
     child->id = next_pid++;
+    spin_unlock_irqrestore(&pid_lock, flags);
     child->page_directory = new_dir;
     child->cpu_ticks = 0;
     child->state = STATE_READY;
@@ -326,9 +404,9 @@ int fork(registers_t* regs) {
         child->signal_handlers[i] = parent->signal_handlers[i];
 
     /* Allocate kernel stack for the child via PDE 1023 — no identity collision */
-    child->kstack = alloc_kernel_stack(child->id);
+    child->kstack = alloc_kernel_stack();
     if (!child->kstack) {
-        __asm__ volatile("sti");
+        kfree(child);
         return -ENOMEM;
     }
 
@@ -372,12 +450,11 @@ int fork(registers_t* regs) {
     child->eip = (uint32_t)kernel_fork_trampoline;
 
 
-    /* Add child to end of current CPU's ready queue */
-    task_t* tmp = rdy_queue();
-    while (tmp->next) tmp = tmp->next;
-    tmp->next = child;
+    /* Place the child on the least-loaded CPU and link it in */
+    spin_lock_irqsave(&tasklist_lock, &flags);
+    queue_append(pick_cpu_by_load(), child);
+    spin_unlock_irqrestore(&tasklist_lock, flags);
 
-    __asm__ volatile("sti");
     return child->id;
 }
 
@@ -415,22 +492,16 @@ __asm__(
  *
  * @func: Function to execute.
  * @arg:  Argument to pass to @func.
- * @cpu:  Target logical CPU number (0 = BSP, or -1 = any).
+ * @cpu:  Target logical CPU number, or -1 to place by load.
  *
- * Only same-CPU queueing is supported right now.  Cross-CPU dispatch needs
- * the mailbox hand-off (and a per-CPU TSS) to be safe; until then, an
- * explicit foreign target is rejected rather than silently queued on the
- * caller's CPU — the old behaviour broke the function's own contract and
- * left waitpid() scanning a queue that never held the child.
+ * Cross-CPU queueing is safe now that every core runs its own scheduler
+ * under tasklist_lock; waitpid() scans all queues when reaping.
  *
  * Return: child PID on success, or negative errno.
  */
 int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
 {
-    int target_cpu = (cpu < 0 || cpu >= cpu_count) ? cpu_id() : cpu;
-
-    if (target_cpu != cpu_id())
-        return -EINVAL;
+    int place_by_load = (cpu < 0 || cpu >= cpu_count);
 
     /*
      * Allocate and clone with interrupts ENABLED.
@@ -454,7 +525,11 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
         return -ENOMEM;
     }
 
+    uint32_t flags;
+    spin_lock_irqsave(&pid_lock, &flags);
     child->id = next_pid++;
+    spin_unlock_irqrestore(&pid_lock, flags);
+
     child->page_directory = new_dir;
     child->cpu_ticks = 0;
     child->state = STATE_READY;
@@ -467,7 +542,7 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
     for (int i = 0; i < 32; i++)
         child->signal_handlers[i] = parent->signal_handlers[i];
 
-    child->kstack = alloc_kernel_stack(child->id);
+    child->kstack = alloc_kernel_stack();
     if (!child->kstack) {
         kfree(child);
         return -ENOMEM;
@@ -482,21 +557,16 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
     child->ebp = (uint32_t)cp;
     child->eip = (uint32_t)kernel_fork_trampoline;
 
-    /* cli only for the queue modification — brief, no allocation. */
-    __asm__ volatile("cli");
+    spin_lock_irqsave(&tasklist_lock, &flags);
+    queue_append(place_by_load ? pick_cpu_by_load() : cpu, child);
+    spin_unlock_irqrestore(&tasklist_lock, flags);
 
-    /* Add child to this CPU's ready queue (cross-CPU rejected above). */
-    task_t* tmp = rdy_queue();
-    while (tmp->next) tmp = tmp->next;
-    tmp->next = child;
-
-    __asm__ volatile("sti");
     return child->id;
 }
 
 int kernel_fork(void (*func)(void*), void* arg)
 {
-    return kernel_fork_on(func, arg, 0);
+    return kernel_fork_on(func, arg, -1);
 }
 
 /**
@@ -506,33 +576,30 @@ int kernel_fork(void (*func)(void*), void* arg)
  * can find and reap it via waitpid(). The scheduler skips zombies.
  */
 void _task_exit(int exit_code) {
-    __asm__ volatile("cli");
-
     task_t* dying = cur_task();
 
     /* PID 1 (shell/init) cannot be killed this way */
-    if (dying->id == 1) {
-        __asm__ volatile("sti");
+    if (dying->id == 1)
         return;
-    }
 
-    {
-        extern void log_serial(const char* str);
-        extern void log_hex_serial(uint32_t n);
-        log_serial("[EXIT] pid=");
-        log_hex_serial(dying->id);
-        log_serial(" code=");
-        log_hex_serial(exit_code);
-        log_serial("\n");
-    }
+    log_serial("[EXIT] pid=");
+    log_hex_serial(dying->id);
+    log_serial(" code=");
+    log_hex_serial(exit_code);
+    log_serial("\n");
 
-    /* Reparent orphans: children of the dying task become children of init (PID 1) */
-    {
-        for (task_t* scan = rdy_queue(); scan; scan = scan->next) {
+    uint32_t flags;
+    spin_lock_irqsave(&tasklist_lock, &flags);
+
+    /*
+     * Reparent orphans across EVERY cpu's queue — a child forked onto
+     * another core must still find its way to init (PID 1), or it can
+     * never be reaped.
+     */
+    for (int i = 0; i < cpu_count; i++) {
+        for (task_t* scan = (task_t*)cpus[i].ready_queue; scan; scan = scan->next) {
             if (scan->parent_pid == dying->id) {
                 scan->parent_pid = 1;
-                extern void log_serial(const char* str);
-                extern void log_hex_serial(uint32_t n);
                 log_serial("[REPARENT] pid=");
                 log_hex_serial(scan->id);
                 log_serial(" to init\n");
@@ -542,6 +609,8 @@ void _task_exit(int exit_code) {
 
     dying->exit_code = exit_code;
     dying->state = STATE_ZOMBIE;
+
+    spin_unlock_irqrestore(&tasklist_lock, flags);
 
     task_switch();
 }
@@ -565,25 +634,31 @@ void task_exit() {
  * @param options Ignored (must be 0).
  * @return PID of the reaped child, or -1 on error.
  */
+static void reap_orphan_zombies(void);
+
 int waitpid(int pid, int* status, int options) {
     (void)options;
 
     task_t* self = cur_task();
 
     while (1) {
-        /* Scan this CPU's ready queue for a zombie child */
-        task_t* prev = NULL;
-        for (task_t* scan = rdy_queue(); scan; scan = scan->next) {
-            if (scan->state == STATE_ZOMBIE &&
-                scan->parent_pid == self->id &&
-                (pid == -1 || scan->id == pid)) {
-                /* Found — reap it */
-                if (status)
-                    *status = scan->exit_code;
-                int child_pid = scan->id;
-                {
-                    extern void log_serial(const char* str);
-                    extern void log_hex_serial(uint32_t n);
+        uint32_t flags;
+        spin_lock_irqsave(&tasklist_lock, &flags);
+
+        /*
+         * Scan every CPU's queue for a zombie child — children may have
+         * been placed on another core by pick_cpu_by_load().
+         */
+        for (int i = 0; i < cpu_count; i++) {
+            task_t* prev = NULL;
+            task_t* scan = (task_t*)cpus[i].ready_queue;
+            while (scan) {
+                if (scan->state == STATE_ZOMBIE &&
+                    scan->parent_pid == self->id &&
+                    (pid == -1 || scan->id == pid)) {
+                    if (status)
+                        *status = scan->exit_code;
+                    int child_pid = scan->id;
                     log_serial("[WAITPID] reaping pid=");
                     log_hex_serial(child_pid);
                     log_serial(" by pid=");
@@ -591,79 +666,88 @@ int waitpid(int pid, int* status, int options) {
                     log_serial(" code=");
                     log_hex_serial(scan->exit_code);
                     log_serial("\n");
+
+                    /* Free kernel stack — PDE 1023 shared page table */
+                    if (scan->kstack)
+                        free_kernel_stack((uint32_t)scan->kstack);
+
+                    /* TODO(jadkes): Free the child's page directory and all
+                     * cloned page tables/pages.  Currently leaked — each
+                     * fork() or kernel_fork() that exits leaks ~10+ physical
+                     * pages.  Needs a full teardown walking all user PDEs. */
+
+                    /* Unlink from whichever queue held it */
+                    if (prev)
+                        prev->next = scan->next;
+                    else
+                        cpus[i].ready_queue = (struct task*)scan->next;
+
+                    kfree(scan);
+
+                    /* Reap orphaned zombies reparented to us (PID 1/init):
+                     * a grandchild that outlived its parent has nobody else. */
+                    if (self->id == 1)
+                        reap_orphan_zombies();
+
+                    spin_unlock_irqrestore(&tasklist_lock, flags);
+                    return child_pid;
                 }
-
-                /* Free kernel stack — PDE 1023 shared page table */
-                if (scan->kstack)
-                    free_kernel_stack(scan->id);
-
-                /* TODO: Free the child's page directory and all cloned
-                 * page tables/pages.  Currently leaked — each fork() or
-                 * kernel_fork() that exits leaks ~10+ physical pages.
-                 * This is a known limitation; a full page-directory teardown
-                 * function is needed (walk all user PDEs, free page tables
-                 * and user pages, then free the directory frame itself). */
-
-                /* Remove from ready queue */
-                if (prev)
-                    prev->next = scan->next;
-                else
-                    set_rdy_queue(scan->next);
-
-                kfree(scan);
-
-                /* After reaping the requested child, also reap any orphaned
-                 * zombies that were reparented to us (PID 1 / init).  This
-                 * happens when a grandchild outlives its parent — the parent
-                 * exits, the grandchild is reparented to init, and if the
-                 * grandchild is already a zombie, nobody else will reap it.
-                 * Without this, orphan zombies leak their kernel stack pages
-                 * in the shared PDE 1023 page table. */
-                {
-                    task_t* p = NULL;
-                    task_t* s = rdy_queue();
-                    while (s) {
-                        if (s->state == STATE_ZOMBIE &&
-                            s->parent_pid == self->id && s->id != self->id) {
-                            task_t* dead = s;
-                            if (p)
-                                p->next = dead->next;
-                            else
-                                set_rdy_queue(dead->next);
-                            s = dead->next;
-                            if (dead->kstack)
-                                free_kernel_stack(dead->id);
-                            kfree(dead);
-                        } else {
-                            p = s;
-                            s = s->next;
-                        }
-                    }
-                }
-
-                __asm__ volatile("sti");  /* re-enable interrupts before returning */
-                return child_pid;
+                prev = scan;
+                scan = scan->next;
             }
-            prev = scan;
         }
 
         /* Check if any children exist at all */
         {
             int any = 0;
-            for (task_t* scan = rdy_queue(); scan; scan = scan->next) {
-                if (scan->parent_pid == self->id) {
-                    any = 1;
-                    break;
+            for (int i = 0; i < cpu_count && !any; i++) {
+                for (task_t* scan = (task_t*)cpus[i].ready_queue; scan; scan = scan->next) {
+                    if (scan->parent_pid == self->id) {
+                        any = 1;
+                        break;
+                    }
                 }
             }
-            if (!any)
+            if (!any) {
+                spin_unlock_irqrestore(&tasklist_lock, flags);
                 return -ECHILD;  /* No children */
+            }
         }
 
-        /* Yield to other tasks while waiting */
-        __asm__ volatile("sti");
+        spin_unlock_irqrestore(&tasklist_lock, flags);
+
+        /* Children exist but none exited yet — pause and let the timers
+         * preempt us; no manual sti/cli juggling needed any more. */
         __asm__ volatile("pause");
-        __asm__ volatile("cli");
+    }
+}
+
+/**
+ * @brief Reap zombie tasks reparented to init (PID 1) on any CPU.
+ * Caller holds tasklist_lock.
+ */
+static void reap_orphan_zombies(void)
+{
+    for (int i = 0; i < cpu_count; i++) {
+        task_t* p = NULL;
+        task_t* s = (task_t*)cpus[i].ready_queue;
+        while (s) {
+            if (s->state == STATE_ZOMBIE &&
+                s->parent_pid == 1 && s->id != 1) {
+                task_t* dead = s;
+                if (p)
+                    p->next = dead->next;
+                else
+                    cpus[i].ready_queue = (struct task*)dead->next;
+                s = dead->next;
+                if (dead->kstack)
+                    free_kernel_stack((uint32_t)dead->kstack);
+                kfree(dead);
+            } else {
+                p = s;
+                s = s->next;
+            }
+        }
     }
 }
 
@@ -673,10 +757,13 @@ void _waitpid_done(void) {} /* marker for breakpoint */
  * @brief Print a list of all active processes to the terminal.
  */
 void task_list() {
-    task_t* t = rdy_queue();
     char buf[12];
+    uint32_t flags;
+    spin_lock_irqsave(&tasklist_lock, &flags);
 
     terminal_writestring("PID  STATE     EIP         NAME\n");
+    for (int i = 0; i < cpu_count; i++) {
+    task_t* t = (task_t*)cpus[i].ready_queue;
     while (t) {
         /* PID */
         int_to_string(t->id, buf);
@@ -701,6 +788,8 @@ void task_list() {
 
         t = t->next;
     }
+    }
+    spin_unlock_irqrestore(&tasklist_lock, flags);
 }
 
 /**
@@ -744,17 +833,23 @@ int sys_kill(int pid, int sig) {
     /* Never kill PID 1 (the shell/init) */
     if (pid == 1) return -EPERM;
 
+    uint32_t flags;
+    spin_lock_irqsave(&tasklist_lock, &flags);
+
     /* Scan ALL CPU ready queues for the target PID */
     for (int i = 0; i < cpu_count; i++) {
         task_t* t = (task_t*)cpus[i].ready_queue;
         while (t) {
             if (t->id == pid) {
-                t->signal_pending |= (1 << sig);
+                /* Atomic: the keyboard ISR sets SIGINT on this same word */
+                __sync_fetch_and_or(&t->signal_pending, 1u << sig);
+                spin_unlock_irqrestore(&tasklist_lock, flags);
                 return 0;
             }
             t = t->next;
         }
     }
+    spin_unlock_irqrestore(&tasklist_lock, flags);
     return -ESRCH;
 }
 
@@ -767,12 +862,59 @@ int task_kill(int pid) {
 volatile int fg_child_pid = 0;
 
 task_t* task_from_pid(int pid) {
+    uint32_t flags;
+    spin_lock_irqsave(&tasklist_lock, &flags);
     for (int i = 0; i < cpu_count; i++) {
         task_t* t = (task_t*)cpus[i].ready_queue;
         while (t) {
-            if (t->id == pid) return t;
+            if (t->id == pid) {
+                spin_unlock_irqrestore(&tasklist_lock, flags);
+                return t;
+            }
             t = t->next;
         }
     }
+    spin_unlock_irqrestore(&tasklist_lock, flags);
     return NULL;
+}
+
+/**
+ * @brief Give an AP an idle task so its scheduler has something to run
+ *        from the first LAPIC tick.
+ *
+ * Reuses the AP's boot stack as the idle kernel stack — the AP is
+ * executing on it right now, and its top was already programmed as the
+ * AP's ESP0 source.  Called by smp_init() on the BSP before the AP is
+ * woken.
+ *
+ * @param cpu_index Logical CPU number (>= 1).
+ */
+void task_spawn_idle(int cpu_index)
+{
+    cpu_t* c = &cpus[cpu_index];
+    if (!c->kstack_top || !c->page_directory) return;
+
+    task_t* idle = kmalloc(sizeof(task_t));
+    if (!idle) {
+        pr_err("no memory for idle task on CPU %d\n", cpu_index);
+        return;
+    }
+
+    memset(idle, 0, sizeof(*idle));
+
+    uint32_t flags;
+    spin_lock_irqsave(&pid_lock, &flags);
+    idle->id = next_pid++;   /* must land after the memset above */
+    spin_unlock_irqrestore(&pid_lock, flags);
+
+    idle->page_directory = (page_directory_t*)c->page_directory;
+    idle->kstack = c->kstack_top - KSTACK_SIZE;
+    idle->eip = (uint32_t)idle_loop;
+    idle->state = STATE_READY;
+    strcpy(idle->name, "idle");
+
+    spin_lock_irqsave(&tasklist_lock, &flags);
+    c->ready_queue   = (struct task*)idle;
+    c->current_task  = (struct task*)idle;
+    spin_unlock_irqrestore(&tasklist_lock, flags);
 }
