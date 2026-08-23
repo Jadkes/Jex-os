@@ -126,10 +126,15 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 ## 🎯 Current Goals
 
 ### SMP Follow-ups
-- [ ] **Spinlocks / Mutexes**: shared kernel structures (ARP cache, TCP tables, kheap) are currently protected by global IF games only
-- [ ] **Load Balancing**: APs sit idle in hlt; push ready tasks to the second CPU
+- [x] **Spinlocks / Mutexes**: PMM bitmap, kheap slabs, kstack slots, PID handout and the task lists now run on real spinlocks (`spinlock.h`), not IF games
+- [x] **Load Balancing**: fork/kernel_fork place new tasks on the shortest ready queue; APs wake into a seeded idle task and preempt off their own LAPIC timer
 - [ ] **IPI Reschedule**: wake a CPU's scheduler remotely instead of polling
-- [ ] **LAPIC Timer**: per-CPU tick source, drop the PIT cascade workaround
+- [ ] **Per-CPU `%gs`**: cache the CPU index / per-CPU pointer instead of an MMIO LAPIC ID read + scan in every `cpu_id()`
+- [ ] **TLB Shootdown IPI**: `free_kernel_stack()`/page-table edits only `invlpg` locally — a stale remote TLB can alias freed frames once memory is recycled across CPUs
+- [ ] **FPU/SSE State**: no fxsave/frstor or #NM handler — float code in two interleaved tasks corrupts state (pre-existing, worse with SMP)
+- [x] **LAPIC Timer**: per-CPU tick source armed after PIT calibration; PIT keeps wall-clock duty only
+- [x] **Per-CPU TSS**: GDT grew one TSS slot per core, each AP LTRs its own at startup — ring-3 interrupts work off-BSP
+- [ ] **Page-Directory Teardown on Reap**: waitpid still leaks cloned address spaces (see TODO in task.c)
 - [ ] **Atomic Console Writes**: serial lines from BSP and AP interleave mid-line
 
 ### Networking
