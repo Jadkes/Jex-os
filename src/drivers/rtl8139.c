@@ -91,6 +91,77 @@ static void print_hex_byte(uint8_t val)
  * Handles Receive OK (ROK) — reads packets from the ring buffer,
  * and Transmit OK (TOK) — confirms packet was sent.
  */
+
+/* Largest frame we linearize — matches the classic Ethernet upper bound */
+#define RX_MAX_FRAME 2048
+
+/**
+ * rtl8139_drain_rx - Process every pending packet in the RX ring.
+ *
+ * Shared by the ISR and the polling path.  Drains at most one full lap:
+ * slots behind the card's write pointer keep their old ROK bit set until
+ * the card reuses them, so looping "until an empty slot" would spin
+ * forever once a lap wraps.  Updates rx_offset and CAPR.
+ *
+ * @return Number of packets processed.
+ */
+static int rtl8139_drain_rx(void)
+{
+    int processed = 0;
+    uint16_t drained_from = rx_offset;
+
+    do {
+        uint16_t offset = rx_offset;
+        uint16_t* header = (uint16_t*)(rx_buffer + offset);
+        uint16_t rx_status = header[0];
+        uint16_t rx_len    = header[1];
+
+        if (RTL8139_DEBUG)
+            pr_debug("RX: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
+
+        /* ROK bit (0x0001) in packet status means valid packet */
+        if (!(rx_status & 0x0001))
+            break;
+
+        /* Bound by the linearized copy size, not the ring size */
+        if (rx_len > RX_MAX_FRAME || rx_len < 4)
+            break;
+
+        /* The Ethernet frame starts after the 4-byte header */
+        uint8_t* frame;
+        uint8_t frame_copy[RX_MAX_FRAME];
+        if (offset + 4 + rx_len > RX_BUF_SIZE) {
+            /* Frame wraps around ring buffer — copy to linear buffer */
+            uint32_t first_chunk = RX_BUF_SIZE - (offset + 4);
+            memcpy(frame_copy, rx_buffer + offset + 4, first_chunk);
+            memcpy(frame_copy + first_chunk, rx_buffer, rx_len - first_chunk);
+            frame = frame_copy;
+        } else {
+            frame = rx_buffer + offset + 4;
+        }
+        net_process_packet(frame, rx_len);
+
+        /* Advance past 4-byte header + payload, aligned to 4 bytes */
+        offset += rx_len + 4;
+        offset = (offset + 3) & ~3;
+        if (offset >= RX_BUF_SIZE)
+            offset -= RX_BUF_SIZE;
+
+        rx_offset = offset;
+        processed++;
+    } while (rx_offset != drained_from);
+
+    /*
+     * Write CAPR with a gap so the card leaves room for the next
+     * incoming packet.  Without this the card may overflow on large
+     * frames (e.g. DNS responses) when write_ptr - CAPR is too small.
+     */
+    uint16_t capr = ((uint16_t)((int)rx_offset - RX_CAPR_GAP)) & (RX_BUF_SIZE - 1);
+    outw(io_base + RTL8139_REG_CAPR, capr);
+
+    return processed;
+}
+
 void rtl8139_handler(registers_t* regs)
 {
     uint16_t status = inw(io_base + RTL8139_REG_ISR);
@@ -103,60 +174,11 @@ void rtl8139_handler(registers_t* regs)
     /* Acknowledge by writing status back (writing 1 clears) */
     outw(io_base + RTL8139_REG_ISR, status);
 
-    if (status & RTL8139_ISR_ROK) {
-        uint16_t offset = rx_offset;
-
-        while (1) {
-            rx_packet_count++;
-            uint16_t* header = (uint16_t*)(rx_buffer + offset);
-            uint16_t rx_status = header[0];
-            uint16_t rx_len = header[1];
-
-            if (RTL8139_DEBUG)
-                pr_debug("ISR_RX: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
-
-            /* ROK bit (0x0001) in packet status means valid packet */
-            if (!(rx_status & 0x0001))
-                break;
-
-            /* Sanity-check the length */
-            if (rx_len > RX_BUF_SIZE || rx_len < 4)
-                break;
-
-            /* The Ethernet frame starts after the 4-byte header */
-            uint8_t* frame;
-            uint8_t frame_copy[2048]; /* Max frame size for linearized copy */
-            if (offset + 4 + rx_len > RX_BUF_SIZE) {
-                /* Frame wraps around ring buffer — copy to linear buffer */
-                uint32_t first_chunk = RX_BUF_SIZE - (offset + 4);
-                memcpy(frame_copy, rx_buffer + offset + 4, first_chunk);
-                memcpy(frame_copy + first_chunk, rx_buffer, rx_len - first_chunk);
-                frame = frame_copy;
-            } else {
-                frame = rx_buffer + offset + 4;
-            }
-            net_process_packet(frame, rx_len);
-
-            /* Advance past 4-byte header + payload, aligned to 4 bytes */
-            offset += rx_len + 4;
-            offset = (offset + 3) & ~3;
-            if (offset >= RX_BUF_SIZE)
-                offset -= RX_BUF_SIZE;
-
-        }
-
-        rx_offset = offset;
-
-        /*
-         * Write CAPR with a gap so the card leaves room for the next
-         * incoming packet.  Without this the card may overflow on large
-         * frames (e.g. DNS responses) when write_ptr - CAPR is too small.
-         */
-        uint16_t capr = ((uint16_t)((int)offset - RX_CAPR_GAP)) & (RX_BUF_SIZE - 1);
-        outw(io_base + RTL8139_REG_CAPR, capr);
+        if (status & RTL8139_ISR_ROK) {
+        rx_packet_count += rtl8139_drain_rx();
     }
 
-    if (status & RTL8139_ISR_TOK) {
+if (status & RTL8139_ISR_TOK) {
         if (RTL8139_DEBUG) pr_debug("TX OK\n");
     }
 
@@ -272,68 +294,8 @@ int rtl8139_poll_rx(void)
      * (IF=0) contexts.  In the ISR case we must NOT re-enable IF. */
     uint32_t eflags = irq_save();
 
-    int processed = 0;
-    uint16_t offset = rx_offset;
-
-    while (1) {
-        uint16_t* header = (uint16_t*)(rx_buffer + offset);
-        uint16_t rx_status = header[0];
-        uint16_t rx_len    = header[1];
-
-        if (RTL8139_DEBUG) {
-            pr_debug("POLL: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
-            /* Build a hex dump in a local buffer to keep it on one line */
-            char _pdump[72];
-            int _ppos = 0;
-            const char* _phex = "0123456789ABCDEF";
-            _pdump[_ppos++] = 'P'; _pdump[_ppos++] = 'O'; _pdump[_ppos++] = 'L';
-            _pdump[_ppos++] = 'L'; _pdump[_ppos++] = '_'; _pdump[_ppos++] = 'D';
-            _pdump[_ppos++] = 'U'; _pdump[_ppos++] = 'M'; _pdump[_ppos++] = 'P';
-            _pdump[_ppos++] = ':';
-            for (int di = 0; di < 20 && _ppos < 60; di++) {
-                _pdump[_ppos++] = ' ';
-                _pdump[_ppos++] = _phex[(rx_buffer[offset + di] >> 4) & 0xF];
-                _pdump[_ppos++] = _phex[rx_buffer[offset + di] & 0xF];
-            }
-            _pdump[_ppos++] = '\n';
-            _pdump[_ppos] = '\0';
-            pr_debug("%s", _pdump);
-        }
-
-        /* ROK bit (0x0001) in packet status means valid packet */
-        if (!(rx_status & 0x0001))
-            break;
-
-        if (rx_len > RX_BUF_SIZE || rx_len < 4)
-            break;
-
-        uint8_t* frame;
-        uint8_t frame_copy[2048]; /* Max frame size for linearized copy */
-        if (offset + 4 + rx_len > RX_BUF_SIZE) {
-            /* Frame wraps around ring buffer — copy to linear buffer */
-            uint32_t first_chunk = RX_BUF_SIZE - (offset + 4);
-            memcpy(frame_copy, rx_buffer + offset + 4, first_chunk);
-            memcpy(frame_copy + first_chunk, rx_buffer, rx_len - first_chunk);
-            frame = frame_copy;
-        } else {
-            frame = rx_buffer + offset + 4;
-        }
-        net_process_packet(frame, rx_len);
-
-        /* Advance past 4-byte header + payload, aligned to 4 bytes */
-        offset += rx_len + 4;
-        offset = (offset + 3) & ~3;
-        if (offset >= RX_BUF_SIZE)
-            offset -= RX_BUF_SIZE;
-
-        processed++;
-    }
-
-    /* Tell the card how far we've read, leaving a gap for incoming frames */
-    uint16_t capr = ((uint16_t)((int)offset - RX_CAPR_GAP)) & (RX_BUF_SIZE - 1);
-    outw(io_base + RTL8139_REG_CAPR, capr);
-
-    rx_offset = offset;
+    int processed = rtl8139_drain_rx();
+    rx_packet_count += processed;
 
     /* Restore IF to the state on entry (IF=1 for shell, IF=0 for ISR) */
     irq_restore(eflags);
