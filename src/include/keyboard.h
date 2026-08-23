@@ -10,6 +10,29 @@
 
 #define KBD_BUF_SIZE 256
 
+/* Set-1 scancode markers */
+#define KBD_RELEASE_BIT      0x80    /* break code flag            */
+#define KBD_EXT_PREFIX       0xE0    /* extended-key prefix byte   */
+
+/* Pseudo-ASCII values the tables emit for extended keys.
+ * Consumers (shell, editor) match on these. */
+#define KEY_HOME             0x84
+#define KEY_UP               0x80
+#define KEY_PAGE_UP          0x85
+#define KEY_LEFT             0x82
+#define KEY_RIGHT            0x83
+#define KEY_END              0x86
+#define KEY_DOWN             0x81
+#define KEY_PAGE_DOWN        0x87
+
+/* Scancodes for modifier keys */
+#define SCAN_LEFT_SHIFT      42
+#define SCAN_RIGHT_SHIFT     54
+#define SCAN_CTRL            29
+
+/* ASCII control-code shorthand for Ctrl+<key> shortcuts */
+#define CTRL(ch)             ((ch) & 0x1F)
+
 /**
  * @brief Initialize the keyboard driver and register its interrupt handler.
  */

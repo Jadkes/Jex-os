@@ -10,6 +10,25 @@
 
 #include <stdint.h>
 
+/* GDT layout: index = entry number; selector = index << 3 | RPL */
+#define GDT_NUM_ENTRIES   6
+#define GDT_TSS_IDX       5
+
+#define SEG_KERNEL_CODE   0x08
+#define SEG_KERNEL_DATA   0x10
+#define SEG_USER_CODE     0x0B    /* selector form: (3<<3)|RPL3 */
+#define SEG_USER_DATA     0x13
+
+/* Access bytes: present, descriptor type, ring, executable/readable */
+#define SEG_ACCESS_KCODE  0x9A
+#define SEG_ACCESS_KDATA  0x92
+#define SEG_ACCESS_UCODE  0xFA
+#define SEG_ACCESS_UDATA  0xF2
+#define SEG_ACCESS_TSS    0x89    /* available 32-bit TSS, DPL=0 */
+
+/* Granularity flags: 4 KiB granularity + 32-bit default + upper nibble */
+#define SEG_FLAGS_4GB     0xCF
+
 /**
  * @struct gdt_entry_struct
  * @brief Represents a single entry in the Global Descriptor Table.

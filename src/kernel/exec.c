@@ -2,8 +2,8 @@
  * @file exec.c
  * @brief Program loader and execution support.
  *
- * This file is responsible for launching user-space programs (ELF binaries)
- * and handling script execution via a shebang (#!) mechanism.
+ * Launches user-space programs (ELF binaries) and handles script
+ * execution via shebang (#!).
  */
 
 #include "exec.h"

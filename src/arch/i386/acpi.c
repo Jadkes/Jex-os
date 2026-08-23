@@ -19,6 +19,21 @@
 #include "apic.h"
 #include "kernel/printk.h"
 
+/* F-segment: the BIOS area where the RSDP is contractually located */
+#define FSEG_START   0xE0000u
+#define FSEG_END     0x100000u
+
+/* Standard ACPI MMIO homes when MADT doesn't override them */
+#define LAPIC_MMIO_DEFAULT   0xFEE00000u
+#define IOAPIC_MMIO_DEFAULT  0xFEC00000u
+
+/* Sanity bounds on an extended RSDP length field */
+#define RSDP_V2_MIN_LEN      36u
+#define RSDP_MAX_LEN         0x1000u
+
+/* BDA word 0x40E gives the EBDA segment; the spec reserves 1 KB there */
+#define EBDA_MAX_SIZE        0x400u
+
 /* ── Globals defined in smp.c, shared via acpi.h ─────── */
 extern int     cpu_count;
 extern uint32_t lapic_base;
@@ -61,7 +76,7 @@ static int rsdp_valid(uint32_t addr)
     uint8_t revision = rd8(addr + 15);
     if (revision >= 2) {
         uint32_t len = rd32(addr + 20);
-        if (len < 36 || len > 0x1000)
+        if (len < RSDP_V2_MIN_LEN || len > RSDP_MAX_LEN)
             return 0;
         sum = 0;
         for (uint32_t i = 0; i < len; i++)
@@ -103,11 +118,11 @@ static uint32_t acpi_find_rsdp(void)
     uint16_t ebda_seg = rd16(0x40E);   /* BDA: EBDA base segment */
     if (ebda_seg != 0) {
         uint32_t ebda = ((uint32_t)ebda_seg) << 4;
-        uint32_t found = scan_rsdp_range(ebda, ebda + 0x400);
+        uint32_t found = scan_rsdp_range(ebda, ebda + EBDA_MAX_SIZE);
         if (found) return found;
     }
 
-    return scan_rsdp_range(0xE0000u, 0x100000u);
+    return scan_rsdp_range(FSEG_START, FSEG_END);
 }
 
 /* ── RSDT walk ─────────────────────────────────────────── */
@@ -159,14 +174,14 @@ static void acpi_parse_madt(uint32_t madt_addr)
      * the MADT value is a useful cross-check.  The standard LAPIC base
      * is 0xFEE00000.
      */
-    if (madt_lapic_addr == 0xFEE00000u || madt_lapic_addr == 0) {
-        lapic_base = 0xFEE00000u;
+    if (madt_lapic_addr == LAPIC_MMIO_DEFAULT || madt_lapic_addr == 0) {
+        lapic_base = LAPIC_MMIO_DEFAULT;
     } else {
         /* MADT gives a non-standard value — trust it if it's above 1 MB. */
-        if (madt_lapic_addr > 0x100000u)
+        if (madt_lapic_addr > FSEG_END)
             lapic_base = madt_lapic_addr;
         else
-            lapic_base = 0xFEE00000u;
+            lapic_base = LAPIC_MMIO_DEFAULT;
     }
     pr_info("Local APIC base = 0x%x\n", lapic_base);
 
@@ -197,10 +212,10 @@ static void acpi_parse_madt(uint32_t madt_addr)
             uint32_t ioapic_addr = rd32(madt_addr + offset + 4);
             uint32_t gsi_base    = rd32(madt_addr + offset + 8);
 
-            if (ioapic_addr > 0x100000u)
+            if (ioapic_addr > FSEG_END)
                 ioapic_base = ioapic_addr;
             else
-                ioapic_base = 0xFEC00000u;
+                ioapic_base = IOAPIC_MMIO_DEFAULT;
 
             pr_info("I/O APIC at 0x%x (GSI base %u)\n",
                     ioapic_base, gsi_base);
@@ -220,8 +235,8 @@ int acpi_init(void)
     if (!rsdp_addr) {
         pr_info("RSDP not found — assuming 1 CPU\n");
         lapic_ids[0] = 0;
-        lapic_base   = 0xFEE00000u;
-        ioapic_base  = 0xFEC00000u;
+        lapic_base   = LAPIC_MMIO_DEFAULT;
+        ioapic_base  = IOAPIC_MMIO_DEFAULT;
         return 1;
     }
 
@@ -244,8 +259,8 @@ int acpi_init(void)
     if (!rsdt_addr) {
         pr_info("RSDT address is 0 — assuming 1 CPU\n");
         lapic_ids[0] = 0;
-        lapic_base   = 0xFEE00000u;
-        ioapic_base  = 0xFEC00000u;
+        lapic_base   = LAPIC_MMIO_DEFAULT;
+        ioapic_base  = IOAPIC_MMIO_DEFAULT;
         return 1;
     }
 
@@ -253,8 +268,8 @@ int acpi_init(void)
     if (!madt_addr) {
         pr_info("MADT not found — assuming 1 CPU\n");
         lapic_ids[0] = 0;
-        lapic_base   = 0xFEE00000u;
-        ioapic_base  = 0xFEC00000u;
+        lapic_base   = LAPIC_MMIO_DEFAULT;
+        ioapic_base  = IOAPIC_MMIO_DEFAULT;
         return 1;
     }
 

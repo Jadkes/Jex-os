@@ -49,9 +49,9 @@ uint16_t* terminal_buffer;
  * @param cursor_end The ending scanline of the cursor.
  */
 void enable_cursor(uint8_t cursor_start, uint8_t cursor_end) {
-	outb(VGA_CTRL_PORT, 0x0A);
+	outb(VGA_CTRL_PORT, VGA_CRTC_CURSOR_START);
 	outb(VGA_DATA_PORT, (inb(VGA_DATA_PORT) & 0xC0) | cursor_start);
-	outb(VGA_CTRL_PORT, 0x0B);
+	outb(VGA_CTRL_PORT, VGA_CRTC_CURSOR_END);
 	outb(VGA_DATA_PORT, (inb(VGA_DATA_PORT) & 0xE0) | cursor_end);
 }
 
@@ -62,9 +62,9 @@ void enable_cursor(uint8_t cursor_start, uint8_t cursor_end) {
  */
 void update_cursor(int x, int y) {
 	uint16_t pos = y * VGA_WIDTH + x;
-	outb(VGA_CTRL_PORT, 0x0F);
+	outb(VGA_CTRL_PORT, VGA_CRTC_CURSOR_LOC_LO);
 	outb(VGA_DATA_PORT, (uint8_t) (pos & 0xFF));
-	outb(VGA_CTRL_PORT, 0x0E);
+	outb(VGA_CTRL_PORT, VGA_CRTC_CURSOR_LOC_HI);
 	outb(VGA_DATA_PORT, (uint8_t) ((pos >> 8) & 0xFF));
 }
 

@@ -9,6 +9,7 @@
 #include "syscall.h"
 #include "task.h"
 #include "idt.h"
+#include "gdt.h"
 #include "init.h"
 #include "fs.h"
 #include <stdint.h>
@@ -206,8 +207,8 @@ void syscall_handler(registers_t *regs)
  */
 void init_syscalls()
 {
-    /* Use gate 0x80, selector 0x08, flags 0xEE (User mode access) */
-    idt_set_gate(0x80, (uint32_t)isr128, 0x08, 0xEE);
+    /* Gate 0x80: DPL=3 so user code can int $0x80 */
+    idt_set_gate(SYSCALL_VECTOR, (uint32_t)isr128, SEG_KERNEL_CODE, SYSCALL_GATE_ACCESS);
 }
 
 device_init(init_syscalls);

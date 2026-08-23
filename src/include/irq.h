@@ -10,6 +10,9 @@
 
 #include "isr.h"
 
+/* First IDT vector mapped to hardware IRQs (CPU reserves 0-31) */
+#define IRQ_VECTOR_BASE  32
+
 /**
  * @brief Callback type for IRQ handlers.
  */

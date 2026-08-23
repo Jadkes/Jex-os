@@ -20,6 +20,7 @@
 #include "apic.h"
 #include "acpi.h"
 #include "pci.h"
+#include "irq.h"
 #include "kernel/printk.h"
 #include "ports.h"
 
@@ -159,7 +160,7 @@ void ioapic_init(void)
         uint32_t reg_idx = IOAPIC_REDTBL + irq * 2;
 
         /* Low dword: vector = 32 + IRQ number, unmasked, fixed mode. */
-        uint32_t low = (uint32_t)(32 + irq);
+        uint32_t low = (uint32_t)(IRQ_VECTOR_BASE + irq);
         uint32_t high = bsp_dest;   /* bits 24-27 = destination APIC ID */
 
         ioapic_write(reg_idx + 1, high);   /* high dword first */

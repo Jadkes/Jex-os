@@ -101,12 +101,10 @@ static void print_banner(void)
  * @param mboot_info Pointer to the Multiboot information structure.
  */
 void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
-	/* 1. Initialize the console output (VGA) first to display logs and errors. */
+	/* VGA console first so later failures are visible */
 	terminal_initialize();
 
-    /* 2. Initialize serial port for debugging output (COM1).
-     * Useful for capturing kernel logs in QEMU via -serial stdio.
-     */
+    /* Serial log capture via QEMU -serial stdio */
     init_serial();
     klog_init();
     pr_info("JexOS Kernel Started\n");
@@ -115,16 +113,13 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     g_mboot_magic = magic;
     g_mboot_info = mboot_info;
 
-    /* 3-12. Run all registered initcalls in section order:
+    /* Initcalls in section order:
      *   early_initcalls:  CPU setup, interrupt controllers, memory management
-     *   device_initcalls: drivers, filesystems, higher-level subsystems
-     */
+     *   device_initcalls: drivers, filesystems, higher-level subsystems */
     initcalls_run();
 
-    /* Initialize lock dependency validator */
     lockdep_init();
 
-    /* Initialize devtmpfs and mount /sys */
     devtmpfs_init();
     fs_mount("/sys", "devtmpfs");
 
@@ -135,11 +130,11 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
      * are enabled and before the timer is initialized. */
     smp_init();
 
-    /* 13. System Timer — needs explicit frequency parameter, kept manual */
+    /* Timer needs an explicit frequency; kept out of initcalls */
     pr_info("Initializing Timer...\n");
     init_timer(100);
 
-    /* 14. User-mode stack setup */
+    /* Kernel stack for the initial task */
     pr_info("Setup Stack...\n");
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
@@ -152,11 +147,10 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
 
     pr_info("Starting Shell...\n");
 
-    /* 13. Print boot banner then Enter the Shell. */
     print_banner();
     shell_main();
-    
-    /* 14. Shutdown/Halt. */
+
+    /* Not reached unless the shell exits */
     pr_info("Kernel Halted.\n");
     while(1) { __asm__ volatile("hlt"); }
 }

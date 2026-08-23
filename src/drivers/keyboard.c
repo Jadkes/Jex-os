@@ -41,15 +41,15 @@ unsigned char kbdus[128] = {
     0,	/* 69 - Num lock*/
     0,	/* Scroll Lock */
     0x84,	/* Home key */
-    0x80,	/* Up Arrow */
+    KEY_UP,
     0x85,	/* Page Up */
     '-',
-    0x82,	/* Left Arrow */
+    KEY_LEFT,
     0,
-    0x83,	/* Right Arrow */
+    KEY_RIGHT,
     '+',
     0x86,	/* End key*/
-    0x81,	/* Down Arrow */
+    KEY_DOWN,
     0x87,	/* Page Down */
     0,	/* Insert Key */
     0,	/* Delete Key */
@@ -81,7 +81,8 @@ unsigned char kbdus_shifted[128] = {
     0,   0,   0,   0,   0,   0,   0,   0,
     0,   0,   0,   0,   0,   0,   0,   0,
     0,   0,   0,   0,   0,   0,   0,   0,
-    0x84, 0x80, 0x85, '-', 0x82, 0, 0x83, '+', 0x86, 0x81, 0x87,
+    KEY_HOME, KEY_UP, KEY_PAGE_UP, '-', KEY_LEFT, 0, KEY_RIGHT, '+',
+    KEY_END, KEY_DOWN, KEY_PAGE_DOWN,
     0, 0, 0, 0, 0, 0
 };
 
@@ -101,39 +102,37 @@ static volatile uint16_t kbd_tail = 0;   /* Written by shell consumer */
  * @param regs CPU registers state.
  */
 void keyboard_callback(registers_t *regs) {
-    uint8_t scancode = inb(0x60);
-    
-    if (scancode == 0xE0) {
-        /* Extended scancode prefix - ignored for now */
-        return; 
-    }
+    uint8_t scancode = inb(KBD_DATA_PORT);
 
-    if (scancode & 0x80) {
-        /* Key release (Break code) */
-        uint8_t released_code = scancode & 0x7F;
-        if (released_code == 42 || released_code == 54) shift_held = false;
-        if (released_code == 29) ctrl_held = false;
+    if (scancode == KBD_EXT_PREFIX)
+        return;
+
+    if (scancode & KBD_RELEASE_BIT) {
+        /* Break code: track modifier releases */
+        uint8_t released_code = scancode & ~KBD_RELEASE_BIT;
+        if (released_code == SCAN_LEFT_SHIFT || released_code == SCAN_RIGHT_SHIFT) shift_held = false;
+        if (released_code == SCAN_CTRL) ctrl_held = false;
     } else {
-        /* Key press (Make code) */
+        /* Make code */
         if (scancode >= 128) return;  /* Defensive: OOB guard for kbdus[] */
-        if (scancode == 42 || scancode == 54) { shift_held = true; return; }
-        if (scancode == 29) { ctrl_held = true; return; }
+        if (scancode == SCAN_LEFT_SHIFT || scancode == SCAN_RIGHT_SHIFT) { shift_held = true; return; }
+        if (scancode == SCAN_CTRL) { ctrl_held = true; return; }
 
         char c = shift_held ? kbdus_shifted[scancode] : kbdus[scancode];
-        
+
         /* Handle Ctrl combinations for shell/editor shortcuts */
         if (ctrl_held) {
-            if (c == 's' || c == 'S') c = 0x13;      /* Ctrl+S (Save) */
-            else if (c == 'q' || c == 'Q') c = 0x11; /* Ctrl+Q (Quit) */
-            else if (c == 'b' || c == 'B') c = 0x02; /* Ctrl+B (Build/Compile) */
-            else if (c == 'v' || c == 'V') c = 0x16; /* Ctrl+V (Paste) */
-            else if (c == 'a' || c == 'A') c = 0x01; /* Ctrl+A (Select All / About) */
-            else if (c == 'c' || c == 'C') c = 0x03; /* Ctrl+C (Copy) */
-            else if (c == 'f' || c == 'F') c = 0x06; /* Ctrl+F (Find) */
-            else if (c == 'g' || c == 'G') c = 0x07; /* Ctrl+G (Goto Line) */
-            else if (c == 'n' || c == 'N') c = 0x0E; /* Ctrl+N (New File) */
-            else if (c == 'x' || c == 'X') c = 0x18; /* Ctrl+X (Cut) */
-            else if (c == 'z' || c == 'Z') c = 0x1A; /* Ctrl+Z (Undo) */
+            if (c == 's' || c == 'S') c = CTRL('S');
+            else if (c == 'q' || c == 'Q') c = CTRL('Q');
+            else if (c == 'b' || c == 'B') c = CTRL('B');
+            else if (c == 'v' || c == 'V') c = CTRL('V');
+            else if (c == 'a' || c == 'A') c = CTRL('A');
+            else if (c == 'c' || c == 'C') c = CTRL('C');
+            else if (c == 'f' || c == 'F') c = CTRL('F');
+            else if (c == 'g' || c == 'G') c = CTRL('G');
+            else if (c == 'n' || c == 'N') c = CTRL('N');
+            else if (c == 'x' || c == 'X') c = CTRL('X');
+            else if (c == 'z' || c == 'Z') c = CTRL('Z');
         }
 
         if (c != 0) {

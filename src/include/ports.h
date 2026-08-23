@@ -10,6 +10,43 @@
 
 #include <stdint.h>
 
+/* ── Legacy PC hardware ports ───────────────────────────
+ * Shared port/bitmap definitions for the i8254 PIT, PS/2
+ * 8042 controller, and the NMI/system-control register.
+ * Device-specific bits live in each driver's header.     */
+
+#define POST_CODE_PORT        0x80    /* any write stalls ~1us        */
+
+/* i8254 PIT: three counters behind one command register */
+#define PIT_CH0_DATA          0x40
+#define PIT_CH2_DATA          0x42
+#define PIT_CMD               0x43
+#define PIT_BASE_FREQ_HZ      1193180u
+
+/* Command byte layout: [sc][rw][mode][bcd] */
+#define PIT_CMD_CH2           0x80
+#define PIT_CMD_ACCESS_LOHI   0x30
+#define PIT_CMD_MODE_ONESHOT  0x00
+#define PIT_CMD_MODE_RATEGEN  0x04
+#define PIT_CMD_MODE_SQUARE   0x06
+
+/* Port 0x61 doubles as NMI status / system control:
+ * gate for PIT channel 2, speaker output enable, and the
+ * readable state of PIT OUT2 used as a countdown stopwatch. */
+#define SYSCTL_PORT           0x61
+#define SYSCTL_TIMER2_GATE    0x01
+#define SYSCTL_SPEAKER_EN     0x02
+#define SYSCTL_TIMER2_OUT     0x20
+
+/* PS/2 8042 keyboard controller */
+#define KBD_DATA_PORT         0x60
+#define I8042_STATUS_PORT     0x64
+#define I8042_CMD_RESET_CPU   0xFE
+
+/* Emulator ACPI PM1a control registers (non-standard ports) */
+#define QEMU_PM1A_CNT_PORT    0x604
+#define BOCHS_PM1A_CNT_PORT   0xB004
+
 /**
  * @brief Read a byte from an I/O port.
  */

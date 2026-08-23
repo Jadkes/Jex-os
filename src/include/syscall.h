@@ -8,6 +8,11 @@
 #ifndef SYSCALL_H
 #define SYSCALL_H
 
+/* int $0x80 gate */
+#define SYSCALL_VECTOR        0x80
+/* interrupt gate: present, DPL=3 so user code can trigger it */
+#define SYSCALL_GATE_ACCESS   0xEE
+
 #include "isr.h"
 
 /**

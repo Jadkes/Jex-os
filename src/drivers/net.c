@@ -33,6 +33,13 @@ static uint8_t reply_buf[PACKET_BUF_SIZE];      /* IRQ reply path */
 
 #define ARP_CACHE_SIZE 4
 
+/* Fixed ICMP echo identifier our ping uses; lets tcpdump spot our own */
+#define PING_ICMP_ID 0x1337
+/* XOR seed so a DHCP transaction id is unique across reboots */
+#define DHCP_XID_SEED 0x12345678u
+/* DNS header rcode field: low 4 bits of flags */
+#define DNS_RCODE_MASK 0x000F
+
 typedef struct {
     uint32_t ip;
     uint8_t  mac[6];
@@ -954,7 +961,7 @@ int net_ping(uint32_t dest_ip)
     icmp->type     = ICMP_ECHO_REQUEST;
     icmp->code     = 0;
     icmp->checksum = 0;
-    icmp->id       = htons(0x1337);
+    icmp->id       = htons(PING_ICMP_ID);
     icmp->sequence = htons(icmp_seq++);
     p += sizeof(icmp_header_t);
 
@@ -1232,7 +1239,7 @@ static uint32_t dns_parse_response(const uint8_t* msg, uint32_t len)
     uint16_t ancount       = read_be16(msg + 6);
 
     /* Check for NXDOMAIN or other error (last 4 bits = rcode) */
-    if ((flags & 0x000F) != 0)
+    if ((flags & DNS_RCODE_MASK) != 0)
         return 0;
 
     uint32_t offset = 12;
@@ -1619,7 +1626,7 @@ int dhcp_start(void)
     rtl8139_get_mac(our_mac);
 
     if (dhcp_xid == 0)
-        dhcp_xid = get_ticks() ^ 0x12345678;
+        dhcp_xid = get_ticks() ^ DHCP_XID_SEED;
 
     pr_debug("starting DHCP\n");
     terminal_writestring("DHCP: Starting DORA cycle...\n");

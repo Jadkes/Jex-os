@@ -2,52 +2,45 @@
  * @file speaker.c
  * @brief PC Speaker driver.
  *
- * Uses the PIT Channel 2 (connected to the speaker) to generate square waves
- * for audio output.
+ * The speaker is driven by PIT channel 2 gated through port 0x61.
  */
 
 #include "speaker.h"
 #include "ports.h"
 #include "timer.h"
 
-/**
- * @brief Start playing a tone at the specified frequency.
- * 
- * @param nFrequence Target frequency in Hertz.
+/*
+ * play_sound - start a square wave on the speaker
+ * @freq: tone frequency in Hertz
  */
-void play_sound(uint32_t nFrequence) {
-    uint32_t Div;
-    uint8_t tmp;
+void play_sound(uint32_t freq) {
+    uint32_t divisor = PIT_BASE_FREQ_HZ / freq;
+    uint8_t sysctl;
 
-    /* PIT base frequency is 1.193182 MHz */
-    Div = 1193180 / nFrequence;
-    
-    /* Configure PIT Channel 2 */
-    outb(0x43, 0xB6);
-    outb(0x42, (uint8_t) (Div) );
-    outb(0x42, (uint8_t) (Div >> 8));
+    outb(PIT_CMD, PIT_CMD_CH2 | PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE_SQUARE);
+    outb(PIT_CH2_DATA, (uint8_t)(divisor & 0xFF));
+    outb(PIT_CH2_DATA, (uint8_t)(divisor >> 8));
 
-    /* Enable the speaker by setting bits 0 and 1 of port 0x61 */
-    tmp = inb(0x61);
-    if (tmp != (tmp | 3)) {
-        outb(0x61, tmp | 3);
+    /* Gate ch2 and wire its output to the speaker */
+    sysctl = inb(SYSCTL_PORT);
+    if ((sysctl & (SYSCTL_TIMER2_GATE | SYSCTL_SPEAKER_EN)) !=
+        (SYSCTL_TIMER2_GATE | SYSCTL_SPEAKER_EN)) {
+        outb(SYSCTL_PORT, sysctl | SYSCTL_TIMER2_GATE | SYSCTL_SPEAKER_EN);
     }
 }
 
-/**
- * @brief Stop the tone and silence the PC speaker.
+/*
+ * stop_sound - silence the speaker
  */
 void stop_sound() {
-    /* Disable speaker by clearing bits 0 and 1 of port 0x61 */
-    uint8_t tmp = inb(0x61) & 0xFC;
-    outb(0x61, tmp);
+    outb(SYSCTL_PORT, inb(SYSCTL_PORT) &
+         (uint8_t)~(SYSCTL_TIMER2_GATE | SYSCTL_SPEAKER_EN));
 }
 
-/**
- * @brief Play a tone for a specific duration.
- * 
- * @param freq Frequency in Hertz.
- * @param ms Duration in milliseconds.
+/*
+ * beep - play a tone for a fixed duration
+ * @freq: tone frequency in Hertz
+ * @ms:   duration in milliseconds
  */
 void beep(uint32_t freq, uint32_t ms) {
     play_sound(freq);

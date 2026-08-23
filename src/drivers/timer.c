@@ -46,7 +46,7 @@ void timer_callback(registers_t *regs)
  */
 void init_timer(uint32_t frequency)
 {
-    if (frequency == 0) frequency = 100;  /* Guard against div-by-zero */
+    if (frequency == 0) frequency = TICKS_PER_SEC;
 
     /* Register IRQ0 handler.  With the 8259 masked and the IO/APIC owning
      * delivery, QEMU's PIIX3 routes the PIT output through the legacy
@@ -55,34 +55,27 @@ void init_timer(uint32_t frequency)
     register_interrupt_handler(0, timer_callback);
     register_interrupt_handler(2, timer_callback);
 
-    /* PIT base frequency is 1.193182 MHz */
-    uint32_t divisor = 1193180 / frequency;
+    uint32_t divisor = PIT_BASE_FREQ_HZ / frequency;
 
-    /* Send control byte: Channel 0, access lo/hi byte, rate generator
-     * (mode 2), 16-bit binary.  Mode 3's square wave toggles twice per
-     * period and QEMU's cascade-line path delivers an extra edge for it,
-     * doubling the tick rate; mode 2 pulses OUT low once per period,
-     * giving exactly one rising edge per tick. */
-    outb(0x43, 0x34);
-
-    /* Send divisor bytes */
-    uint8_t l = (uint8_t)(divisor & 0xFF);
-    uint8_t h = (uint8_t)((divisor >> 8) & 0xFF);
-    outb(0x40, l);
-    outb(0x40, h);
+    /* Channel 0, lo/hi access, rate generator.  Mode 3's square wave
+     * toggles twice per period and QEMU's cascade-line path delivers an
+     * extra edge for it, doubling the tick rate; mode 2 pulses OUT low
+     * once per period, giving exactly one rising edge per tick. */
+    outb(PIT_CMD, PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE_RATEGEN);
+    outb(PIT_CH0_DATA, (uint8_t)(divisor & 0xFF));
+    outb(PIT_CH0_DATA, (uint8_t)(divisor >> 8));
 }
 
 /**
  * @brief Wait for a specific duration in milliseconds.
- * 
+ *
  * @param ms Milliseconds to wait.
  */
 void sleep(uint32_t ms)
 {
     uint32_t start_ticks = system_ticks;
-    /* Assumes 100Hz frequency (10ms per tick). Ceiling division ensures
-     * non-zero wait for small requests (e.g., 5ms → 1 tick). */
-    uint32_t ticks_to_wait = (ms + 9) / 10;
+    /* Ceiling division ensures a non-zero wait for small requests */
+    uint32_t ticks_to_wait = (ms + MS_PER_TICK - 1) / MS_PER_TICK;
     if (ticks_to_wait == 0) ticks_to_wait = 1;
 
     /* Ticks only advance while interrupts flow, so IF must be ON during
@@ -121,21 +114,23 @@ uint32_t get_ticks()
  */
 void timer_selftest(void)
 {
-    uint8_t port61 = inb(0x61);
-    /* Gate channel 2 on, keep the speaker output (bit 1) off. */
-    outb(0x61, (uint8_t)((port61 & ~0x02) | 0x01));
+    /* 50 ms window: 1.193182 MHz * 0.05 s = 59659 counts, within 16 bits */
+    const uint32_t stopwatch_counts = PIT_BASE_FREQ_HZ / (1000 / SELFTEST_WINDOW_MS);
+    uint8_t port61 = inb(SYSCTL_PORT);
+    /* Gate channel 2 on, keep the speaker output off. */
+    outb(SYSCTL_PORT, (uint8_t)((port61 & ~SYSCTL_SPEAKER_EN) | SYSCTL_TIMER2_GATE));
 
-    outb(0x43, 0xB0);               /* ch2, lo/hi access, mode 0 */
-    outb(0x42, 59659 & 0xFF);
-    outb(0x42, (59659 >> 8) & 0xFF);
+    outb(PIT_CMD, PIT_CMD_CH2 | PIT_CMD_ACCESS_LOHI | PIT_CMD_MODE_ONESHOT);
+    outb(PIT_CH2_DATA, (uint8_t)(stopwatch_counts & 0xFF));
+    outb(PIT_CH2_DATA, (uint8_t)(stopwatch_counts >> 8));
 
     uint32_t start_ticks = system_ticks;
-    while (!(inb(0x61) & 0x20))     /* OUT2 high at terminal count */
+    while (!(inb(SYSCTL_PORT) & SYSCTL_TIMER2_OUT))
         __asm__ volatile("pause");
     uint32_t elapsed = system_ticks - start_ticks;
 
-    outb(0x61, port61);             /* restore speaker gating */
+    outb(SYSCTL_PORT, port61);      /* restore speaker gating */
 
-    pr_info("clock self-test: %u ticks in a 50 ms window (expected 5)\n",
-            elapsed);
+    pr_info("clock self-test: %u ticks in a %u ms window (expected %u)\n",
+            elapsed, SELFTEST_WINDOW_MS, SELFTEST_WINDOW_MS / MS_PER_TICK);
 }

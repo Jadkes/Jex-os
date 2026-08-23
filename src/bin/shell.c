@@ -1699,7 +1699,7 @@ void shell_input(char key) {
     if (editor_running) { editor_input(key); return; }
 
     /* Ctrl+L — clear screen and redraw prompt */
-    if (key == 0x0C) {
+    if (key == CTRL('L')) {
         terminal_initialize();
         print_logo();
         print_prompt();
@@ -1709,13 +1709,13 @@ void shell_input(char key) {
 
     if (key == '\n') { execute_command(); return; }
     if (key == '\t') { shell_autocomplete(); return; }
-    
+
     /* Left/Right Arrows */
-    if ((unsigned char)key == 0x82) { if (cursor_pos > 0) cursor_pos--; shell_refresh_line(); return; }
-    if ((unsigned char)key == 0x83) { if (cursor_pos < buffer_len) cursor_pos++; shell_refresh_line(); return; }
-    
+    if ((unsigned char)key == KEY_LEFT) { if (cursor_pos > 0) cursor_pos--; shell_refresh_line(); return; }
+    if ((unsigned char)key == KEY_RIGHT) { if (cursor_pos < buffer_len) cursor_pos++; shell_refresh_line(); return; }
+
     /* Up Arrow (History Back) */
-    if ((unsigned char)key == 0x80) {
+    if ((unsigned char)key == KEY_UP) {
         if (hist_count > 0 && hist_pos > 0) {
             hist_pos--;
             int idx = (hist_head - hist_count + hist_pos + HIST_SIZE) % HIST_SIZE;
@@ -1733,7 +1733,7 @@ void shell_input(char key) {
     }
 
     /* Down Arrow (History Forward) */
-    if ((unsigned char)key == 0x81) {
+    if ((unsigned char)key == KEY_DOWN) {
         if (hist_count > 0 && hist_pos < hist_count) {
             hist_pos++;
             if (hist_pos == hist_count) {

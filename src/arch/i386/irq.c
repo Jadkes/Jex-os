@@ -121,7 +121,7 @@ void irq_handler(registers_t regs)
 
     /* Execute custom handler if one is registered */
     void (*handler)(registers_t*);
-    handler = irq_routines[regs.int_no - 32];
+    handler = irq_routines[regs.int_no - IRQ_VECTOR_BASE];
     if (handler)
     {
         handler(&regs);

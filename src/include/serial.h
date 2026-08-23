@@ -2,6 +2,26 @@
 #define SERIAL_H
 
 #include <stdint.h>
+#include <config.h>
+
+/* 16550 UART register offsets from SERIAL_COM1_BASE */
+#define UART_DATA       0   /* transmit/receive buffer (DLAB=0) */
+#define UART_IER        1   /* interrupt enable        (DLAB=0) */
+#define UART_FIFO_CTRL  2
+#define UART_LINE_CTRL  3
+#define UART_MODEM_CTRL 4
+#define UART_LINE_STAT  5
+
+/* UART_LINE_CTRL bits */
+#define UART_LCR_DLAB   0x80    /* divisor latch access     */
+#define UART_LCR_8N1    0x03    /* 8 data, no parity, 1 stop */
+
+/* UART_LINE_STAT bits */
+#define UART_LSR_DATA_READY   0x01
+#define UART_LSR_THRE_EMPTY   0x20
+
+/* Divisor for a 38400 baud line: 115200 / 38400 = 3 */
+#define UART_BAUD_DIVISOR 3
 
 /**
  * @brief Initialize the serial port (COM1).

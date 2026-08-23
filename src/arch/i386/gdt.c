@@ -1,9 +1,6 @@
 /**
  * @file gdt.c
  * @brief Global Descriptor Table (GDT) and TSS management.
- *
- * This file handles the setup of memory segments (Kernel/User Code/Data)
- * and the Task State Segment (TSS) used for privilege transitions.
  */
 
 #include "gdt.h"
@@ -53,10 +50,8 @@ static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
     uint32_t base = (uint32_t) &tss_entry;
     uint32_t limit = sizeof(tss_entry) - 1;
 
-    /* TSS descriptor: DPL=3, Type=0x09 (Available 32-bit TSS) */
-    gdt_set_gate(num, base, limit, 0x89, 0x00);
+    gdt_set_gate(num, base, limit, SEG_ACCESS_TSS, 0x00);
 
-    /* Initialize TSS with zeros */
     uint8_t* ptr = (uint8_t*)&tss_entry;
     for(size_t i = 0; i < sizeof(tss_entry); i++) ptr[i] = 0;
 
@@ -64,8 +59,8 @@ static void write_tss(int32_t num, uint16_t ss0, uint32_t esp0)
     tss_entry.esp0 = esp0;
 
     /* Set default segments for user mode transitions */
-    tss_entry.cs   = 0x0b;
-    tss_entry.ss = tss_entry.ds = tss_entry.es = tss_entry.fs = tss_entry.gs = 0x13;
+    tss_entry.cs   = SEG_USER_CODE;
+    tss_entry.ss = tss_entry.ds = tss_entry.es = tss_entry.fs = tss_entry.gs = SEG_USER_DATA;
     tss_entry.iomap_base = sizeof(tss_entry);
 }
 
@@ -84,19 +79,24 @@ void set_kernel_stack(uint32_t stack)
  * @brief Initialize the Global Descriptor Table.
  * Sets up Null, Kernel Code, Kernel Data, User Code, User Data segments and the TSS.
  */
+/*
+ * init_gdt - build the flat-model GDT: null, kernel code/data,
+ * user code/data, TSS.
+ */
 void init_gdt()
 {
-    gdt_ptr.limit = (sizeof(gdt_entry_t) * 6) - 1;
+    gdt_ptr.limit = (sizeof(gdt_entry_t) * GDT_NUM_ENTRIES) - 1;
     gdt_ptr.base  = (uint32_t)&gdt_entries;
 
-    gdt_set_gate(0, 0, 0, 0, 0);                /* Null segment */
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); /* Kernel Code: Base 0, Limit 4GB, Ring 0 */
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); /* Kernel Data: Base 0, Limit 4GB, Ring 0 */
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); /* User Code: Base 0, Limit 4GB, Ring 3 */
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); /* User Data: Base 0, Limit 4GB, Ring 3 */
+    /* access byte = P|DPL|S|ExDC|RW; flags 0xCF = 4K gran, 32-bit, 4GB */
+    gdt_set_gate(0, 0, 0, 0, 0);
+    gdt_set_gate(1, 0, 0xFFFFFFFF, SEG_ACCESS_KCODE, SEG_FLAGS_4GB);
+    gdt_set_gate(2, 0, 0xFFFFFFFF, SEG_ACCESS_KDATA, SEG_FLAGS_4GB);
+    gdt_set_gate(3, 0, 0xFFFFFFFF, SEG_ACCESS_UCODE, SEG_FLAGS_4GB);
+    gdt_set_gate(4, 0, 0xFFFFFFFF, SEG_ACCESS_UDATA, SEG_FLAGS_4GB);
 
     /* Initially set esp0 to 0, it will be updated in kernel_main */
-    write_tss(5, 0x10, 0x0); 
+    write_tss(GDT_TSS_IDX, SEG_KERNEL_DATA, 0x0);
 
     /* Load the GDT and TSS into CPU registers */
     gdt_flush((uint32_t)&gdt_ptr);

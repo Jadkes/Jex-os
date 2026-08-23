@@ -51,6 +51,15 @@ extern page_directory_t kernel_directory;
 /* Virtual address where the trampoline is copied */
 #define TRAMPOLINE_ADDR  0x1000
 
+/* SIPI vector = trampoline page number (addr >> 12) */
+#define TRAMPOLINE_VECTOR        (TRAMPOLINE_ADDR >> 12)
+
+/* INIT-SIPI timing (SDM-recommended order of magnitude):
+ * INIT settle, then poll the online flag in short intervals. */
+#define SIPI_INIT_DELAY_MS       10
+#define SIPI_POLL_LOOPS          2000
+#define SIPI_POLL_INTERVAL_US    10
+
 /*
  * Trampoline data layout — these offsets must match smp_trampoline.s.
  */
@@ -156,9 +165,6 @@ static void copy_trampoline(void)
  * the PIT instead: program channel 0 in one-shot mode and count spin
  * iterations while it drains a known interval (~1 ms at 1.193182 MHz).
  */
-#define PIT_CH0_DATA 0x40u
-#define PIT_CMD      0x43u
-
 static uint32_t loops_per_ms;
 
 /* Latch channel 0 and return its current countdown value. */
@@ -218,23 +224,23 @@ static void wake_ap(int cpu_index)
     /*
      * INIT-SIPI sequence per the MP/SDM specification:
      *   1. INIT IPI
-     *   2. wait 10 ms for the AP to process INIT
-     *   3. STARTUP IPI with vector 0x01 (trampoline page)
-     *   4. wait ~200 μs; send a second SIPI only if the AP has not come
+     *   2. wait for the AP to process INIT
+     *   3. STARTUP IPI with the trampoline page vector
+     *   4. poll; send a second SIPI only if the AP has not come
      *      online — an unconditional second SIPI can reset an AP that is
      *      already executing kernel code.
      */
-    ap_delay_ms(10);
+    ap_delay_ms(SIPI_INIT_DELAY_MS);
 
-    apic_send_startup_ipi(lapic_id, 0x01);
-    for (int t = 0; t < 2000 && !cpus[cpu_index].online; t++)
-        ap_delay_us(10);
+    apic_send_startup_ipi(lapic_id, TRAMPOLINE_VECTOR);
+    for (int t = 0; t < SIPI_POLL_LOOPS && !cpus[cpu_index].online; t++)
+        ap_delay_us(SIPI_POLL_INTERVAL_US);
 
     if (!cpus[cpu_index].online) {
         pr_debug("AP %d missed first SIPI, retrying\n", cpu_index);
-        apic_send_startup_ipi(lapic_id, 0x01);
-        for (int t = 0; t < 2000 && !cpus[cpu_index].online; t++)
-            ap_delay_us(10);
+        apic_send_startup_ipi(lapic_id, TRAMPOLINE_VECTOR);
+        for (int t = 0; t < SIPI_POLL_LOOPS && !cpus[cpu_index].online; t++)
+            ap_delay_us(SIPI_POLL_INTERVAL_US);
     }
 
     if (!cpus[cpu_index].online)
@@ -281,7 +287,6 @@ void ap_startup(void)
     cpus[me].online = 1;
     __asm__ volatile("" ::: "memory");
 
-    /* Initialize the local APIC on this CPU. */
     apic_init();
 
     pr_info("CPU %d (LAPIC ID 0x%x) alive!\n", me, cpus[me].lapic_id);
@@ -363,12 +368,10 @@ void smp_init(void)
      * the periodic timer isn't initialised yet. */
     calibrate_delay();
 
-    /* Initialize APIC on the BSP. */
     apic_init();
     ioapic_init();
     pic_disable();
 
-    /* Set up BSP's cpu_t entry. */
     cpus[0].lapic_id      = lapic_ids[0];
     cpus[0].is_bsp        = 1;
     cpus[0].page_directory = &kernel_directory;

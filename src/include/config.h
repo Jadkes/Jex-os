@@ -18,6 +18,12 @@
 #define VGA_CTRL_PORT           0x3D4          // VGA Controller Index Register
 #define VGA_DATA_PORT           0x3D5          // VGA Controller Data Register
 
+/* VGA CRTC register indices (written to VGA_CTRL_PORT) */
+#define VGA_CRTC_CURSOR_START   0x0A
+#define VGA_CRTC_CURSOR_END     0x0B
+#define VGA_CRTC_CURSOR_LOC_LO  0x0F
+#define VGA_CRTC_CURSOR_LOC_HI  0x0E
+
 /* Video Memory */
 #define VGA_MEMORY_ADDR         0xB8000        // Physical address of VGA text buffer
 #define VGA_WIDTH               80             // Terminal width in characters

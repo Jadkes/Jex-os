@@ -2,9 +2,8 @@
  * @file pmm.c
  * @brief Physical Memory Manager (PMM) implementation.
  *
- * This file manages the physical allocation of 4KB RAM blocks using a bitmap.
- * It uses the Multiboot memory map to detect available RAM and reserve
- * sensitive areas (like the kernel itself).
+ * Bitmap allocator for 4 KiB physical frames.  RAM detection comes from
+ * the Multiboot memory map; kernel and bootloader regions are reserved.
  */
 
 #define pr_fmt(fmt) "PMM: " fmt

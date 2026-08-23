@@ -14,8 +14,7 @@
 void shell_init();
 
 /**
- * @brief Main entry point for the shell.
- * This function handles the main shell loop and input redirection.
+ * @brief Main shell loop; consumes keyboard input until shutdown.
  */
 void shell_main();
 
