@@ -71,7 +71,15 @@ extern uint32_t cwd_inode;
 
 void jexfs_set_ramdisk(void *base, uint32_t bytes);
 void jexfs_init(void);
+void jexfs_lock(void);
+void jexfs_unlock(void);
 void jexfs_read_inode(uint32_t idx, struct jex_inode *inode);
+
+/**
+ * jexfs_read_inode_raw - read an inode WITHOUT the filesystem lock.
+ * Caller must already hold jexfs_lock(); for multi-step directory walks.
+ */
+void jexfs_read_inode_raw(uint32_t idx, struct jex_inode *inode);
 void jexfs_write_inode(uint32_t idx, struct jex_inode *inode);
 void jexfs_stat(int inode_idx, struct jex_inode *inode);
 int  jexfs_open(const char *name);

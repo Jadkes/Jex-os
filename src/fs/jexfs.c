@@ -22,6 +22,7 @@
 #include "string.h"
 #include "terminal.h"
 #include <jexos/errno.h>
+#include "kernel/mutex.h"
 
 extern multiboot_info_t *g_mboot_info;
 
@@ -33,6 +34,20 @@ extern multiboot_info_t *g_mboot_info;
  */
 static uint8_t *ramdisk_base;
 static uint32_t ramdisk_blocks;
+
+/* ── Filesystem lock ───────────────────────────────────
+ * One coarse sleeping lock covers every metadata operation.  JexFS ops
+ * are RAM-speed so contention is brief, and a coarse lock beats a web
+ * of fine-grained ones in a hobby kernel.  All *_nolock functions are
+ * unsafe to call directly from outside this file. */
+static mutex_t fs_lock;
+
+/** @brief Take the filesystem lock (for multi-step caller sequences). */
+void jexfs_lock(void)   { mutex_lock(&fs_lock); }
+
+/** @brief Release the filesystem lock. */
+void jexfs_unlock(void) { mutex_unlock(&fs_lock); }
+
 
 void jexfs_set_ramdisk(void *base, uint32_t bytes)
 {
@@ -139,7 +154,12 @@ static void jexfs_free_inode(uint32_t idx)
     write_block(sb.inode_bitmap_start, buf);
 }
 
-void jexfs_read_inode(uint32_t idx, struct jex_inode *inode)
+/**
+ * @brief Copy an inode without taking fs_lock.
+ * Caller MUST hold jexfs_lock(); exists so multi-step walkers (ls,
+ * completion) can scan consistently instead of locking per step.
+ */
+void jexfs_read_inode_raw(uint32_t idx, struct jex_inode *inode)
 {
     if (idx >= sb.total_inodes) {
         memset(inode, 0, sizeof(*inode));
@@ -152,7 +172,7 @@ void jexfs_read_inode(uint32_t idx, struct jex_inode *inode)
     memcpy(inode, buf + offset, JEXFS_INODE_SIZE);
 }
 
-void jexfs_write_inode(uint32_t idx, struct jex_inode *inode)
+static void write_inode_nolock(uint32_t idx, struct jex_inode *inode)
 {
     if (idx >= sb.total_inodes) return;
     uint8_t buf[BLOCK_SIZE];
@@ -163,10 +183,10 @@ void jexfs_write_inode(uint32_t idx, struct jex_inode *inode)
     write_block(block, buf);
 }
 
-void jexfs_stat(int inode_idx, struct jex_inode *inode)
+static void jexfs_stat_nolock(int inode_idx, struct jex_inode *inode)
 {
     if (!jexfs_mounted) { memset(inode, 0, sizeof(*inode)); return; }
-    jexfs_read_inode((uint32_t)inode_idx, inode);
+    jexfs_read_inode_raw((uint32_t)inode_idx, inode);
 }
 
 /**
@@ -290,7 +310,7 @@ static int jexfs_bmap_alloc(struct jex_inode *inode, uint32_t lblock)
 static int jexfs_find_entry(uint32_t dir_ino, const char *name, uint16_t name_len)
 {
     struct jex_inode di;
-    jexfs_read_inode(dir_ino, &di);
+    jexfs_read_inode_raw(dir_ino, &di);
     if ((di.mode & JEXFS_TYPE_MASK) != JEXFS_TYPE_DIR)
         return -ENOTDIR;
 
@@ -318,7 +338,7 @@ static int jexfs_find_entry(uint32_t dir_ino, const char *name, uint16_t name_le
     return -ENOENT;
 }
 
-int jexfs_open(const char *name)
+static int open_nolock(const char *name)
 {
     if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return (int)cwd_inode;
@@ -328,11 +348,11 @@ int jexfs_open(const char *name)
     return jexfs_find_entry(dir, name, (uint16_t)strlen(name));
 }
 
-int jexfs_read(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
+static int jexfs_read_nolock(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
 {
     if (!jexfs_mounted) return -ENODEV;
     struct jex_inode inode;
-    jexfs_read_inode((uint32_t)inode_idx, &inode);
+    jexfs_read_inode_raw((uint32_t)inode_idx, &inode);
     if (offset >= inode.size) return 0;
     if (offset + size > inode.size) size = inode.size - offset;
 
@@ -355,12 +375,12 @@ int jexfs_read(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
     return (int)(size - remain);
 }
 
-int jexfs_write(int inode_idx, const void *buffer,
+static int jexfs_write_nolock(int inode_idx, const void *buffer,
                 uint32_t size, uint32_t offset)
 {
     if (!jexfs_mounted) return -ENODEV;
     struct jex_inode inode;
-    jexfs_read_inode((uint32_t)inode_idx, &inode);
+    jexfs_read_inode_raw((uint32_t)inode_idx, &inode);
 
     uint32_t remain = size, curr = offset;
     const uint8_t *in = (const uint8_t *)buffer;
@@ -374,7 +394,7 @@ int jexfs_write(int inode_idx, const void *buffer,
         if (phys < 0) {
             if (curr > offset) {
                 inode.size = (inode.size > curr) ? inode.size : curr;
-                jexfs_write_inode((uint32_t)inode_idx, &inode);
+                write_inode_nolock((uint32_t)inode_idx, &inode);
             }
             return phys;
         }
@@ -388,18 +408,18 @@ int jexfs_write(int inode_idx, const void *buffer,
 
     if (offset + size > inode.size)
         inode.size = offset + size;
-    jexfs_write_inode((uint32_t)inode_idx, &inode);
+    write_inode_nolock((uint32_t)inode_idx, &inode);
     return (int)(size - remain);
 }
 
-int jexfs_create(const char *name)
+static int jexfs_create_nolock(const char *name)
 {
     if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return -EINVAL;
     uint16_t nl = (uint16_t)strlen(name);
     if (nl > 255) return -ENAMETOOLONG;
 
-    int existing = jexfs_open(name);
+    int existing = open_nolock(name);
     if (existing >= 0) return existing;
 
     int ino = jexfs_alloc_inode();
@@ -409,14 +429,14 @@ int jexfs_create(const char *name)
     memset(&inode, 0, sizeof(inode));
     inode.mode = JEXFS_TYPE_FILE | JEXFS_IRUSR | JEXFS_IWUSR
                  | JEXFS_IRGRP | JEXFS_IROTH;
-    jexfs_write_inode((uint32_t)ino, &inode);
+    write_inode_nolock((uint32_t)ino, &inode);
 
     int ret = jexfs_add_dirent(cwd_inode, (uint16_t)ino, name, nl, JEXFS_DIRENT_FILE);
     if (ret < 0) { jexfs_free_inode((uint32_t)ino); return ret; }
     return ino;
 }
 
-int jexfs_mkdir(const char *name)
+static int jexfs_mkdir_nolock(const char *name)
 {
     if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return -EINVAL;
@@ -451,7 +471,7 @@ int jexfs_mkdir(const char *name)
                  | JEXFS_IRGRP | JEXFS_IXGRP | JEXFS_IROTH | JEXFS_IXOTH;
     inode.size = (uint32_t)off;
     inode.direct_blocks[0] = (uint16_t)blk;
-    jexfs_write_inode((uint32_t)ino, &inode);
+    write_inode_nolock((uint32_t)ino, &inode);
 
     int ret = jexfs_add_dirent(cwd_inode, (uint16_t)ino, name, nl, JEXFS_DIRENT_DIR);
     if (ret < 0) { jexfs_free_inode((uint32_t)ino); jexfs_free_block((uint32_t)blk); }
@@ -469,7 +489,7 @@ static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
                             uint8_t file_type)
 {
     struct jex_inode di;
-    jexfs_read_inode(dir_ino, &di);
+    jexfs_read_inode_raw(dir_ino, &di);
     if ((di.mode & JEXFS_TYPE_MASK) != JEXFS_TYPE_DIR)
         return -ENOTDIR;
 
@@ -516,7 +536,7 @@ static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
 
         if (di.size < (lb + 1) * BLOCK_SIZE)
             di.size = (lb + 1) * BLOCK_SIZE;
-        jexfs_write_inode(dir_ino, &di);
+        write_inode_nolock(dir_ino, &di);
 
         found_off = (int)(lb * BLOCK_SIZE);
         memset(buf, 0, BLOCK_SIZE);
@@ -541,21 +561,21 @@ write_entry:
         uint32_t new_end = (uint32_t)found_off + (uint32_t)esz;
         if (new_end > di.size) {
             di.size = new_end;
-            jexfs_write_inode(dir_ino, &di);
+            write_inode_nolock(dir_ino, &di);
         }
         write_block(phys, buf);
     }
     return 0;
 }
 
-int jexfs_remove(const char *name)
+static int jexfs_remove_nolock(const char *name)
 {
     if (!jexfs_mounted) return -ENODEV;
     if (!name || name[0] == '\0') return -EINVAL;
     uint16_t nl = (uint16_t)strlen(name);
 
     struct jex_inode di;
-    jexfs_read_inode(cwd_inode, &di);
+    jexfs_read_inode_raw(cwd_inode, &di);
     uint8_t buf[BLOCK_SIZE];
     uint32_t off = 0;
 
@@ -573,7 +593,7 @@ int jexfs_remove(const char *name)
                 && jfs_memcmp(de->name, name, nl) == 0) {
                 /* Found -- free inode and blocks */
                 struct jex_inode inode;
-                jexfs_read_inode(de->inode, &inode);
+                jexfs_read_inode_raw(de->inode, &inode);
 
                 /* Free direct blocks */
                 for (int i = 0; i < JEXFS_DIRECT_COUNT; i++)
@@ -620,7 +640,7 @@ not_found:
     return -ENOENT;
 }
 
-int jexfs_rename(const char *old_name, const char *new_name)
+static int jexfs_rename_nolock(const char *old_name, const char *new_name)
 {
     if (!jexfs_mounted) return -ENODEV;
     if (!old_name || !new_name) return -EINVAL;
@@ -628,7 +648,7 @@ int jexfs_rename(const char *old_name, const char *new_name)
     uint16_t new_nl = (uint16_t)strlen(new_name);
 
     struct jex_inode di;
-    jexfs_read_inode(cwd_inode, &di);
+    jexfs_read_inode_raw(cwd_inode, &di);
     uint8_t buf[BLOCK_SIZE];
     uint32_t off = 0;
 
@@ -673,19 +693,19 @@ int jexfs_rename(const char *old_name, const char *new_name)
     return -ENOENT;
 }
 
-int jexfs_get_size(int inode_idx)
+static int jexfs_get_size_nolock(int inode_idx)
 {
     if (!jexfs_mounted) return 0;
     struct jex_inode inode;
-    jexfs_read_inode((uint32_t)inode_idx, &inode);
+    jexfs_read_inode_raw((uint32_t)inode_idx, &inode);
     return (int)inode.size;
 }
 
-void jexfs_list_dir(uint32_t inode_idx)
+static void jexfs_list_dir_nolock(uint32_t inode_idx)
 {
     if (!jexfs_mounted) { terminal_writestring("(no JEXFS)\n"); return; }
     struct jex_inode di;
-    jexfs_read_inode(inode_idx, &di);
+    jexfs_read_inode_raw(inode_idx, &di);
     if ((di.mode & JEXFS_TYPE_MASK) != JEXFS_TYPE_DIR) return;
 
     uint8_t buf[BLOCK_SIZE];
@@ -721,6 +741,7 @@ list_end:
 
 void jexfs_init(void)
 {
+    mutex_init(&fs_lock, "jexfs");
     pr_info("Mounting JexFS v2...\n");
 
     /* A GRUB-loaded multiboot module carries the root image in RAM.
@@ -760,4 +781,112 @@ void jexfs_init(void)
     jexfs_mounted = 1;
     pr_info("Mounted: %u blocks, %u inodes, data at block %u\n",
             sb.total_blocks, sb.total_inodes, sb.data_start);
+}
+
+/* ── Locked public API ───────────────────────────────
+ * Thin wrappers: take fs_lock, run the _nolock core, release.
+ * The cores assume the caller holds fs_lock. */
+
+
+void jexfs_read_inode(uint32_t idx, struct jex_inode *inode)
+{
+    mutex_lock(&fs_lock);
+    jexfs_read_inode_raw(idx, inode);
+    mutex_unlock(&fs_lock);
+}
+
+
+void jexfs_write_inode(uint32_t idx, struct jex_inode *inode)
+{
+    mutex_lock(&fs_lock);
+    write_inode_nolock(idx, inode);
+    mutex_unlock(&fs_lock);
+}
+
+
+void jexfs_stat(int inode_idx, struct jex_inode *inode)
+{
+    mutex_lock(&fs_lock);
+    jexfs_stat_nolock(inode_idx, inode);
+    mutex_unlock(&fs_lock);
+}
+
+
+int jexfs_open(const char *name)
+{
+    mutex_lock(&fs_lock);
+    int ret = open_nolock(name);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_read(int inode_idx, void *buffer, uint32_t size, uint32_t offset)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_read_nolock(inode_idx, buffer, size, offset);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_write(int inode_idx, const void *buffer, uint32_t size, uint32_t offset)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_write_nolock(inode_idx, buffer, size, offset);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_create(const char *name)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_create_nolock(name);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_mkdir(const char *name)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_mkdir_nolock(name);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_remove(const char *name)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_remove_nolock(name);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_rename(const char *old_name, const char *new_name)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_rename_nolock(old_name, new_name);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+int jexfs_get_size(int inode_idx)
+{
+    mutex_lock(&fs_lock);
+    int ret = jexfs_get_size_nolock(inode_idx);
+    mutex_unlock(&fs_lock);
+    return ret;
+}
+
+
+void jexfs_list_dir(uint32_t inode_idx)
+{
+    mutex_lock(&fs_lock);
+    jexfs_list_dir_nolock(inode_idx);
+    mutex_unlock(&fs_lock);
 }

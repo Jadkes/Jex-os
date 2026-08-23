@@ -178,7 +178,8 @@ void shell_autocomplete() {
     } else {
         /* Complete a filename from the current directory */
         struct jex_inode dir_inode;
-        jexfs_read_inode(cwd_inode, &dir_inode);
+        jexfs_lock();
+        jexfs_read_inode_raw(cwd_inode, &dir_inode);
         uint8_t block_buf[BLOCK_SIZE];
 
         for (int b = 0; b < JEXFS_DIRECT_COUNT; b++) {
@@ -213,6 +214,7 @@ void shell_autocomplete() {
             }
             if (match_count >= 32) break;
         }
+        jexfs_unlock();
     }
 
     if (match_count == 1) {
@@ -1133,8 +1135,12 @@ static void do_ls(const char *arg)
         }
     }
 
+    /* One lock across the entire listing: entry blocks and inode
+     * metadata are read raw so a concurrent create/remove cannot tear
+     * the output (or the walk) apart. */
+    jexfs_lock();
     struct jex_inode dir_inode;
-    jexfs_read_inode((uint32_t)target_inode, &dir_inode);
+    jexfs_read_inode_raw((uint32_t)target_inode, &dir_inode);
 
     /* Check type */
     if ((dir_inode.mode & JEXFS_TYPE_MASK) != JEXFS_TYPE_DIR) {
@@ -1149,6 +1155,7 @@ static void do_ls(const char *arg)
         terminal_writestring("  ");
         terminal_writestring(p);
         terminal_writestring("\n");
+        jexfs_unlock();
         return;
     }
 
@@ -1211,7 +1218,7 @@ static void do_ls(const char *arg)
 
                 /* Read entry inode for metadata */
                 struct jex_inode entry_inode;
-                jexfs_read_inode(de->inode, &entry_inode);
+                jexfs_read_inode_raw(de->inode, &entry_inode);
 
                 char mode_str[12];
                 char size_str[32];
@@ -1231,6 +1238,7 @@ static void do_ls(const char *arg)
             }
         }
     }
+    jexfs_unlock();
 }
 
 /**
