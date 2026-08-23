@@ -9,10 +9,13 @@
  */
 
 #include "kheap.h"
+#include "spinlock.h"
 #include "pmm.h"
 #include "init.h"
 #include <stddef.h>
 #include <stdint.h>
+
+static spinlock_t kheap_lock = SPINLOCK_INIT;
 
 static const uint32_t slab_sizes[SLAB_CACHE_COUNT] = {
     16, 32, 64, 128, 256, 512, 1024, 2048
@@ -86,6 +89,14 @@ static void slab_free(slab_t* slab, void* ptr) {
     uint32_t offset = (uint32_t)ptr - (uint32_t)data;
     uint32_t idx = offset / slab->obj_size;
 
+    /* Reject pointers outside the object area, interior pointers and
+     * over-frees — any of these would corrupt the intra-slab free list */
+    if ((int32_t)offset < 0 ||
+        offset % slab->obj_size != 0 ||
+        idx >= slab->obj_count ||
+        slab->free_count >= slab->obj_count)
+        return;
+
     /* Push onto free list */
     uint32_t* obj = (uint32_t*)(data + idx * slab->obj_size);
     *obj = slab->free_head;
@@ -112,6 +123,9 @@ static slab_t* ptr_to_slab(void* ptr) {
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
 
+    uint32_t flags;
+    spin_lock_irqsave(&kheap_lock, &flags);
+
     /* Large allocation via PMM (> SLAB_MAX_SIZE) */
     if (size > SLAB_MAX_SIZE) {
         uint32_t total = size + sizeof(large_hdr_t);
@@ -122,6 +136,7 @@ void* kmalloc(size_t size) {
         hdr->magic = LARGE_MAGIC;
         hdr->pages = pages;
         total_committed += pages * SLAB_PAGE_SIZE;
+        spin_unlock_irqrestore(&kheap_lock, flags);
         return (void*)((uint32_t)hdr + sizeof(large_hdr_t));
     }
 
@@ -130,7 +145,9 @@ void* kmalloc(size_t size) {
     while (idx < SLAB_CACHE_COUNT - 1 && slab_sizes[idx] < size) {
         idx++;
     }
-    return slab_alloc(idx);
+    void* obj = slab_alloc(idx);
+    spin_unlock_irqrestore(&kheap_lock, flags);
+    return obj;
 }
 
 /**
@@ -146,6 +163,9 @@ void* kmalloc(size_t size) {
 void kfree(void* ptr) {
     if (!ptr) return;
 
+    uint32_t flags;
+    spin_lock_irqsave(&kheap_lock, &flags);
+
     slab_t* slab = ptr_to_slab(ptr);
     if (!slab) return;
 
@@ -156,6 +176,7 @@ void kfree(void* ptr) {
         total_committed -= hdr->pages * SLAB_PAGE_SIZE;
         pmm_free_blocks(hdr, hdr->pages);
     }
+    spin_unlock_irqrestore(&kheap_lock, flags);
 }
 
 /**

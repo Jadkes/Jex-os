@@ -154,16 +154,17 @@ static inline void identity_unmap_frame(uint32_t phys) {
 
 /**
  * alloc_kernel_stack - Allocate 32KB physical RAM and map as kernel stack.
- * @pid: Task PID determines slot: KSTACK_VADDR_BASE + pid * KSTACK_SIZE.
+ * Slots are recycled from the shared pool; the returned address keys
+ * the matching free_kernel_stack() call.
  * @return: Stack base virtual address, or 0 on failure.
  */
-uint32_t alloc_kernel_stack(int pid);
+uint32_t alloc_kernel_stack(void);
 
 /**
  * free_kernel_stack - Unmap and free physical pages for a kernel stack.
  * @pid: Task PID whose stack to free.
  */
-void free_kernel_stack(int pid);
+void free_kernel_stack(uint32_t kstack_vaddr);
 
 /**
  * @brief Initialize paging and identity map the kernel.

@@ -8,6 +8,7 @@
 
 #define pr_fmt(fmt) "PMM: " fmt
 #include "kernel/printk.h"
+#include "spinlock.h"
 #include "pmm.h"
 #include "init.h"
 #include "config.h"
@@ -244,14 +245,27 @@ void pmm_init(multiboot_info_t* mboot_info) {
  * @brief Allocate a single 4KB block of physical RAM.
  * @return Physical address of the block, or NULL if OOM.
  */
+/* Serializes PMM bitmap updates across CPUs */
+static spinlock_t pmm_lock = SPINLOCK_INIT;
+
 void* pmm_alloc_block() {
-    if (used_blocks >= max_blocks) return NULL;
+    uint32_t flags;
+    spin_lock_irqsave(&pmm_lock, &flags);
+
+    if (used_blocks >= max_blocks) {
+        spin_unlock_irqrestore(&pmm_lock, flags);
+        return NULL;
+    }
 
     int frame = bitmap_first_free();
-    if (frame == -1) return NULL;
+    if (frame == -1) {
+        spin_unlock_irqrestore(&pmm_lock, flags);
+        return NULL;
+    }
 
     bitmap_set(frame);
     used_blocks++;
+    spin_unlock_irqrestore(&pmm_lock, flags);
 
     return (void*)(frame * BLOCK_SIZE);
 }
@@ -262,15 +276,25 @@ void* pmm_alloc_block() {
  * @return Physical address of the first block, or NULL if OOM.
  */
 void* pmm_alloc_blocks(uint32_t count) {
-    if (used_blocks + count > max_blocks) return NULL;
+    uint32_t flags;
+    spin_lock_irqsave(&pmm_lock, &flags);
+
+    if (used_blocks + count > max_blocks) {
+        spin_unlock_irqrestore(&pmm_lock, flags);
+        return NULL;
+    }
 
     int frame = bitmap_first_free_contiguous(count);
-    if (frame == -1) return NULL;
+    if (frame == -1) {
+        spin_unlock_irqrestore(&pmm_lock, flags);
+        return NULL;
+    }
 
     for (uint32_t i = 0; i < count; i++) {
         bitmap_set(frame + i);
     }
     used_blocks += count;
+    spin_unlock_irqrestore(&pmm_lock, flags);
 
     return (void*)(frame * BLOCK_SIZE);
 }
@@ -286,10 +310,13 @@ void pmm_free_block(void* p) {
     /* Bounds check: reject addresses outside managed range */
     if (frame >= max_blocks) return;
 
+    uint32_t flags;
+    spin_lock_irqsave(&pmm_lock, &flags);
     if (bitmap_test(frame)) {
         bitmap_unset(frame);
         used_blocks--;
     }
+    spin_unlock_irqrestore(&pmm_lock, flags);
 }
 
 /**
@@ -301,6 +328,8 @@ void pmm_free_blocks(void* p, uint32_t count) {
     uint32_t addr = (uint32_t)p;
     uint32_t frame = addr / BLOCK_SIZE;
 
+    uint32_t flags;
+    spin_lock_irqsave(&pmm_lock, &flags);
     for (uint32_t i = 0; i < count; i++) {
         if (frame + i >= max_blocks) break; /* Bounds check */
         if (bitmap_test(frame + i)) {
@@ -308,6 +337,7 @@ void pmm_free_blocks(void* p, uint32_t count) {
             used_blocks--;
         }
     }
+    spin_unlock_irqrestore(&pmm_lock, flags);
 }
 
 uint32_t pmm_get_free_memory() {

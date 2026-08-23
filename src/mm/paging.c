@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include "spinlock.h"
 
 /**
  * @brief Global kernel page directory.
@@ -511,56 +512,72 @@ void init_paging() {
     }
 }
 
+/* Serializes the shared PDE 1023 slot scan across CPUs */
+static spinlock_t kstack_lock = SPINLOCK_INIT;
+
 /**
- * alloc_kernel_stack - Allocate 8 PMM pages and map at KSTACK_VADDR_BASE + pid*32KB.
- * @pid: Task PID for slot selection (slot = pid * 8 PTEs).
- * @return: Stack base virtual address, or 0 on failure.
+ * alloc_kernel_stack - Allocate a 32KB kernel stack from the shared pool.
  *
- * Physical pages are PMM-allocated and their PTEs written into PDE 1023's
- * shared page table (kernel_directory).  Since PDE 1023 is kernel-shared
- * (user=0, shared across all page directories via clone_page_directory),
- * every kernel stack is reachable from any CR3 — no special-casing in
- * fork or context switch needed.
+ * Kernel stacks live in PDE 1023 of the SHARED kernel page table
+ * (kernel_directory).  Since PDE 1023 is kernel-shared (user=0, shared
+ * across all page directories via clone_page_directory), every kernel
+ * stack is reachable from any CR3 — no special-casing in fork or
+ * context switch needed.  Slots are recycled: the first free run of
+ * PTEs is handed out, so the number of live tasks is bounded by the
+ * table, not by the ever-growing pid counter.
  *
- * The kernel stack page table is accessed through the recursive window
- * (PTE_PTR), NOT through identity-mapped physical addresses, since the
- * page table frame's identity PTE is cleared during init_paging.
+ * @return Virtual base of the stack, or 0 when full/out of memory.
  */
-uint32_t alloc_kernel_stack(int pid)
+uint32_t alloc_kernel_stack(void)
 {
     if (!kernel_directory.tables[KSTACK_PDE_IDX].present)
         return 0;
 
+    uint32_t irq_flags;
+    spin_lock_irqsave(&kstack_lock, &irq_flags);
+
     page_table_t* kstack_pt = (page_table_t*)PTE_PTR(KSTACK_PDE_IDX);
-    uint32_t slot_idx = pid * (KSTACK_SIZE / 4096);   /* pid * 8 */
+    int pages_per_stack = KSTACK_SIZE / 4096;
 
-    /* Bail if slot already occupied */
-    for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
-        if (kstack_pt->pages[slot_idx + i].present)
-            return 0;
-    }
-
-    /* Allocate and map all 4KB pages */
-    for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
-        void* phys = pmm_alloc_block();
-        if (!phys) {
-            /* Roll back on failure */
-            for (int j = 0; j < i; j++) {
-                uint32_t p = kstack_pt->pages[slot_idx + j].frame << 12;
-                pmm_free_block((void*)p);
-                kstack_pt->pages[slot_idx + j].present = 0;
-            }
-            return 0;
+    /* PIDs grow forever but the shared page table only holds
+     * KSTACK_SLOTS stacks — hand out the first free slot instead of
+     * deriving the slot from the pid (which ran off the table at
+     * pid >= 128). */
+    for (uint32_t slot = 0; slot + pages_per_stack <= 1024; slot += pages_per_stack) {
+        bool is_free = true;
+        for (int i = 0; i < pages_per_stack; i++) {
+            if (kstack_pt->pages[slot + i].present) { is_free = false; break; }
         }
-        /* Single 32-bit store to avoid GCC bitfield RMW hazard */
-        uint32_t pte_val = (((uint32_t)phys >> 12) << 12)  /* frame */
-                         | (1u << 0)                         /* present */
-                         | (1u << 1);                        /* rw */
-        /* user = 0 (kernel only) */
-        *(uint32_t*)&kstack_pt->pages[slot_idx + i] = pte_val;
-    }
+        if (!is_free)
+            continue;
 
-    return KSTACK_VADDR_BASE + pid * KSTACK_SIZE;
+        uint32_t slot_idx = slot;
+        /* Allocate and map all 4KB pages */
+        for (int i = 0; i < pages_per_stack; i++) {
+            void* phys = pmm_alloc_block();
+            if (!phys) {
+                /* Roll back on failure */
+                for (int j = 0; j < i; j++) {
+                    uint32_t p = kstack_pt->pages[slot_idx + j].frame << 12;
+                    pmm_free_block((void*)p);
+                    kstack_pt->pages[slot_idx + j].present = 0;
+                }
+                spin_unlock_irqrestore(&kstack_lock, irq_flags);
+                return 0;
+            }
+            /* Single 32-bit store to avoid GCC bitfield RMW hazard */
+            uint32_t pte_val = (((uint32_t)phys >> 12) << 12)  /* frame */
+                             | (1u << 0)                         /* present */
+                             | (1u << 1);                        /* rw */
+            /* user = 0 (kernel only) */
+            *(uint32_t*)&kstack_pt->pages[slot_idx + i] = pte_val;
+        }
+
+        spin_unlock_irqrestore(&kstack_lock, irq_flags);
+        return KSTACK_VADDR_BASE + slot * 4096;
+    }
+    spin_unlock_irqrestore(&kstack_lock, irq_flags);
+    return 0;
 }
 
 /**
@@ -570,14 +587,21 @@ uint32_t alloc_kernel_stack(int pid)
  * Clears all PTEs in PDE 1023's shared page table and returns the physical
  * pages to PMM.  Invalidates TLB entries for all pages.
  */
-void free_kernel_stack(int pid)
+void free_kernel_stack(uint32_t kstack_vaddr)
 {
     if (!kernel_directory.tables[KSTACK_PDE_IDX].present)
         return;
+    if (kstack_vaddr < KSTACK_VADDR_BASE)
+        return;
+
+    uint32_t irq_flags;
+    spin_lock_irqsave(&kstack_lock, &irq_flags);
+
+    uint32_t slot_idx = (kstack_vaddr - KSTACK_VADDR_BASE) / 4096;
+    if (slot_idx + KSTACK_SIZE / 4096 > 1024)
+        return;
 
     page_table_t* kstack_pt = (page_table_t*)PTE_PTR(KSTACK_PDE_IDX);
-    uint32_t slot_idx = pid * (KSTACK_SIZE / 4096);
-
     for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
         if (kstack_pt->pages[slot_idx + i].present) {
             uint32_t phys = kstack_pt->pages[slot_idx + i].frame << 12;
@@ -588,8 +612,9 @@ void free_kernel_stack(int pid)
 
     /* Flush TLB for all pages */
     for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
-        asm volatile("invlpg (%0)" :: "r"(KSTACK_VADDR_BASE + pid * KSTACK_SIZE + i * 4096));
+        asm volatile("invlpg (%0)" :: "r"(kstack_vaddr + i * 4096));
     }
+    spin_unlock_irqrestore(&kstack_lock, irq_flags);
 }
 
 /**
