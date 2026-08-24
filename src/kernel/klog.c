@@ -15,7 +15,11 @@
 
 static char klog_buf[KLOG_SIZE];
 static volatile uint32_t klog_pos = 0;
+#ifdef JEXOS_DEBUG
+static int klog_level = KLOG_LEVEL_DEBUG;
+#else
 static int klog_level = KLOG_LEVEL_INFO;
+#endif
 
 void klog_init(void)
 {

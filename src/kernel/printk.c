@@ -27,7 +27,11 @@ int console_loglevel = DEFAULT_CONSOLE_LOGLEVEL;
  * VGA terminal.  Lets a subsystem (e.g. ping -v) flood the serial
  * console with trace while the shell stays readable.
  */
+#ifdef JEXOS_DEBUG
+int serial_debug = 1;
+#else
 int serial_debug = 0;
+#endif
 
 /*
  * ISR nesting depth -- incremented by irq_handler before dispatching,

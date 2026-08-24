@@ -29,6 +29,9 @@ int vsnprintf(char* buf, size_t size, const char* fmt, va_list args);
  * Returns the number of characters that would be written
  * (excluding the null terminator) if size were unlimited.
  */
+/* Returns the number of characters WRITTEN (excluding the NUL), not
+ * the POSIX would-be length.  %x/%X without an explicit width print
+ * all 8 hex digits. */
 int snprintf(char* buf, size_t size, const char* fmt, ...);
 
 #endif /* VSNPRINTF_H */

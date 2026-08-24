@@ -20,11 +20,17 @@ typedef struct {
     int         skipped;
 } test_t;
 
-#define TEST_MAX 32
+#define TEST_MAX 64
 
 void test_register(const char* name, const char* desc, test_fn_t fn);
 void test_register_skip(const char* name, const char* desc, test_fn_t fn);
 void run_all_tests(void);
+
+/**
+ * run_selftests - register and run every suite, report to serial + VGA.
+ * @return number of failed tests (0 = all green).
+ */
+int run_selftests(void);
 
 /* Test helper macros */
 #define TEST_ASSERT(cond, msg) \
@@ -42,5 +48,10 @@ void test_skip(const char* name);
 /* Declare all test registration functions */
 void register_checksum_tests(void);
 void register_pmm_tests(void);
+void register_heap_tests(void);
+void register_ringbuf_tests(void);
+void register_sync_tests(void);
+void register_string_tests(void);
+void register_jexfs_tests(void);
 
 #endif /* TEST_SUITE_H */

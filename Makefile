@@ -54,6 +54,28 @@ ISO       = jexos.iso
 BUILD     = build
 OBJ_DIR   = $(BUILD)/obj
 BOOT_IMG  = jexos.boot.img
+
+## Build flavors: make / make debug / make test
+#   debug: JEXOS_DEBUG  -- insanely verbose serial logging, normal shell boot
+#   test:  JEXOS_SELFTEST -- same core + boots straight into the self-test
+#          suite and exits QEMU via the isa-debug-exit port when done.
+#   Each flavor gets its own object dir and artifact names so flavors
+#   never clobber each other's stale objects.
+FLAVOR =
+ifeq ($(FLAVOR),debug)
+CFLAGS   += -DJEXOS_DEBUG
+KERNEL    = jexos-debug.bin
+IMG       = jexos-debug.img
+ISO       = jexos-debug.iso
+OBJ_DIR   = $(BUILD)/obj-debug
+endif
+ifeq ($(FLAVOR),test)
+CFLAGS   += -DJEXOS_SELFTEST -DJEXOS_DEBUG
+KERNEL    = jexos-test.bin
+IMG       = jexos-test.img
+ISO       = jexos-test.iso
+OBJ_DIR   = $(BUILD)/obj-test
+endif
 BOOTSECT  = $(BUILD)/bootsect.bin
 LOADER    = $(BUILD)/loader.bin
 LOADER_ELF = $(BUILD)/loader.elf
@@ -122,8 +144,10 @@ $(MKJEXFS): tools/mkjexfs.c
 $(ISO): $(KERNEL) $(IMG)
 	$(Q)printf "  ISO     $@\n"
 	$(Q)mkdir -p iso/boot/grub
-	$(Q)cp $(KERNEL) iso/boot/
-	$(Q)cp $(IMG) iso/boot/
+	# grub.cfg loads fixed paths, so every flavor stages under the
+	# same name -- otherwise a stale default kernel gets booted.
+	$(Q)cp $(KERNEL) iso/boot/jexos.bin
+	$(Q)cp $(IMG) iso/boot/jexos.img
 	@if [ ! -f iso/boot/grub/grub.cfg ]; then \
 		echo 'set timeout=5' > iso/boot/grub/grub.cfg; \
 		echo 'menuentry "JexOS" {' >> iso/boot/grub/grub.cfg; \
@@ -169,6 +193,37 @@ $(BOOT_IMG): $(BOOTSECT) $(LOADER) $(KERNEL)
 run: $(ISO) $(IMG)
 	$(Q)printf "  QEMU    %s (GRUB ISO)\n" "$(QEMU)"
 	$(Q)$(QEMU) -cdrom $(ISO) -hda $(IMG) $(QEMU_OPTS)
+
+# Headless self-test run: boots the test flavor, QEMU exits itself via
+# the isa-debug-exit port when the suite finishes.  timeout catches a
+# hung test -- the last "[RUN  ] <name>" line in the log names the
+# culprit.  Exit codes: 33 = all passed, 7 = failures, 124 = timeout,
+# anything else = QEMU died before or during boot.
+test:
+	$(Q)$(MAKE) FLAVOR=test iso
+
+# stdin is /dev/null on purpose: with a real tty on stdin, qemu's
+# stdio serial flips the terminal into raw mode and Ctrl-C stops
+# working (it becomes a byte sent to the guest).  /dev/null keeps
+# the tty cooked, serial still streams live to stdout.
+SELFTEST_TIMEOUT ?= 90
+
+run-test:
+	$(Q)$(MAKE) FLAVOR=test iso
+	$(Q)timeout $(SELFTEST_TIMEOUT) $(QEMU) -cdrom jexos-test.iso \
+		-display none -serial stdio -no-reboot \
+		-device isa-debug-exit,iobase=0xf4 </dev/null ; \
+	status=$$?; \
+	if [ $$status -eq 33 ]; then echo "  SELFTEST PASS"; \
+	elif [ $$status -eq 7 ]; then echo "  SELFTEST FAIL (see log above)"; exit 1; \
+	else echo "  SELFTEST HANG/CRASH (exit $$status, see log above)"; exit 1; fi
+
+debug:
+	$(Q)$(MAKE) FLAVOR=debug all
+
+run-debug:
+	$(Q)$(MAKE) FLAVOR=debug all
+	$(Q)$(QEMU) -cdrom jexos-debug.iso -hda jexos-debug.img $(QEMU_OPTS)
 
 # Fallback: boot through the custom stage-1/stage-2 bootloader.
 run-native: $(BOOT_IMG) $(IMG)
@@ -218,4 +273,4 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run run-native clean distclean iso docs docs-run boot help
+.PHONY: all run run-native clean distclean iso docs docs-run boot help debug run-debug test run-test

@@ -41,53 +41,74 @@ void test_register_skip(const char* name, const char* desc, test_fn_t fn)
 void test_pass(const char* name)
 {
     passed++;
-    terminal_writestring("  [PASS] ");
-    terminal_writestring(name);
-    terminal_writestring("\n");
+    log_serial("[PASS] ");
+    log_serial(name);
+    log_serial("\n");
 }
 
 void test_fail(const char* msg)
 {
     failed++;
+    log_serial("[FAIL] ");
+    log_serial(msg ? msg : "(no message)");
+    log_serial("\n");
     if (msg) {
         strncpy(fail_msg, msg, sizeof(fail_msg) - 1);
         fail_msg[sizeof(fail_msg) - 1] = '\0';
     }
-    terminal_writestring("  [FAIL] ");
-    terminal_writestring(msg);
-    terminal_writestring("\n");
 }
 
 void test_skip(const char* name)
 {
     skipped++;
-    terminal_writestring("  [SKIP] ");
-    terminal_writestring(name);
-    terminal_writestring("\n");
+    log_serial("[SKIP] ");
+    log_serial(name);
+    log_serial("\n");
 }
 
-void run_all_tests(void)
+static void announce(const char* tag, const char* name)
+{
+    terminal_writestring(tag);
+    terminal_writestring(name);
+    terminal_writestring("\n");
+    /* Serial mirror: the test build is headless, so the log IS the UI */
+    log_serial(tag);
+    log_serial(name);
+    log_serial("\n");
+}
+
+int run_selftests(void)
 {
     char buf[16];
     passed = 0;
     failed = 0;
     skipped = 0;
+    test_count = 0;
 
-    terminal_writestring("=== Running ");
-    int_to_string(test_count, buf);
-    terminal_writestring(buf);
-    terminal_writestring(" tests ===\n");
-    log_serial("=== Running tests ===\n");
-
-    /* Register all test suites */
     register_checksum_tests();
     register_pmm_tests();
+    register_heap_tests();
+    register_ringbuf_tests();
+    register_sync_tests();
+    register_string_tests();
+    register_jexfs_tests();
+
+    int_to_string(test_count, buf);
+    terminal_writestring("=== Running ");
+    terminal_writestring(buf);
+    terminal_writestring(" self-tests ===\n");
+    log_serial("=== Running ");
+    log_serial(buf);
+    log_serial(" self-tests ===\n");
 
     for (int i = 0; i < test_count; i++) {
         if (tests[i].skipped) {
             test_skip(tests[i].name);
             continue;
         }
+        /* Announce BEFORE running: a hang or fault leaves the guilty
+         * test name as the last line in the log. */
+        announce("[RUN  ] ", tests[i].name);
         int before_fail = failed;
         tests[i].fn();
         if (failed == before_fail) {
@@ -95,16 +116,21 @@ void run_all_tests(void)
         }
     }
 
-    terminal_writestring("\nResult: ");
     int_to_string(passed, buf);
+    terminal_writestring("\nResult: ");
     terminal_writestring(buf);
-    terminal_writestring(" passed, ");
     int_to_string(failed, buf);
+    terminal_writestring(" passed, ");
     terminal_writestring(buf);
-    terminal_writestring(" failed, ");
-    int_to_string(skipped, buf);
-    terminal_writestring(buf);
-    terminal_writestring(" skipped\n");
+    log_serial("selftest result: ");
+    log_serial(buf);
+    int_to_string(failed, buf);
+    log_serial(" failed\n");
+    return failed;
+}
 
-    log_serial("Tests complete\n");
+/* Compatibility with the interactive `runtests` shell command */
+void run_all_tests(void)
+{
+    run_selftests();
 }

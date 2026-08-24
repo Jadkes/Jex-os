@@ -28,6 +28,7 @@
 #include "pmm.h"
 #include "paging.h"
 #include "ports.h"
+#include "test_suite.h"
 #include "kheap.h"
 #include "fat12.h"
 #include "timer.h"
@@ -181,6 +182,24 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
 
     pr_serial("task: pid %d on cpu%d, kstack top 0x%08x\n",
               cur_task() ? cur_task()->id : 0, cpu_id(), kernel_stack_top);
+
+#ifdef JEXOS_SELFTEST
+    pr_info("SELFTEST build: running full kernel self-test suite\n");
+    {
+        int failures = run_selftests();
+        pr_serial("selftest: done, failures=%d\n", failures);
+        /*
+         * isa-debug-exit protocol: a byte written to port 0xf4 makes
+         * QEMU exit with code (value << 1) | 1.
+         * Pass uses 0x10 -> exit 33, deliberately far from QEMU's own
+         * argument-error exit of 1 so an early crash can never look
+         * like a green run.  Failures use 3 -> exit 7.
+         */
+        outb(0xf4, failures ? 3 : 0x10);
+        for (;;)
+            __asm__ volatile("hlt");
+    }
+#endif
 
     pr_info("Starting Shell...\n");
 
