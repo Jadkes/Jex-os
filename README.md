@@ -35,7 +35,9 @@ filesystem, and a self-hosting TCC compiler.
   while a contender spins too long — reports go straight to the uart with no
   console lock, so they survive from any context and name the exact lock;
   `sym <addr>` resolves any hex address to `symbol+offset/size` via the kernel
-  symbol table
+  symbol table; the lock-order validator ships compiled-in but inert — flip it
+  live with the shell's `lockdep` command to start checking every mutex
+  acquire against the recorded ordering table
 
 ## Build & Run
 

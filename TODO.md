@@ -136,10 +136,23 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **ASSERT / WARN_ON**: Runtime assertion checking
 - [x] **Test Framework** (`runtests`): In-kernel unit tests
 - [x] **Heap/Stack Inspector** (`heapcheck`, `stackcheck`)
-- [x] **lockdep**: Lock ordering validator
+- [x] **lockdep**: Lock ordering validator (rewritten: per-task held stacks,
+  name-keyed edge table, BFS cycle query, unit-tested). Ships compiled-in but
+  default-OFF via `lockdep_enabled`; shell `lockdep` toggles it live.
 - [x] **ftrace-lite**: Dynamic function tracing
 - [x] **GDB Stub**: Remote debugging over serial
 - [x] **`sym <addr>`**: resolve hex addresses to symbol+offset/size (kallsyms)
+- [ ] **lockdep always-on crash**: with hooks live on the mutex hot path the
+  selftest suite dies in `mutex_exclusion` (GP/PF, exit 124); bisected past
+  validation and BFS — plain slot claim + push/pop bookkeeping alone still
+  kills it. Fingerprint: faulting frames consume half-words of *stack/return
+  addresses* as segment selectors (CS=0xDA89 ← ret 0x11DA89; err=0xFFA4 ←
+  stack addr 0xFFC2FFA4), i.e. something in the switch/trampoline path
+  misparses frame contents once real acquire/release bodies run. Hooks off or
+  stubbed = suite green; layout verified collision-free in the link map.
+  Next probe: serial breadcrumbs at lockdep entry/exit + cur_task() identity
+  per call on a debug iso, ideally on real 2-CPU hardware.
+
 ### Network Stack
 - [x] **RTL8139 Driver**: DMA ring buffer, interrupt-driven
 - [x] **ARP Cache**: Address resolution with timeout

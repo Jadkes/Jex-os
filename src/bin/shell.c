@@ -121,7 +121,7 @@ static char tab_name_buf[32][256];
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp",     "history", "top", "cpuinfo", "sleep", "spin", "reboot","shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", "sym", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp",     "history", "top", "cpuinfo", "sleep", "spin", "reboot","shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", "sym", "lockdep", NULL
 };
 
 /**
@@ -959,6 +959,7 @@ void help_command() {
     terminal_writestring("  dmesg     - Print kernel log buffer\n");
     more_prompt(&hlp_line);
     terminal_writestring("  sym <addr>- Resolve hex address to symbol\n");
+    terminal_writestring("  lockdep   - Toggle lock-order validator\n");
     terminal_writestring("  ps        - List processes\n");
     more_prompt(&hlp_line);
     terminal_writestring("  kill [-<sig>] <pid> - Send a signal to a process\n");
@@ -1293,6 +1294,26 @@ static void sym_command(const char* arg)
 }
 
 /**
+ * @brief Toggle the lock-order validator at runtime and report state.
+ *
+ * Default is off (see lockdep.h); flipping it on starts validating
+ * every mutex acquire against the recorded ordering table.
+ */
+static void lockdep_command(void)
+{
+    extern int lockdep_enabled;
+    extern int lockdep_warnings;
+    lockdep_enabled = !lockdep_enabled;
+    terminal_writestring("lockdep ");
+    terminal_writestring(lockdep_enabled ? "ENABLED" : "disabled");
+    terminal_writestring(" (warnings so far: ");
+    char n[12];
+    int_to_string(lockdep_warnings, n);
+    terminal_writestring(n);
+    terminal_writestring(")\n");
+}
+
+/**
  * @brief Parse and run the current command in the shell buffer.
  */
 void execute_command() {
@@ -1532,6 +1553,7 @@ void execute_command() {
     }
     else if (strcmp(shell_buffer, "sym") == 0) sym_command("");
     else if (strncmp(shell_buffer, "sym ", 4) == 0) sym_command(shell_buffer + 4);
+    else if (strcmp(shell_buffer, "lockdep") == 0) lockdep_command();
     else if (strcmp(shell_buffer, "ps") == 0) {
         task_list();
     }

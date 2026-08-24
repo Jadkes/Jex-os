@@ -14,6 +14,7 @@
 #include "task.h"
 #include "ports.h"
 #include "kernel/printk.h"
+#include "kernel/lockdep.h"
 #include "panic.h"
 #include <stddef.h>
 
@@ -25,6 +26,10 @@ void mutex_init(mutex_t* m, const char* name)
     m->wait_head = NULL;
     m->wait_tail = NULL;
     m->name = name;
+#ifdef JEXOS_DEBUG
+    m->dep.name = name ? name : "?";
+    m->dep.ip   = 0;
+#endif
     m->lock = (spinlock_t)SPINLOCK_INIT;
 }
 
@@ -81,6 +86,10 @@ void mutex_lock(mutex_t* m)
         if (!m->held) {
             m->held = 1;
             spin_unlock_irqrestore(&m->lock, flags);
+#ifdef JEXOS_DEBUG
+            lockdep_acquire(&m->dep,
+                            (uint32_t)__builtin_return_address(0));
+#endif
             return;
         }
 
@@ -97,6 +106,11 @@ void mutex_lock(mutex_t* m)
 
 void mutex_unlock(mutex_t* m)
 {
+#ifdef JEXOS_DEBUG
+    /* One release hook covers both exit paths: plain release and the
+     * direct handoff below leave via different branches. */
+    lockdep_release(&m->dep);
+#endif
     uint32_t flags;
     spin_lock_irqsave(&m->lock, &flags);
 

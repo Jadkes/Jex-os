@@ -1,240 +1,280 @@
 /**
  * @file lockdep.c
- * @brief Lock Dependency Validator
+ * @brief Lock Dependency Validator — detects lock-order inversions.
  *
- * Detect potential deadlocks by tracking lock acquisition order.
- * Maintains an adjacency matrix of first-seen lock orderings and
- *         performs BFS cycle detection on every new acquisition. Warns on
- *         any inversion that would create a cycle.
- * Thread-safety: All public functions are safe under cli/sti save/restore.
+ * Every mutex acquisition is validated against a persistent table of
+ * observed orderings (edges keyed by lock name = lock class).  Taking
+ * lock B while holding A records "A before B"; if a chain already
+ * requires B before A, the acquisition closes a cycle and we warn at
+ * acquire time — before anyone gets to park forever.
+ *
+ * History: this file was rewritten.  The previous implementation kept
+ * ONE global lock stack shared by every task and cpu and indexed its
+ * adjacency matrix by stack POSITION, so concurrent holders corrupted
+ * each other's state; it also had no callers.  The rewrite gives each
+ * task its own held-stack and keys edges by stable class names.
+ *
+ * Thread-safety: one irqsave spinlock covers all validator state;
+ * callable from any task on any cpu.  Not for ISR context — locks
+ * validated here sleep, so their callers are task context anyway.
  */
 
 #define pr_fmt(fmt) "[LOCKDEP] " fmt
 #include "kernel/printk.h"
 #include "kernel/lockdep.h"
+#include "spinlock.h"
+#include "task.h"
 #include <stdint.h>
 #include <stddef.h>
 
-/*
- * Lock stack — tracks currently held locks in acquisition order.
- * depth allows the same lock to be acquired recursively (nesting).
- */
-static struct {
-    struct lockdep_lock* lock;
-    unsigned int         depth;
-} lock_stack[LOCKDEP_MAX_LOCKS];
+int lockdep_warnings = 0;
+int lockdep_enabled = 0;
 
-static int lock_stack_depth = 0;
 
-/*
- * Adjacency matrix: edges[i][j] == 1 means "lock at stack index i
- * was recorded as acquired before lock at stack index j".
- * Used for cycle detection.
- */
-static uint8_t edges[LOCKDEP_MAX_LOCKS][LOCKDEP_MAX_LOCKS];
+
+struct held_stack {
+    void* owner;                                  /* NULL = free slot */
+    struct lockdep_lock* held[LOCKDEP_MAX_HELD];  /* acquisition order */
+    int depth;
+};
+
+static struct held_stack task_stacks[LOCKDEP_MAX_TASKS];
+
+struct dep_edge {
+    const char* from;   /* must always be taken BEFORE .to */
+    const char* to;
+};
+
+static struct dep_edge edges[LOCKDEP_MAX_EDGES];
+static int edge_count;
+
+static spinlock_t dep_lock = SPINLOCK_INIT;
 
 void lockdep_init(void)
 {
-    int i, j;
-    for (i = 0; i < LOCKDEP_MAX_LOCKS; i++)
-        for (j = 0; j < LOCKDEP_MAX_LOCKS; j++)
-            edges[i][j] = 0;
-    lock_stack_depth = 0;
+    for (int i = 0; i < LOCKDEP_MAX_TASKS; i++) {
+        task_stacks[i].owner = NULL;
+        task_stacks[i].depth = 0;
+    }
+    edge_count = 0;
+    lockdep_warnings = 0;
 }
 
 /*
- * find_lock - Look up a lock in the current lock stack by pointer identity
- * @l: The lock to search for
- * @return Stack index on success, -1 if not held
+ * slot_for - the calling task's held stack, claiming a free slot on
+ * first use.  Returns NULL when the pool is exhausted; such tasks run
+ * untracked rather than breaking the kernel.
  */
-static int find_lock(struct lockdep_lock* l)
+static struct held_stack* slot_for(task_t* self)
 {
-    int i;
-    for (i = 0; i < lock_stack_depth; i++) {
-        if (lock_stack[i].lock == l)
-            return i;
+    for (int i = 0; i < LOCKDEP_MAX_TASKS; i++)
+        if (task_stacks[i].owner == (void*)self)
+            return &task_stacks[i];
+
+    for (int i = 0; i < LOCKDEP_MAX_TASKS; i++) {
+        if (task_stacks[i].owner == NULL) {
+            task_stacks[i].owner = (void*)self;
+            task_stacks[i].depth = 0;
+            return &task_stacks[i];
+        }
     }
-    return -1;
+    return NULL;
 }
 
-/**
- * check_deadlock - BFS for cycle detection
- * @from: Source stack index (the "before" lock)
- * @to:   Target stack index (the "after" lock)
- *
- * After recording that @from must be acquired before @to, search
- * for an existing path from @to back to @from. If one exists, the
- * new ordering creates a cycle and a potential deadlock.
- *
- * @return 1 if a cycle would be created, 0 otherwise
+/*
+ * path_exists - is there a recorded ordering chain requiring @a to be
+ * taken before @b?  Names are compared by pointer identity: every
+ * lock of one class shares the same static name string.
  */
-static int check_deadlock(int from, int to)
+static int path_exists(const char* a, const char* b)
 {
-    int visited[LOCKDEP_MAX_LOCKS];
-    int queue[LOCKDEP_MAX_LOCKS];
+    if (a == b)
+        return 1;
+
+    /* Room for one enqueue per edge in both the seed and expand
+     * phases; the bound makes overflow impossible. */
+    const char* queue[LOCKDEP_MAX_EDGES * 2];
     int qhead = 0, qtail = 0;
-    int i;
 
-    for (i = 0; i < LOCKDEP_MAX_LOCKS; i++)
-        visited[i] = 0;
-
-    queue[qtail++] = to;
-    visited[to] = 1;
+    for (int i = 0; i < edge_count; i++)
+        if (edges[i].from == a)
+            queue[qtail++] = edges[i].to;
 
     while (qhead < qtail) {
-        int cur = queue[qhead++];
-        if (cur == from)
-            return 1; /* cycle found */
-
-        for (i = 0; i < LOCKDEP_MAX_LOCKS; i++) {
-            if (edges[cur][i] && !visited[i]) {
-                visited[i] = 1;
-                queue[qtail++] = i;
+        const char* cur = queue[qhead++];
+        if (cur == b)
+            return 1;
+        for (int i = 0; i < edge_count; i++) {
+            if (edges[i].from != cur)
+                continue;
+            int pending = 0;
+            for (int j = qhead; j < qtail; j++) {
+                if (queue[j] == edges[i].to) {
+                    pending = 1;
+                    break;
+                }
             }
+            if (!pending && qtail < (int)(sizeof(queue) / sizeof(queue[0])))
+                queue[qtail++] = edges[i].to;
         }
     }
     return 0;
 }
 
-void lockdep_acquire(struct lockdep_lock* l, uint32_t ip)
+static int edge_known(const char* from, const char* to)
 {
-    uint32_t eflags;
-    __asm__ volatile("pushf; pop %0" : "=r"(eflags));
-    __asm__ volatile("cli");
+    for (int i = 0; i < edge_count; i++)
+        if (edges[i].from == from && edges[i].to == to)
+            return 1;
+    return 0;
+}
 
-    l->ip = ip;
-
-    /* Check if already held (recursive/nested acquire) */
-    int idx = find_lock(l);
-    if (idx >= 0) {
-        lock_stack[idx].depth++;
-        if (eflags & 0x200)
-            __asm__ volatile("sti");
+static void record_edge(const char* from, const char* to)
+{
+    if (edge_count >= LOCKDEP_MAX_EDGES) {
+        static int full_warned;
+        if (!full_warned) {
+            full_warned = 1;
+            pr_warn("ordering table full (%d edges); further "
+                    "orderings go unvalidated\n", LOCKDEP_MAX_EDGES);
+        }
         return;
     }
+    edges[edge_count].from = from;
+    edges[edge_count].to   = to;
+    edge_count++;
+}
 
-    /*
-     * Check ordering against all currently held locks.
-     * For each held lock, record that it was acquired before the new one.
-     */
-    int new_idx = lock_stack_depth;
-    int i;
-    for (i = 0; i < new_idx; i++) {
-        int from = i;
-        int to   = new_idx;
+int lockdep_would_deadlock(struct lockdep_lock* held,
+                           struct lockdep_lock* want)
+{
+    const char* held_name = held->name ? held->name : "?";
+    const char* want_name = want->name ? want->name : "?";
 
-        if (edges[from][to] == 0) {
-            /* Record new ordering: lock[from] acquired before lock[to] */
-            edges[from][to] = 1;
+    if (!lockdep_enabled)
+        return path_exists(want_name, held_name);
 
-            /* Check if this creates a cycle */
-            if (check_deadlock(from, to)) {
-                pr_warn("POTENTIAL DEADLOCK: '%s' -> '%s' would create cycle!\n",
-                        lock_stack[i].lock->name, l->name);
-                pr_warn("  Caller IP: 0x%x\n", ip);
-                /* Remove the edge to avoid persisting a bad record */
-                edges[from][to] = 0;
+    uint32_t flags;
+    int cycles;
+
+    spin_lock_irqsave(&dep_lock, &flags);
+    cycles = path_exists(want_name, held_name);
+    spin_unlock_irqrestore(&dep_lock, flags);
+    return cycles;
+}
+
+void lockdep_acquire(struct lockdep_lock* l, uint32_t ip)
+{
+    const char* name = l->name ? l->name : "?";
+    uint32_t flags;
+
+    if (!lockdep_enabled)
+        return;
+
+    spin_lock_irqsave(&dep_lock, &flags);
+
+    task_t* self = cur_task();
+    struct held_stack* st = self ? slot_for(self) : NULL;
+    if (!st) {
+        spin_unlock_irqrestore(&dep_lock, flags);
+        return;
+    }
+    for (int i = 0; i < st->depth; i++) {
+        if (st->held[i] == l) {
+            /* Mutexes here are non-recursive: re-acquiring while
+             * held is the classic self-deadlock pattern. */
+            pr_warn("'%s' acquired while already held\n", name);
+            lockdep_warnings++;
+            spin_unlock_irqrestore(&dep_lock, flags);
+            return;
+        }
+    }
+
+    if (st->depth < LOCKDEP_MAX_HELD) {
+        for (int i = 0; i < st->depth; i++) {
+            const char* from = st->held[i]->name ? st->held[i]->name : "?";
+            if (edge_known(from, name))
+                continue;
+            if (path_exists(name, from)) {
+                pr_warn("POTENTIAL DEADLOCK: taking '%s' while holding "
+                        "'%s' reverses an existing order\n", name, from);
+                lockdep_warnings++;
+                continue;
             }
+            record_edge(from, name);
         }
+        l->ip = ip;
+        st->held[st->depth++] = l;
     }
 
-    /* Push onto lock stack — clear stale edges for reused index */
-    if (new_idx < LOCKDEP_MAX_LOCKS) {
-        for (i = 0; i < LOCKDEP_MAX_LOCKS; i++) {
-            edges[new_idx][i] = 0;
-            edges[i][new_idx] = 0;
-        }
-        lock_stack[new_idx].lock  = l;
-        lock_stack[new_idx].depth = 1;
-        lock_stack_depth++;
-    }
-
-    if (eflags & 0x200)
-        __asm__ volatile("sti");
+    spin_unlock_irqrestore(&dep_lock, flags);
 }
 
 void lockdep_release(struct lockdep_lock* l)
 {
-    uint32_t eflags;
-    __asm__ volatile("pushf; pop %0" : "=r"(eflags));
-    __asm__ volatile("cli");
+    const char* name = l->name ? l->name : "?";
+    uint32_t flags;
 
-    int idx = find_lock(l);
-    if (idx < 0) {
-        if (eflags & 0x200)
-            __asm__ volatile("sti");
-        pr_warn("lockdep_release: '%s' not held (IP 0x%x)\n", l->name, l->ip);
+    if (!lockdep_enabled)
         return;
-    }
 
-    if (lock_stack[idx].depth > 1) {
-        /* Nested release — one level fewer */
-        lock_stack[idx].depth--;
-    } else {
-        /* Remove this entry and shift everything down */
-        int i;
-        for (i = idx; i < lock_stack_depth - 1; i++) {
-            lock_stack[i] = lock_stack[i + 1];
-            /* Copy edges from the moved entry */
-            int j;
-            for (j = 0; j < LOCKDEP_MAX_LOCKS; j++) {
-                edges[i][j] = edges[i + 1][j];
-                edges[j][i] = edges[j][i + 1];
+    spin_lock_irqsave(&dep_lock, &flags);
+
+    task_t* self = cur_task();
+    struct held_stack* st = self ? slot_for(self) : NULL;
+    int idx = -1;
+    if (st) {
+        for (int i = 0; i < st->depth; i++) {
+            if (st->held[i] == l) {
+                idx = i;
+                break;
             }
         }
-        /* Clear the now-unused last row/column */
-        int last = lock_stack_depth - 1;
-        for (i = 0; i < LOCKDEP_MAX_LOCKS; i++) {
-            edges[last][i] = 0;
-            edges[i][last] = 0;
-        }
-        lock_stack_depth--;
     }
 
-    if (eflags & 0x200)
-        __asm__ volatile("sti");
+    if (idx < 0) {
+        pr_warn("release of unheld '%s'\n", name);
+        lockdep_warnings++;
+    } else {
+        /* Preserve relative order of the remaining holds: they still
+         * pair into edge checks on the next acquisition. */
+        for (int i = idx; i < st->depth - 1; i++)
+            st->held[i] = st->held[i + 1];
+        st->depth--;
+    }
+
+    spin_unlock_irqrestore(&dep_lock, flags);
+}
+
+void lockdep_task_exit(void* task)
+{
+    uint32_t flags;
+    spin_lock_irqsave(&dep_lock, &flags);
+    for (int i = 0; i < LOCKDEP_MAX_TASKS; i++) {
+        if (task_stacks[i].owner == task) {
+            if (task_stacks[i].depth > 0)
+                pr_warn("exiting task still holds %d lock(s)\n",
+                        task_stacks[i].depth);
+            task_stacks[i].owner = NULL;
+            task_stacks[i].depth = 0;
+        }
+    }
+    spin_unlock_irqrestore(&dep_lock, flags);
 }
 
 void lockdep_dump(void)
 {
-    int i;
-    pr_info("Lock stack (%d deep):\n", lock_stack_depth);
-    for (i = 0; i < lock_stack_depth; i++) {
-        pr_info("  [%d] %s (depth=%u, ip=0x%x)\n",
-                i, lock_stack[i].lock->name, lock_stack[i].depth,
-                lock_stack[i].lock->ip);
+    task_t* self = cur_task();
+    struct held_stack* st = self ? slot_for(self) : NULL;
+
+    pr_info("current task holds %d lock(s)\n", st ? st->depth : 0);
+    if (st) {
+        for (int i = 0; i < st->depth; i++)
+            pr_info("  [%d] %s (ip 0x%x)\n", i,
+                    st->held[i]->name ? st->held[i]->name : "?",
+                    st->held[i]->ip);
     }
-}
-
-/*
- * Helper wrapper for simple spinlock-style locks.
- * Call lockdep_key_lock/unlock at the same places you would cli/sti.
- */
-
-void lockdep_key_init(struct lockdep_key* key, const char* name)
-{
-    key->_dep.name = name;
-    key->_dep.ip   = 0;
-    key->held      = 0;
-}
-
-void lockdep_key_lock(struct lockdep_key* key)
-{
-    /*
-     * Get caller IP from EBP chain.
-     * EBP points to the saved frame pointer; return address is at EBP+4.
-     * We dereference through EBP to get the caller's frame, then read
-     * the return address from there.
-     */
-    uint32_t ip;
-    __asm__ volatile("mov (%%ebp), %%eax; mov 4(%%eax), %0"
-                     : "=r"(ip) :: "eax");
-    lockdep_acquire(&key->_dep, ip);
-    key->held = 1;
-}
-
-void lockdep_key_unlock(struct lockdep_key* key)
-{
-    lockdep_release(&key->_dep);
-    key->held = 0;
+    pr_info("%d recorded ordering edge(s):\n", edge_count);
+    for (int i = 0; i < edge_count; i++)
+        pr_info("  '%s' before '%s'\n", edges[i].from, edges[i].to);
 }

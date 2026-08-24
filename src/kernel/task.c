@@ -20,6 +20,7 @@
 #include "spinlock.h"
 #include "kernel/printk.h"
 #include "kernel/backtrace.h"
+#include "kernel/lockdep.h"
 #include <jexos/errno.h>
 
 extern void log_serial(const char* str);
@@ -753,6 +754,9 @@ int waitpid(int pid, int* status, int options) {
                     else
                         cpus[i].ready_queue = (struct task*)scan->next;
 
+#ifdef JEXOS_DEBUG
+                    lockdep_task_exit(scan);
+#endif
                     kfree(scan);
 
                     /* Reap orphaned zombies reparented to us (PID 1/init):
@@ -811,6 +815,9 @@ static void reap_orphan_zombies(void)
                 else
                     cpus[i].ready_queue = (struct task*)dead->next;
                 s = dead->next;
+#ifdef JEXOS_DEBUG
+                lockdep_task_exit(dead);
+#endif
                 if (dead->kstack)
                     free_kernel_stack((uint32_t)dead->kstack);
                 kfree(dead);

@@ -20,12 +20,17 @@
 
 struct task;
 
+#include "kernel/lockdep.h"
+
 typedef struct mutex {
     int held;                 /* fast-path flag: 1 = owned */
     struct task* wait_head;   /* FIFO of parked tasks */
     struct task* wait_tail;
     spinlock_t lock;          /* guards held + the wait list */
     const char* name;         /* diagnostics only */
+#ifdef JEXOS_DEBUG
+    struct lockdep_lock dep;  /* ordering validation (debug flavor) */
+#endif
 } mutex_t;
 
 /**
