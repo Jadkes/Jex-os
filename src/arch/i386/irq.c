@@ -6,6 +6,7 @@
  */
 
 #include "irq.h"
+#include "task.h"
 #include "idt.h"
 #include "init.h"
 #include "ports.h"
@@ -100,10 +101,20 @@ early_init(init_irq);
  */
 void irq_handler(registers_t regs)
 {
-    /* Notify printk that we are in ISR context (skip slow terminal PIO).
-     * Depth counter, not a flag: handlers nest, so the innermost exit
-     * must not un-suppress the outer frame. */
-    atomic_inc(&in_isr);
+    /*
+     * Track IRQ nesting PER TASK.  A global counter lies across
+     * preemption: when a timer handler switches away mid-IRQ it never
+     * returns to run its own decrement, so every other task would
+     * inherit a phantom "in ISR" until the victim is rescheduled --
+     * enough to make mutex_lock's sleep assert fire spuriously.
+     *
+     * The global in_isr stays for printk's terminal-PIO suppression,
+     * where a stale-positive value is only a performance detail.
+     */
+    atomic_inc(&in_isr);   /* conservative global for printk */
+    task_t* irq_task = cur_task();
+    if (irq_task)
+        irq_task->isr_depth++;
 
     /*
      * Send End of Interrupt (EOI) BEFORE calling the handler.
@@ -135,5 +146,7 @@ void irq_handler(registers_t regs)
         handler(&regs);
     }
 
+    if (irq_task)
+        irq_task->isr_depth--;
     atomic_dec(&in_isr);
 }

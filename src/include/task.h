@@ -51,6 +51,12 @@ typedef struct task {
     /* Signal handling */
     uint32_t signal_pending;            /**< Bitmask: pending signals (set by kill, cleared by delivery) */
     uint32_t signal_blocked;            /**< Bitmask: blocked signals */
+    uint32_t isr_depth;                 /**< IRQ nesting depth for THIS task.
+                                             A global counter lies across
+                                             preemption: the victim stays
+                                             frozen inside irq_handler while
+                                             other tasks run, so atomic-context
+                                             checks must be per-task. */
     void*    signal_handlers[32];       /**< Per-signal handlers (NULL = SIG_DFL) */
 } task_t;
 
@@ -110,6 +116,16 @@ int fork(registers_t* regs);
  * @return Child PID on success, -1 on allocation failure.
  */
 int kernel_fork(void (*func)(void*), void* arg);
+
+/**
+ * kernel_fork_on - spawn a kernel task running func(arg) on a specific CPU.
+ * @func: entry point; returning from it exits the task.
+ * @arg: passed through to func.
+ * @cpu: target CPU index, or -1 to place by load.
+ *
+ * @return child pid, or negative errno.
+ */
+int kernel_fork_on(void (*func)(void*), void* arg, int cpu);
 
 /**
  * @brief Get the PID of the currently running task.

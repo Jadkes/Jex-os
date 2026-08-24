@@ -455,6 +455,7 @@ int fork(registers_t* regs) {
     child->exit_code = 0;
     strcpy(child->name, parent->name);
     child->signal_pending = 0;
+    child->isr_depth = 0;
     child->signal_blocked = parent->signal_blocked;
     for (int i = 0; i < 32; i++)
         child->signal_handlers[i] = parent->signal_handlers[i];
@@ -595,6 +596,7 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
     child->exit_code = 0;
     strcpy(child->name, parent->name);
     child->signal_pending = 0;
+    child->isr_depth = 0;
     child->signal_blocked = parent->signal_blocked;
     for (int i = 0; i < 32; i++)
         child->signal_handlers[i] = parent->signal_handlers[i];

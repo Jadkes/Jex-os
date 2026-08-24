@@ -55,10 +55,18 @@ static task_t* mutex_waiter_pop(mutex_t* m)
  * scheduled.  Turn that silent deadlock into a named panic instead. */
 static void assert_can_sleep(const mutex_t* m)
 {
-    if (in_isr || !interrupts_enabled()) {
+    /*
+     * Only THIS task's depth decides.  The global counter can be
+     * stranded positive by a preempted victim frozen inside
+     * irq_handler; consulting it here would make unrelated tasks
+     * fail their sleep assert through no fault of their own.
+     */
+    task_t* self = cur_task();
+    uint32_t irq_depth = self ? self->isr_depth : in_isr;
+    if (irq_depth || !interrupts_enabled()) {
         pr_err("mutex '%s': sleep attempted in %s\n",
                m->name ? m->name : "?",
-               in_isr ? "ISR" : "irqs-off region");
+               (in_isr || irq_depth) ? "ISR" : "irqs-off region");
         panic_assert("atomic-context sleep", __FILE__, __LINE__);
     }
 }
