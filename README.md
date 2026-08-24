@@ -60,6 +60,16 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 
 ## Status
 
+v0.7.9: the kernel now tests itself. `make test` boots straight into an
+in-kernel suite — 21 tests over the allocator, ring buffer, sync
+primitives, printf and JexFS — and reports pass/fail through the
+isa-debug-exit port so `make run-test` fails hard on any regression,
+hang or panic. Writing the suite paid for itself immediately: it caught
+two kheap lock leaks, undetectable slab double frees, a stranded ISR
+depth counter that framed innocent tasks for illegal sleeps, and JexFS
+directory scanners that treated zero padding as end-of-directory.
+`FLAVOR=debug` builds the everything-on serial log for chasing the rest.
+
 master: the kernel grew real blocking synchronization. Mutexes park losers
 on a FIFO and hand off directly on unlock (no thundering herd), completions
 cover task↔ISR events, JexFS metadata runs under one coarse sleeping lock so

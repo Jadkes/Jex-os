@@ -4,6 +4,16 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ## ✅ Completed Milestones
 
+### v0.7.9 — Selftest Suite, Build Flavors, Bug Harvest
+
+- [x] **Build Flavors**: `FLAVOR=debug|test` variants with separate object dirs and artifacts; debug cranks serial verbosity to everything, test replaces the shell with the suite
+- [x] **In-Kernel Selftest Runner**: registered suites announce `[RUN]` before executing (a hang names its test), results mirror to serial, and the exit code goes out the isa-debug-exit port — `make run-test` streams live output headless and fails on 7 (fail) or timeout (hang); pass is 33 because qemu arg errors also exit 1
+- [x] **Test Suites**: 21 tests — heap classes/double-free/OOM, ringbuf wrap/full-drop, SMP atomic hammer via `kernel_fork_on`, mutex exclusion, completion early-signal, memops/snprintf truncation+formats, JexFS 9KB roundtrip/remove-missing/concurrent writers
+- [x] **kheap Lock Leaks**: kmalloc OOM path and kfree invalid-pointer path returned holding `kheap_lock` with IRQs off — later allocations froze forever (the mystery hang)
+- [x] **Slab Double-Free Detection**: free_count only catches whole-slab over-freeing, so a same-object double free aliased two freelist entries; per-slab in-use bitmap rejects it and corrupt freelists outright
+- [x] **Per-Task ISR Depth**: the global `in_isr` lied across preemption — a victim frozen in `irq_handler` left it stranded positive and unrelated tasks failed the can-sleep assert; every task counts its own depth now, the global only gates printk
+- [x] **JexFS Dir Scanners**: zeroed entries were end-of-directory, hiding anything appended past a gap (create ok, open/remove ENOENT); scanners step holes and clamp to the next block boundary after each walk (fixes a livelock too); list_dir skips holes instead of truncating; read/write_block reject out-of-range blocks instead of issuing raw IDE sectors
+
 ### master — Blocking Sync, FS Serialization, Fault Reporting
 
 - [x] **Sleeping Mutexes**: `mutex_t` parks losers on a FIFO under the scheduler (new `STATE_BLOCKED` skipped by every pick loop), atomic fast path, direct ownership handoff on unlock, zombie waiters dropped so unlock can't resurrect corpses; `sys_kill` un-parks its target so SIGKILL reaches blocked tasks
