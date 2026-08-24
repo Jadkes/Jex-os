@@ -19,6 +19,13 @@
 #define SLAB_MAX_SIZE   2048
 #define SLAB_CACHE_COUNT 8
 
+/* Per-object state lives in a bitmap after the header.  The free-list
+ * alone cannot detect freeing the SAME object twice (the over-free
+ * count check only trips when every object is already free), and one
+ * duplicated index silently aliases two allocations.  32 bytes covers
+ * the largest slab this allocator can build (254 x 16B objects). */
+#define SLAB_BITMAP_BYTES 32
+
 typedef struct slab {
     uint32_t        magic;      /* SLAB_MAGIC or LARGE_MAGIC */
     struct slab*    next;       /* Next slab in cache's linked list */
@@ -26,7 +33,7 @@ typedef struct slab {
     uint32_t        obj_count;  /* Total objects in this slab */
     uint32_t        free_count; /* Number of free objects remaining */
     uint32_t        free_head;  /* Index of first free object (0xFFFFFFFF = empty) */
-    uint32_t        pad;        /* Align to 32 bytes */
+    uint8_t         inuse[SLAB_BITMAP_BYTES]; /* 1 = allocated, 0 = free */
 } __attribute__((packed)) slab_t;
 
 typedef struct {
@@ -58,6 +65,7 @@ void* memcpy(void* dest, const void* src, size_t n);
 void* memset(void* s, int c, size_t n);
 size_t strlen(const char* s);
 int strcmp(const char* s1, const char* s2);
+int memcmp(const void* a1, const void* a2, size_t n);
 int strncmp(const char* s1, const char* s2, size_t n);
 char* strcpy(char* dest, const char* src);
 char* strcat(char* dest, const char* src);

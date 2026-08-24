@@ -14,6 +14,8 @@
 #include "init.h"
 #include <stddef.h>
 #include <stdint.h>
+#include "serial.h"
+#include "kernel/printk.h"
 
 static spinlock_t kheap_lock = SPINLOCK_INIT;
 
@@ -45,6 +47,7 @@ static slab_t* slab_create(int cache_idx) {
     slab->obj_count = cache->objs_per_slab;
     slab->free_count = cache->objs_per_slab;
     slab->free_head = 0;
+    memset(slab->inuse, 0, sizeof(slab->inuse));
 
     /* Build intra-slab free list via indices stored in free object memory */
     uint8_t* data = (uint8_t*)((uint32_t)slab + sizeof(slab_t));
@@ -77,9 +80,12 @@ static void* slab_alloc(int cache_idx) {
     /* Pop from free list: object stores index of next free object */
     uint8_t* data = (uint8_t*)((uint32_t)slab + sizeof(slab_t));
     uint32_t idx = slab->free_head;
+    if (idx >= slab->obj_count)
+        return NULL;   /* freelist corrupt — refuse rather than alias */
     uint32_t* obj = (uint32_t*)(data + idx * slab->obj_size);
     slab->free_head = *obj;
     slab->free_count--;
+    slab->inuse[idx >> 3] |= (uint8_t)(1u << (idx & 7));
 
     return (void*)obj;
 }
@@ -89,15 +95,17 @@ static void slab_free(slab_t* slab, void* ptr) {
     uint32_t offset = (uint32_t)ptr - (uint32_t)data;
     uint32_t idx = offset / slab->obj_size;
 
-    /* Reject pointers outside the object area, interior pointers and
-     * over-frees — any of these would corrupt the intra-slab free list */
+    /* Reject pointers outside the object area, interior pointers,
+     * over-frees and DOUBLE FREES — any of these would corrupt the
+     * intra-slab free list or alias two live allocations */
     if ((int32_t)offset < 0 ||
         offset % slab->obj_size != 0 ||
         idx >= slab->obj_count ||
-        slab->free_count >= slab->obj_count)
+        !(slab->inuse[idx >> 3] & (1u << (idx & 7))))
         return;
 
     /* Push onto free list */
+    slab->inuse[idx >> 3] &= (uint8_t)~(1u << (idx & 7));
     uint32_t* obj = (uint32_t*)(data + idx * slab->obj_size);
     *obj = slab->free_head;
     slab->free_head = idx;
@@ -131,7 +139,10 @@ void* kmalloc(size_t size) {
         uint32_t total = size + sizeof(large_hdr_t);
         uint32_t pages = (total + SLAB_PAGE_SIZE - 1) / SLAB_PAGE_SIZE;
         large_hdr_t* hdr = (large_hdr_t*)pmm_alloc_blocks(pages);
-        if (!hdr) return NULL;
+        if (!hdr) {
+            spin_unlock_irqrestore(&kheap_lock, flags);
+            return NULL;
+        }
 
         hdr->magic = LARGE_MAGIC;
         hdr->pages = pages;
@@ -167,7 +178,10 @@ void kfree(void* ptr) {
     spin_lock_irqsave(&kheap_lock, &flags);
 
     slab_t* slab = ptr_to_slab(ptr);
-    if (!slab) return;
+    if (!slab) {
+        spin_unlock_irqrestore(&kheap_lock, flags);
+        return;
+    }
 
     if (slab->magic == SLAB_MAGIC) {
         slab_free(slab, ptr);
@@ -279,6 +293,16 @@ size_t strlen(const char* s) {
 int strcmp(const char* s1, const char* s2) {
     while(*s1 && (*s1 == *s2)) { s1++; s2++; }
     return *(const unsigned char*)s1 - *(const unsigned char*)s2;
+}
+
+int memcmp(const void* a1, const void* a2, size_t n) {
+    const unsigned char* p1 = a1;
+    const unsigned char* p2 = a2;
+    while(n--) {
+        if(*p1 != *p2) return *p1 - *p2;
+        p1++; p2++;
+    }
+    return 0;
 }
 
 int strncmp(const char* s1, const char* s2, size_t n) {
