@@ -177,8 +177,8 @@ task_t* task_from_pid(int pid);
 
 /* Serialize read-side scans of any CPU's ready queue from outside
  * task.c (ps/top/cpuinfo).  Not nestable with itself. */
-void tasks_lock(void);
-void tasks_unlock(void);
+void tasks_lock_irqsave(uint32_t* flags);
+void tasks_unlock_irqrestore(uint32_t flags);
 
 /* Create the idle task for an AP before it is woken (BSP-only call). */
 void task_spawn_idle(int cpu_index);

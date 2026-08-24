@@ -385,8 +385,6 @@ void print_logo() {
     terminal_setcolor(VGA_COLOR_LIGHT_GRAY);
 }
 
-
-
 /**
  * @brief Parse dotted-decimal IP string (e.g. "10.0.2.2") into uint32_t (net order).
  */
@@ -1560,7 +1558,8 @@ void execute_command() {
          * its ready queue and marked current (the normal state on a CPU)
          * must be counted exactly once, or every percentage halves. */
         uint32_t total = 0;
-        tasks_lock();   /* queues may be reaped on another core mid-scan */
+        uint32_t tl_flags;
+        tasks_lock_irqsave(&tl_flags);
         for (int ci = 0; ci < cpu_count; ci++) {
             for (task_t* task = (task_t*)cpus[ci].ready_queue; task; task = task->next)
                 total += task->cpu_ticks;
@@ -1619,7 +1618,7 @@ void execute_command() {
                      cur ? cur->name : "(idle)");
             terminal_writestring(buf);
         }
-        tasks_unlock();
+        tasks_unlock_irqrestore(tl_flags);
     }
     else if (strcmp(shell_buffer, "cpuinfo") == 0) {
         cpuinfo_command();

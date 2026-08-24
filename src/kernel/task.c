@@ -39,9 +39,21 @@ static spinlock_t pid_lock = SPINLOCK_INIT;
 /**
  * @brief Serialize cross-CPU task-queue scans for code outside task.c
  *        (shell ps/top/cpuinfo).  Nesting is NOT supported.
+ *
+ * The irqsave pair is mandatory here: callers hold the lock across
+ * terminal output, so a timer tick can nest mid-hold on the same cpu.
+ * A bare spin_lock would let the tick's scheduler path spin forever on
+ * a lock its own interrupted holder can never release.
  */
-void tasks_lock(void)   { spin_lock(&tasklist_lock); }
-void tasks_unlock(void) { spin_unlock(&tasklist_lock); }
+void tasks_lock_irqsave(uint32_t* flags)
+{
+    spin_lock_irqsave(&tasklist_lock, flags);
+}
+
+void tasks_unlock_irqrestore(uint32_t flags)
+{
+    spin_unlock_irqrestore(&tasklist_lock, flags);
+}
 
 /**
  * @brief Pick the online CPU with the shortest ready queue.
