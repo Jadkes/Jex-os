@@ -73,7 +73,12 @@ static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
 
 void read_block(uint32_t block, uint8_t *buffer)
 {
-    if (ramdisk_base && block < ramdisk_blocks) {
+    if (ramdisk_base) {
+        if (block >= ramdisk_blocks) {
+            pr_serial("jexfs: read_block out of range block=%u\n", block);
+            memset(buffer, 0, BLOCK_SIZE);
+            return;
+        }
         memcpy(buffer, ramdisk_base + block * BLOCK_SIZE, BLOCK_SIZE);
         return;
     }
@@ -83,7 +88,11 @@ void read_block(uint32_t block, uint8_t *buffer)
 
 void write_block(uint32_t block, const uint8_t *buffer)
 {
-    if (ramdisk_base && block < ramdisk_blocks) {
+    if (ramdisk_base) {
+        if (block >= ramdisk_blocks) {
+            pr_serial("jexfs: write_block out of range block=%u\n", block);
+            return;
+        }
         memcpy(ramdisk_base + block * BLOCK_SIZE, buffer, BLOCK_SIZE);
         return;
     }
@@ -327,13 +336,21 @@ static int jexfs_find_entry(uint32_t dir_ino, const char *name, uint16_t name_le
         read_block(phys, buf);
         while (bo + 5 <= BLOCK_SIZE && off < di.size) {
             struct jex_dir_entry *de = (struct jex_dir_entry *)(buf + bo);
-            if (de->inode == 0 && de->name_len == 0) return -ENOENT;
+            /* Zeroed bytes within di.size are holes (padding or tombstones),
+             * not end-of-directory -- di.size is the only authoritative end */
+            if (de->inode == 0 && de->name_len == 0) {
+                bo += 5; off += 5;
+                continue;
+            }
             if (de->inode != 0 && de->name_len == name_len
                 && jfs_memcmp(de->name, name, name_len) == 0)
                 return (int)de->inode;
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
+        /* Inner walk stopped mid-block or at its edge -- jump to the next
+         * block boundary so the outer loop always makes progress */
+        off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     return -ENOENT;
 }
@@ -588,7 +605,10 @@ static int jexfs_remove_nolock(const char *name)
         read_block(phys, buf);
         while (bo + 5 <= BLOCK_SIZE && off < di.size) {
             struct jex_dir_entry *de = (struct jex_dir_entry *)(buf + bo);
-            if (de->inode == 0 && de->name_len == 0) goto not_found;
+            if (de->inode == 0 && de->name_len == 0) {
+                bo += 5; off += 5;
+                continue;
+            }
             if (de->inode != 0 && de->name_len == nl
                 && jfs_memcmp(de->name, name, nl) == 0) {
                 /* Found -- free inode and blocks */
@@ -635,8 +655,10 @@ static int jexfs_remove_nolock(const char *name)
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
+        /* Inner walk stopped mid-block or at its edge -- jump to the next
+         * block boundary so the outer loop always makes progress */
+        off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
-not_found:
     return -ENOENT;
 }
 
@@ -689,6 +711,9 @@ static int jexfs_rename_nolock(const char *old_name, const char *new_name)
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
+        /* Inner walk stopped mid-block or at its edge -- jump to the next
+         * block boundary so the outer loop always makes progress */
+        off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     return -ENOENT;
 }
@@ -720,7 +745,10 @@ static void jexfs_list_dir_nolock(uint32_t inode_idx)
         read_block(phys, buf);
         while (bo + 5 <= BLOCK_SIZE && off < di.size) {
             struct jex_dir_entry *de = (struct jex_dir_entry *)(buf + bo);
-            if (de->inode == 0 && de->name_len == 0) goto list_end;
+            if (de->inode == 0 && de->name_len == 0) {
+                bo += 5; off += 5;
+                continue;
+            }
             if (de->inode != 0) {
                 /* Skip . and .. */
                 if (de->name_len == 1 && de->name[0] == '.') goto next;
@@ -734,8 +762,10 @@ next:
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
+        /* Inner walk stopped mid-block or at its edge -- jump to the next
+         * block boundary so the outer loop always makes progress */
+        off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
-list_end:
     terminal_writestring("\n");
 }
 
