@@ -27,13 +27,15 @@ filesystem, and a self-hosting TCC compiler.
   instead of deadlocking quietly
 - **Shell** — tab completion, command history, `ps`/`kill`/`top`, vix editor
 - **Debugging** — panic screen with register dump and stack trace, `dmesg`,
-  GDB stub, ftrace-lite, lockdep; a dedicated-stack double-fault landing pad
+  GDB stub, ftrace-lite; a dedicated-stack double-fault landing pad
   reports crashes that would otherwise reset silently; linux-style boot log on
   the serial console (`-serial stdio`) while VGA output stays clean; the debug
   flavor adds a spinlock watchdog that prints `[[ SPINCONTEND @ addr ]]` the
   first time a lock word is contended and repeats `[[ SPINLOCK STUCK @ addr ]]`
   while a contender spins too long — reports go straight to the uart with no
-  console lock, so they survive from any context and name the exact lock
+  console lock, so they survive from any context and name the exact lock;
+  `sym <addr>` resolves any hex address to `symbol+offset/size` via the kernel
+  symbol table
 
 ## Build & Run
 

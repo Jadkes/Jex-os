@@ -52,6 +52,7 @@ void register_heap_tests(void);
 void register_ringbuf_tests(void);
 void register_sync_tests(void);
 void register_string_tests(void);
+void register_kallsyms_tests(void);
 void register_jexfs_tests(void);
 
 #endif /* TEST_SUITE_H */

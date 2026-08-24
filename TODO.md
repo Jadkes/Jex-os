@@ -139,7 +139,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **lockdep**: Lock ordering validator
 - [x] **ftrace-lite**: Dynamic function tracing
 - [x] **GDB Stub**: Remote debugging over serial
-
+- [x] **`sym <addr>`**: resolve hex addresses to symbol+offset/size (kallsyms)
 ### Network Stack
 - [x] **RTL8139 Driver**: DMA ring buffer, interrupt-driven
 - [x] **ARP Cache**: Address resolution with timeout

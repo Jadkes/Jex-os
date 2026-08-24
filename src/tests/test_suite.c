@@ -91,6 +91,7 @@ int run_selftests(void)
     register_ringbuf_tests();
     register_sync_tests();
     register_string_tests();
+    register_kallsyms_tests();
     register_jexfs_tests();
 
     int_to_string(test_count, buf);

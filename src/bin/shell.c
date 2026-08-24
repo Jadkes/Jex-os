@@ -26,6 +26,7 @@
 #include "task.h"
 #include "panic.h"
 #include "kernel/backtrace.h"
+#include "kernel/kallsyms.h"
 #include "kernel/workqueue.h"
 #include "klog.h"
 #include "timer.h"
@@ -120,7 +121,7 @@ static char tab_name_buf[32][256];
  */
 static const char* shell_commands[] = {
     "help", "ls", "cd", "touch", "mkdir", "vix", "cat", "cp", "mv", "rm",
-    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp",     "history", "top", "cpuinfo", "sleep", "spin", "reboot","shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", NULL
+    "mkcode", "tcc", "cc", "free", "netlog", "net", "ping", "loopback", "dns", "arp", "route", "tcpdump", "nicregs", "fetch", "serve", "dhcp",     "history", "top", "cpuinfo", "sleep", "spin", "reboot","shutdown", "clear", "music", "dump", "bt", "backtrace", "runtests", "heapcheck", "stackcheck", "ftrace", "sym", NULL
 };
 
 /**
@@ -957,6 +958,7 @@ void help_command() {
     more_prompt(&hlp_line);
     terminal_writestring("  dmesg     - Print kernel log buffer\n");
     more_prompt(&hlp_line);
+    terminal_writestring("  sym <addr>- Resolve hex address to symbol\n");
     terminal_writestring("  ps        - List processes\n");
     more_prompt(&hlp_line);
     terminal_writestring("  kill [-<sig>] <pid> - Send a signal to a process\n");
@@ -1239,6 +1241,57 @@ static void do_ls(const char *arg)
     jexfs_unlock();
 }
 
+
+/**
+ * @brief Resolve a hex address to symbol+offset/size via kallsyms.
+ *
+ * Usage: sym <hexaddr>.  Accepts an optional 0x prefix.  Prints
+ * "Unknown" for addresses inside no known symbol (data labels are
+ * not in the table; it only carries functions).
+ */
+static void sym_command(const char* arg)
+{
+    while (*arg == ' ') arg++;
+    if (arg[0] == '0' && (arg[1] == 'x' || arg[1] == 'X')) arg += 2;
+
+    uint32_t addr = 0;
+    int digits = 0;
+    while (*arg != '\0') {
+        char c = *arg;
+        uint32_t nib;
+        if (c >= '0' && c <= '9')       nib = (uint32_t)(c - '0');
+        else if (c >= 'a' && c <= 'f')  nib = (uint32_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F')  nib = (uint32_t)(c - 'A' + 10);
+        else break;
+        addr = (addr << 4) | nib;
+        digits++;
+        arg++;
+    }
+    while (*arg == ' ') arg++;
+    if (digits == 0 || digits > 8 || *arg != '\0') {
+        terminal_writestring("Usage: sym <hexaddr>\n");
+        return;
+    }
+
+    uint32_t offset, size;
+    const char* name = kallsyms_lookup(addr, &offset, &size);
+    char buf[12];
+    terminal_writestring("0x");
+    format_hex(addr, buf);
+    terminal_writestring(buf);
+    terminal_writestring(" = ");
+    terminal_writestring(name);
+    if (size > 0) {
+        terminal_writestring("+0x");
+        format_hex(offset, buf);
+        terminal_writestring(buf);
+        terminal_writestring("/0x");
+        format_hex(size, buf);
+        terminal_writestring(buf);
+    }
+    terminal_writestring("\n");
+}
+
 /**
  * @brief Parse and run the current command in the shell buffer.
  */
@@ -1477,6 +1530,8 @@ void execute_command() {
     else if (strcmp(shell_buffer, "dmesg") == 0) {
         klog_dump();
     }
+    else if (strcmp(shell_buffer, "sym") == 0) sym_command("");
+    else if (strncmp(shell_buffer, "sym ", 4) == 0) sym_command(shell_buffer + 4);
     else if (strcmp(shell_buffer, "ps") == 0) {
         task_list();
     }
