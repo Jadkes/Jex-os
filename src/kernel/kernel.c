@@ -165,6 +165,11 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     void* kernel_stack = kmalloc(KERNEL_STACK_SIZE);
     kernel_stack_top = (uint32_t)kernel_stack + KERNEL_STACK_SIZE;
 
+    /* Do NOT overwrite cur_task()->kstack here — it was already set to
+     * the real kernel stack page by alloc_kernel_stack() in init_tasking().
+     * Overwriting it with the heap address would make set_kernel_stack()
+     * point TSS.esp0 at heap memory instead of the mapped stack page. */
+
     /* Enable interrupts globally (STI instruction) */
     __asm__ volatile("sti");
 

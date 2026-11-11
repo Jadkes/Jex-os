@@ -34,6 +34,125 @@ extern void log_hex_serial(uint32_t n);
  */
 static spinlock_t tasklist_lock = SPINLOCK_INIT;
 
+static void tasklist_stuck_dump(const volatile void* lock_word);
+
+/* Deadlock forensics: the spinlock watchdog calls this when a lock is
+ * declared stuck.  Dumps the PCB of whoever is spinning plus the
+ * per-cpu scheduler slots, so a hang log shows both sides at once.
+ * Raw serial only -- must be callable from any context. */
+void (*spin_stuck_hook)(const volatile void* lock_word) = tasklist_stuck_dump;
+
+static void tasklist_stuck_dump(const volatile void* lock_word)
+{
+    uint32_t eflags;
+    __asm__ volatile("pushfl; pop %0" : "=r"(eflags));
+
+    log_serial("[[ STUCKDUMP ]] lock=");
+    log_hex_serial((uint32_t)(uintptr_t)lock_word);
+    log_serial(" word=");
+    log_hex_serial(*(volatile uint32_t*)lock_word);
+    log_serial(" if=");
+    log_hex_serial((eflags >> 9) & 1);
+    log_serial("\n");
+
+    task_t* self = cur_task();
+    if (self) {
+        log_serial("spin: id=");
+        log_hex_serial(self->id);
+        log_serial(" state=");
+        log_hex_serial(self->state);
+        log_serial(" eip=");
+        log_hex_serial(self->eip);
+        log_serial(" esp=");
+        log_hex_serial(self->esp);
+        log_serial(" on_cpu=");
+        log_hex_serial(self->on_cpu);
+        log_serial("\n");
+    }
+
+    for (int i = 0; i < cpu_count && i < NR_CPUS; i++) {
+        task_t* c = cpus[i].current_task;
+        task_t* p = cpus[i].prev_run;
+        log_serial("cpu");
+        log_hex_serial(i);
+        log_serial(": cur=");
+        log_hex_serial(c ? (uint32_t)c->id : 0xDEADDEADu);
+        log_serial(" prev=");
+        log_hex_serial(p ? (uint32_t)p->id : 0xDEADDEADu);
+        log_serial("\n");
+    }
+
+    /* Queue integrity: a scan loop wedged INSIDE a tasklist_lock hold
+     * (reparent, load-pick) is indistinguishable from a lost unlock
+     * without this.  Bound the walk; queues are NULL-terminated by
+     * construction, so hitting the bound means a cycle or garbage
+     * next-pointer. */
+    for (int i = 0; i < cpu_count && i < NR_CPUS; i++) {
+        int n = 0;
+        task_t* t = (task_t*)cpus[i].ready_queue;
+        while (t && n < 64) {
+            n++;
+            t = t->next;
+        }
+        log_serial("q");
+        log_hex_serial(i);
+        log_serial(": len=");
+        log_hex_serial(n);
+        if (t)
+            log_serial(" CYCLE-OR-BAD-NEXT");
+        log_serial("\n");
+    }
+}
+
+/* Switch-starvation watchdog (debug flavors).  Timer ticks bump the
+ * counter; every completed pick resets it, including the resume-self
+ * case.  A trip means EVERY queue is parked or wedged -- nothing will
+ * ever spin on a lock again, so no STUCKDUMP can fire and this dump is
+ * the only witness.  The idle-park branch deliberately does not reset:
+ * an all-idle system IS starvation of everything else. */
+volatile uint32_t sched_starve_ticks;
+
+#define STARVE_DUMP_FIRST 32u   /* ~0.3s of slices before first scream */
+#define STARVE_DUMP_EVERY 512u  /* keep reminding while still wedged */
+
+void sched_starve_dump(void)
+{
+    log_serial("[[ STARVED ]] no switch for ");
+    log_hex_serial(sched_starve_ticks);
+    log_serial(" ticks; task states:\n");
+    for (int i = 0; i < cpu_count && i < NR_CPUS; i++) {
+        task_t* t = (task_t*)cpus[i].ready_queue;
+        int n = 0;
+        while (t && n < 64) {
+            log_serial(" q");
+            log_hex_serial(i);
+            log_serial(" id=");
+            log_hex_serial(t->id);
+            log_serial(" st=");
+            log_hex_serial(t->state);
+            log_serial(" oc=");
+            log_hex_serial(t->on_cpu);
+            log_serial("\n");
+            n++;
+            t = t->next;
+        }
+    }
+}
+
+void sched_watchdog_tick(void)
+{
+    sched_starve_ticks++;
+    if (sched_starve_ticks == STARVE_DUMP_FIRST ||
+        (sched_starve_ticks > STARVE_DUMP_FIRST &&
+         (sched_starve_ticks - STARVE_DUMP_FIRST) % STARVE_DUMP_EVERY == 0))
+        sched_starve_dump();
+}
+
+void sched_watchdog_reset(void)
+{
+    sched_starve_ticks = 0;
+}
+
 /* Hands out PIDs atomically across CPUs */
 static spinlock_t pid_lock = SPINLOCK_INIT;
 
@@ -142,6 +261,7 @@ void init_tasking() {
     cur_task()->cpu_ticks = 0;
     cur_task()->next = NULL;
     cur_task()->state = STATE_RUNNING;
+    cur_task()->on_cpu = 0;   /* bootstrap runs on the BSP now */
     cur_task()->parent_pid = 0;
     cur_task()->exit_code = 0;
     cur_task()->signal_pending = 0;
@@ -264,21 +384,53 @@ void task_wake(task_t* t)
     spin_unlock_irqrestore(&tasklist_lock, flags);
 }
 
-void task_switch() {
+/* Naked entry stub: cli is the absolute first instruction — no compiler
+ * prologue, no window for a timer ISR to nest a second task_switch on
+ * this stack.  Jumps into the real implementation which is a normal C
+ * function with a proper frame pointer. */
+__attribute__((naked)) void task_switch(void) {
+    __asm__ volatile("cli\n\tjmp task_switch_impl");
+}
+
+void task_switch_impl() {
+
     task_t* ct = cur_task();
-    if (!ct) return;
+    if (!ct) {
+        __asm__ volatile("sti");
+        return;
+    }
 
     uint32_t esp, ebp, eip;
     __asm__ volatile("mov %%esp, %0" : "=r"(esp));
     __asm__ volatile("mov %%ebp, %0" : "=r"(ebp));
 
-    /* Magic return for the next time we are switched TO */
+    /* Magic return for the next time we are switched TO.
+     * The naked stub did cli, so IF=0 here.  Re-enable: for ISR returns
+     * iret will also restore IF, but for direct yields (completion_wait,
+     * mutex_block) this is the only path back to IF=1. */
     eip = read_eip();
-    if (eip == 0x12345) return;
+    if (eip == 0x12345) {
+        __asm__ volatile("sti");
+        return;
+    }
 
     ct->eip = eip;
     ct->esp = esp;
     ct->ebp = ebp;
+
+#ifdef JEXOS_SWITCH_TRACE
+    /* Per-switch context dump.  Off by default: ~2000 lines/60s with an
+     * idle PID 2, which buries everything else in the serial log.  Enable
+     * with `make SWITCH_TRACE=1` when chasing the switch/trampoline path. */
+    if (ct->id == 2) {
+        extern void log_serial(const char* s);
+        extern void log_hex_serial(uint32_t n);
+        log_serial("[SAVE2 cpu="); log_hex_serial(cpu_id());
+        log_serial(" eip="); log_hex_serial(eip);
+        log_serial(" esp="); log_hex_serial(esp);
+        log_serial("]\n");
+    }
+#endif
 
     /*
      * Pick the next task under the global lock — other CPUs mutate this
@@ -286,28 +438,61 @@ void task_switch() {
      * the choice below is already final, and holding a spinlock across a
      * switch would freeze whichever CPU preempts us mid-jump.
      */
-    uint32_t tl_flags;
-    spin_lock_irqsave(&tasklist_lock, &tl_flags);
+    spin_lock(&tasklist_lock);
 
-    task_t* start = ct;
-    ct = ct->next;
-    if (!ct) ct = rdy_queue();
+    /*
+     * Claim protocol: a task is only ever scheduled by one CPU at a
+     * time.  The ring is global, so without claims two near-simultaneous
+     * ticks can pick the same RUNNING task and run two CPUs on one
+     * kernel stack -- the frames interleave and someone later irets
+     * through garbage.  The outgoing task keeps its claim until this
+     * CPU's next switch: we are still physically unwinding off its
+     * stack until the context jump below, so it must not be resumed
+     * anywhere else in that window.  Its predecessor, idle since our
+     * last jump, is released here instead.
+     */
+    int me = cpu_id();
+    task_t* outgoing = ct;
+    if (cpus[me].prev_run)
+        cpus[me].prev_run->on_cpu = -1;
+    cpus[me].prev_run = outgoing;
 
-    /* Skip tasks that cannot run right now: zombies await reaping,
-     * blocked ones sit on a mutex/completion wait list.  Both stay
-     * linked so their queue position survives. */
     {
-        while (!task_is_runnable(ct)) {
+        task_t* start;
+    rescan:
+        start = ct;
+        ct = ct->next;
+        if (!ct) ct = rdy_queue();
+
+        /* Skip tasks that cannot run right now: zombies await reaping,
+         * blocked ones sit on a mutex/completion wait list, and claimed
+         * ones belong to another CPU.  Tasks claiming THIS cpu are fine:
+         * the outgoing task (resume = keep running) and prev_run (idle
+         * since our last jump, fully settled).  All stay linked so their
+         * queue position survives. */
+        while (!task_is_runnable(ct) ||
+               (ct->on_cpu != -1 && ct->on_cpu != me)) {
             ct = ct->next;
             if (!ct) ct = rdy_queue();
-            /* Wrapped the ring and start itself is not runnable:
+            /* Wrapped the ring and start itself is not available:
              * nothing is schedulable anywhere.  A wake (ISR or other
              * CPU) will set someone READY; the next tick picks it up. */
-            if (ct == start && !task_is_runnable(ct)) {
-                spin_unlock_irqrestore(&tasklist_lock, tl_flags);
-                for (;;) asm volatile("hlt");
+            if (ct == start &&
+                (!task_is_runnable(ct) ||
+                 (ct->on_cpu != -1 && ct->on_cpu != me))) {
+                spin_unlock(&tasklist_lock);
+                /* Nothing to run: re-enable interrupts so the timer can
+                 * come back and rescan on the next tick, then halt.
+                 * Single-shot hlt (not infinite loop): the timer ISR must
+                 * return normally so the outgoing task's saved context is
+                 * not overwritten by a nested task_switch frame. */
+                __asm__ volatile("sti");
+                asm volatile("hlt");
+                spin_lock(&tasklist_lock);
+                goto rescan;
             }
         }
+        ct->on_cpu = me;
     }
 
     /* Deliver any pending signals before the candidate runs */
@@ -315,17 +500,23 @@ void task_switch() {
         /* ct was terminated: leave the zombie LINKED so waitpid() can
          * find and reap it (unlinking here made killed children vanish —
          * unreapable, leaking their stack and task struct).  Hop to the
-         * next non-zombie candidate instead. */
+         * next candidate no other CPU owns. */
         task_t* scan_from = ct;
         do {
             ct = ct->next;
             if (!ct) ct = rdy_queue();
-        } while (!task_is_runnable(ct) && ct != scan_from);
-        if (!task_is_runnable(ct))
-            panic_assert("No runnable task after signal delivery", __FILE__, __LINE__);
+        } while ((!task_is_runnable(ct) ||
+                  (ct->on_cpu != -1 && ct->on_cpu != me)) &&
+                 ct != scan_from);
+        if (!task_is_runnable(ct) || (ct->on_cpu != -1 && ct->on_cpu != me))
+            panic_assert("No runnable task after signal delivery",
+                         __FILE__, __LINE__);
+        ct->on_cpu = me;
     }
 
-    spin_unlock_irqrestore(&tasklist_lock, tl_flags);
+    spin_unlock(&tasklist_lock);
+
+    sched_watchdog_reset();
 
     /* Persist the selected task */
     set_cur_task(ct);
@@ -334,12 +525,51 @@ void task_switch() {
     ebp = ct->ebp;
     eip = ct->eip;
 
+#ifdef JEXOS_SWITCH_TRACE
+    /* Per-switch context dump -- see the matching gate above. */
+    if (ct->id == 2) {
+        extern void log_serial(const char* s);
+        extern void log_hex_serial(uint32_t n);
+        log_serial("[SW2 id="); log_hex_serial(ct->id);
+        log_serial(" esp="); log_hex_serial(esp);
+        log_serial(" eip="); log_hex_serial(eip);
+        log_serial(" ks="); log_hex_serial(ct->kstack);
+        log_serial("]\n");
+    }
+#endif
+
+    /* Tripwire: an ESP outside the task's kernel stack means its saved
+     * context was corrupted -- typically a stale-TLB write into recycled
+     * memory.  Scream raw so the report survives the chaos that would
+     * otherwise follow, then panic for one clean dump.  Forked tasks
+     * only: the bootstrap and AP-idle specials live on boot-era stacks
+     * no invariant can model. */
+    if (ct->kstack && ct->parent_pid != 0 &&
+        ((uint32_t)esp < (uint32_t)ct->kstack ||
+         (uint32_t)esp >= (uint32_t)ct->kstack + KSTACK_SIZE)) {
+        extern void log_serial(const char* s);
+        extern void log_hex_serial(uint32_t n);
+        log_serial("[[ BADSWITCH id=");
+        log_hex_serial(ct->id);
+        log_serial(" esp=");
+        log_hex_serial(esp);
+        log_serial(" kstack=");
+        log_hex_serial((uint32_t)ct->kstack);
+        log_serial(" ]]\n");
+        panic_assert("switch: saved esp outside task kstack",
+                     __FILE__, __LINE__);
+    }
+
     if (ct->kstack) {
         set_kernel_stack(ct->kstack + KSTACK_SIZE);
     }
 
 
-    __asm__ volatile("         \n      mov %0, %%ebx;           \n      mov %1, %%esp;           \n      mov %2, %%ebp;           \n      mov %3, %%cr3;           \n      mov $0x12345, %%eax;     \n      sti;                     \n      jmp *%%ebx;              \n  " : : "b"(eip), "r"(esp), "r"(ebp), "r"(ct->page_directory) : "eax");
+    /* The context jump lands on either read_eip (resumed task, must be
+     * IF=0 so the 2-instruction read_eip cannot be interrupted) or
+     * kernel_fork_trampoline (fresh task, needs IF=1).  The trampoline
+     * handles its own sti; we leave IF=0 here to protect read_eip. */
+    __asm__ volatile("         \n      mov %0, %%ebx;           \n      mov %1, %%esp;           \n      mov %2, %%ebp;           \n      mov %3, %%cr3;           \n      mov $0x12345, %%eax;     \n      jmp *%%ebx;              \n  " : : "b"(eip), "r"(esp), "r"(ebp), "r"(ct->page_directory) : "eax");
 }
 
 /**
@@ -463,6 +693,7 @@ int fork(registers_t* regs) {
     child->page_directory = new_dir;
     child->cpu_ticks = 0;
     child->state = STATE_READY;
+    child->on_cpu = -1;
     child->next = NULL;
     child->parent_pid = parent->id;
     child->exit_code = 0;
@@ -538,6 +769,7 @@ int fork(registers_t* regs) {
 __asm__(
     ".globl kernel_fork_trampoline\n"
     "kernel_fork_trampoline:\n"
+    "    sti\n"
     "    pop %ebx\n"
     "    pop %eax\n"
     "    push %eax\n"
@@ -604,6 +836,7 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
     child->page_directory = new_dir;
     child->cpu_ticks = 0;
     child->state = STATE_READY;
+    child->on_cpu = -1;
     child->next = NULL;
     child->parent_pid = parent->id;
     child->exit_code = 0;
@@ -739,7 +972,33 @@ int waitpid(int pid, int* status, int options) {
                     log_hex_serial(scan->exit_code);
                     log_serial("\n");
 
-                    /* Free kernel stack — PDE 1023 shared page table */
+                    /* Unlink from whichever queue held it */
+                    if (prev)
+                        prev->next = scan->next;
+                    else
+                        cpus[i].ready_queue = (struct task*)scan->next;
+
+                    /* A zombie quiesced as some CPU's prev_run still sits
+                     * in that slot -- clear it or the next switch on that
+                     * CPU writes on_cpu into freed memory. */
+                    for (int j = 0; j < cpu_count; j++) {
+                        if (cpus[j].prev_run == scan)
+                            cpus[j].prev_run = NULL;
+                    }
+
+#ifdef JEXOS_DEBUG
+                    lockdep_task_exit(scan);
+#endif
+                    spin_unlock_irqrestore(&tasklist_lock, flags);
+
+                    /* Free OUTSIDE the tasklist hold: free_kernel_stack
+                     * ends in tlb_flush_others(), which opens interrupt
+                     * windows to let remote acks drain.  Doing that with
+                     * tasklist_lock held lets a tick nest onto this cpu
+                     * and deadlock against our own interrupted holder,
+                     * while other CPUs mutate the queue we were mid-scan
+                     * on.  The zombie is unlinked, so nobody else can
+                     * reach it while we release the lock here. */
                     if (scan->kstack)
                         free_kernel_stack((uint32_t)scan->kstack);
 
@@ -748,23 +1007,14 @@ int waitpid(int pid, int* status, int options) {
                      * fork() or kernel_fork() that exits leaks ~10+ physical
                      * pages.  Needs a full teardown walking all user PDEs. */
 
-                    /* Unlink from whichever queue held it */
-                    if (prev)
-                        prev->next = scan->next;
-                    else
-                        cpus[i].ready_queue = (struct task*)scan->next;
-
-#ifdef JEXOS_DEBUG
-                    lockdep_task_exit(scan);
-#endif
                     kfree(scan);
 
                     /* Reap orphaned zombies reparented to us (PID 1/init):
-                     * a grandchild that outlived its parent has nobody else. */
+                     * a grandchild that outlived its parent has nobody else.
+                     * Also frees -- must stay outside any tasklist hold. */
                     if (self->id == 1)
                         reap_orphan_zombies();
 
-                    spin_unlock_irqrestore(&tasklist_lock, flags);
                     return child_pid;
                 }
                 prev = scan;
@@ -803,28 +1053,47 @@ int waitpid(int pid, int* status, int options) {
  */
 static void reap_orphan_zombies(void)
 {
+    /* One zombie per lock cycle: unlink + prev_run bookkeeping happen
+     * under tasklist_lock, the frees after release.  free_kernel_stack
+     * opens interrupt windows in tlb_flush_others(), so it must never
+     * run inside a tasklist hold (see waitpid).  Callers must NOT hold
+     * tasklist_lock -- this takes it itself. */
     for (int i = 0; i < cpu_count; i++) {
-        task_t* p = NULL;
-        task_t* s = (task_t*)cpus[i].ready_queue;
-        while (s) {
-            if (s->state == STATE_ZOMBIE &&
-                s->parent_pid == 1 && s->id != 1) {
-                task_t* dead = s;
-                if (p)
-                    p->next = dead->next;
-                else
-                    cpus[i].ready_queue = (struct task*)dead->next;
-                s = dead->next;
-#ifdef JEXOS_DEBUG
-                lockdep_task_exit(dead);
-#endif
-                if (dead->kstack)
-                    free_kernel_stack((uint32_t)dead->kstack);
-                kfree(dead);
-            } else {
+        for (;;) {
+            uint32_t flags;
+            spin_lock_irqsave(&tasklist_lock, &flags);
+
+            task_t* p = NULL;
+            task_t* s = (task_t*)cpus[i].ready_queue;
+            while (s) {
+                if (s->state == STATE_ZOMBIE &&
+                    s->parent_pid == 1 && s->id != 1)
+                    break;
                 p = s;
                 s = s->next;
             }
+            if (!s) {
+                spin_unlock_irqrestore(&tasklist_lock, flags);
+                break;
+            }
+
+            if (p)
+                p->next = s->next;
+            else
+                cpus[i].ready_queue = (struct task*)s->next;
+            s->next = NULL;
+            for (int j = 0; j < cpu_count; j++) {
+                if (cpus[j].prev_run == s)
+                    cpus[j].prev_run = NULL;
+            }
+#ifdef JEXOS_DEBUG
+            lockdep_task_exit(s);
+#endif
+            spin_unlock_irqrestore(&tasklist_lock, flags);
+
+            if (s->kstack)
+                free_kernel_stack((uint32_t)s->kstack);
+            kfree(s);
         }
     }
 }
@@ -995,6 +1264,7 @@ void task_spawn_idle(int cpu_index)
     idle->kstack = c->kstack_top - KSTACK_SIZE;
     idle->eip = (uint32_t)idle_loop;
     idle->state = STATE_READY;
+    idle->on_cpu = -1;
     strcpy(idle->name, "idle");
 
     spin_lock_irqsave(&tasklist_lock, &flags);

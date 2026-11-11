@@ -38,6 +38,12 @@ typedef struct task {
     page_directory_t* page_directory;   /**< Virtual memory space for this task. */
     uint32_t kstack;                    /**< Kernel stack base for this task. */
     task_state_t state;                 /**< Current execution state. */
+    volatile int on_cpu;                /**< CPU index currently executing
+                                             this task, or -1 if unclaimed.
+                                             The scheduler ring is global;
+                                             without a claim two CPUs can
+                                             pick the same RUNNING task and
+                                             interleave on one kstack. */
     char name[16];                      /**< Human-readable task name */
     uint32_t cpu_ticks;                 /**< CPU ticks consumed (for top command). */
     struct task* next;                  /**< Next task in the linked scheduler list. */
@@ -94,6 +100,13 @@ void task_block_current(void);
  * Safe from ISR or any CPU; no-op for non-blocked tasks.
  */
 void task_wake(task_t* t);
+
+/* Switch-starvation watchdog (debug flavors): timer ticks call _tick,
+ * every completed scheduler pick calls _reset.  A trip dumps all task
+ * states -- the only witness when everything is parked, since nothing
+ * spins and no STUCKDUMP can fire. */
+void sched_watchdog_tick(void);
+void sched_watchdog_reset(void);
 
 /**
  * @brief Create a new process by duplicating the current one.

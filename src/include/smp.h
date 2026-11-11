@@ -51,6 +51,10 @@ typedef struct cpu {
     uint32_t        apic_timer_ticks;
     mailbox_t       mailbox;
     int             cpu_number;      /* index into cpus[] */
+    struct task*    prev_run;        /* last task switched away from; keeps
+                                         its scheduler claim until the next
+                                         switch so no other CPU can resume
+                                         it while we unwind off its stack */
 } cpu_t;
 
 /* ── Globals ──────────────────────────────────────────── */
