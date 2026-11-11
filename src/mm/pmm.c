@@ -16,6 +16,19 @@
 
 extern void* memset(void* s, int c, size_t n);
 
+/* Kernel image occupies [1MiB, _kernel_image_end): these frames back
+ * .text/.data/.bss and must never return to the free pool.  A corrupted
+ * free (stale large-block header, bogus pointer) that lands here used to
+ * silently recycle live kernel data — cpus[], the PMM bitmap itself —
+ * which dissolved the system without a word on serial. */
+extern uint8_t _kernel_image_end[];
+
+static inline int is_kernel_image_frame(uint32_t frame)
+{
+    return frame >= (0x100000 / PMM_BLOCK_SIZE) &&
+           frame < ((uint32_t)_kernel_image_end + PMM_BLOCK_SIZE - 1) / PMM_BLOCK_SIZE;
+}
+
 /**
  * @brief Physical memory configuration.
  *
@@ -305,10 +318,16 @@ void* pmm_alloc_blocks(uint32_t count) {
  */
 void pmm_free_block(void* p) {
     uint32_t addr = (uint32_t)p;
-    uint32_t frame = addr / BLOCK_SIZE;
+    uint32_t frame = addr / PMM_BLOCK_SIZE;
 
     /* Bounds check: reject addresses outside managed range */
     if (frame >= max_blocks) return;
+
+    if (is_kernel_image_frame(frame)) {
+        pr_crit("refusing to free kernel frame 0x%x (caller %p)\n",
+                addr, __builtin_return_address(0));
+        return;
+    }
 
     uint32_t flags;
     spin_lock_irqsave(&pmm_lock, &flags);
@@ -326,12 +345,18 @@ void pmm_free_block(void* p) {
  */
 void pmm_free_blocks(void* p, uint32_t count) {
     uint32_t addr = (uint32_t)p;
-    uint32_t frame = addr / BLOCK_SIZE;
+    uint32_t frame = addr / PMM_BLOCK_SIZE;
 
     uint32_t flags;
     spin_lock_irqsave(&pmm_lock, &flags);
     for (uint32_t i = 0; i < count; i++) {
         if (frame + i >= max_blocks) break; /* Bounds check */
+        if (is_kernel_image_frame(frame + i)) {
+            pr_crit("refusing to free kernel frame 0x%x (%u frames from 0x%x, caller %p)\n",
+                    (frame + i) * BLOCK_SIZE, count, addr,
+                    __builtin_return_address(0));
+            continue;
+        }
         if (bitmap_test(frame + i)) {
             bitmap_unset(frame + i);
             used_blocks--;
