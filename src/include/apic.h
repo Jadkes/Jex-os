@@ -49,6 +49,9 @@
 /* Vector for the per-CPU LAPIC timer, above the PIC IRQ range (32-47) */
 #define LAPIC_TIMER_VECTOR   0x30
 
+/* Vector for TLB shootdown IPIs (handler in mm/paging.c) */
+#define TLB_IPI_VECTOR       0x31
+
 /* Spurious Vector Register bits */
 #define APIC_SPURIOUS_ENABLE  (1 << 8)
 
@@ -161,6 +164,16 @@ int lapic_timer_armed_count(void);
  * @lapic_id: Destination local APIC ID.
  */
 void apic_send_init_ipi(uint8_t lapic_id);
+
+/*
+ * lapic_send_fixed_ipi - Fire a fixed-delivery IPI at one LAPIC.
+ * @lapic_id: Destination local APIC ID (physical).
+ * @vector:   Interrupt vector the target should take.
+ *
+ * Returns once the message is accepted for delivery; the target's
+ * handler runs asynchronously.  ISR-safe: only touches the ICR.
+ */
+void lapic_send_fixed_ipi(uint8_t lapic_id, uint8_t vector);
 
 /*
  * apic_send_startup_ipi - Send a STARTUP IPI to a specific APIC ID.

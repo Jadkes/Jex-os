@@ -239,6 +239,14 @@ static void apic_wait_icr_idle(void)
         __asm__ volatile("pause");
 }
 
+void lapic_send_fixed_ipi(uint8_t lapic_id, uint8_t vector)
+{
+    apic_wait_icr_idle();
+    lapic_write(LAPIC_ICR_LOW,
+                ((uint32_t)lapic_id << 24) | ICR_DEST_PHYSICAL |
+                ICR_FIXED | vector);
+}
+
 /* ── Per-CPU LAPIC timer ──────────────────────────────── */
 
 uint32_t lapic_timer_interval;  /* ticks per scheduler slice */

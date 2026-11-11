@@ -89,6 +89,15 @@ void init_irq()
     /* Per-CPU LAPIC timer — vector 48, outside the PIC remap range */
     extern void irq_vec48();
     idt_set_gate(48, (uint32_t)irq_vec48, 0x08, 0x8E);
+
+    /* TLB shootdown IPI — vector 49; handler lives in mm/paging.c.
+     * Registered here so the vector is armed the moment the IDT is. */
+    extern void irq_vec49();
+    idt_set_gate(49, (uint32_t)irq_vec49, 0x08, 0x8E);
+    {
+        extern void tlb_ipi_callback(registers_t* regs);
+        register_interrupt_handler(17, tlb_ipi_callback);
+    }
 }
 
 early_init(init_irq);

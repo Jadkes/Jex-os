@@ -176,6 +176,14 @@ irq_vec48:
     push $48
     jmp irq_common_stub
 
+/* TLB shootdown IPI — vector 49.  Handler: tlb_ipi_callback (mm/paging.c) */
+.global irq_vec49
+irq_vec49:
+    cli
+    push $0
+    push $49
+    jmp irq_common_stub
+
 /**
  * @brief Common handler for Hardware IRQs.
  */

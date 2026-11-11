@@ -17,6 +17,9 @@
 #include <jexos/errno.h>
 #include "panic.h"
 #include "task.h"
+#include "smp.h"
+#include "apic.h"
+#include "kernel/atomic.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
@@ -180,6 +183,87 @@ int map_page(void* physaddr, void* virtualaddr, unsigned int flags) {
                      | ((flags & 0x4) ? 4u : 0u);           /* user */
     *(uint32_t*)&table->pages[ptindex] = pte_val;
     return 0;
+}
+
+/* ── TLB shootdown ───────────────────────────────────────
+ * Kernel tasks all share one page directory, so a context switch
+ * between them never reloads CR3: stale remote TLB entries for freed
+ * pages never age out on their own.  Before freed frames go back to
+ * PMM, every other online CPU is asked to flush -- once a frame can
+ * be handed to a new owner, no stale mapping may still point at it.
+ *
+ * Ack bookkeeping is per-CPU and lock-free: senders never serialize,
+ * because a sender spinning with IF=0 while an expected target spins
+ * on the same lock would deadlock.  Instead the wait loop opens brief
+ * interrupt windows so incoming IPIs (and ticks) always land; being
+ * preempted mid-wait is fine, the wait state lives in locals. */
+static volatile uint32_t tlb_ack_count[NR_CPUS];
+
+void tlb_ipi_callback(registers_t* regs)
+{
+    (void)regs;
+    uint32_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %0, %%cr3" :: "r"(cr3));
+    atomic_inc(&tlb_ack_count[cpu_id()]);
+}
+
+/*
+ * tlb_flush_others - Make every online CPU except this one drop its
+ * TLB and acknowledge.  Waits until all targets have flushed.
+ */
+static void tlb_flush_others(void)
+{
+    if (cpu_count < 2)
+        return;
+
+    /* Contract: callers must be preemptible -- the wait loop opens
+     * interrupt windows, which are poison inside a spinlock hold (a
+     * tick nesting onto this cpu deadlocks against our own interrupted
+     * holder).  Entering with IF=0 means somebody violated it; scream
+     * instead of wedging silently. */
+    uint32_t entry_check;
+    __asm__ volatile("pushfl; pop %0" : "=r"(entry_check));
+    if (!(entry_check & (1 << 9)))
+        pr_crit("tlb_flush_others: caller %p holds IRQs off -- "
+                "interrupt windows will nest ticks into its locks!\n",
+                __builtin_return_address(0));
+
+    int me = cpu_id();
+    uint32_t seen[NR_CPUS];
+    int target_cpu[NR_CPUS];
+    int targets = 0;
+    uint32_t entry_eflags;
+    __asm__ volatile("pushfl; pop %0" : "=r"(entry_eflags));
+
+    for (int i = 0; i < cpu_count; i++) {
+        if (i == me || !cpus[i].online)
+            continue;
+        seen[targets] = tlb_ack_count[i];
+        target_cpu[targets] = i;
+        lapic_send_fixed_ipi((uint8_t)cpus[i].lapic_id, TLB_IPI_VECTOR);
+        targets++;
+    }
+
+    for (;;) {
+        int flushed_all = 1;
+        for (int i = 0; i < targets; i++) {
+            if ((uint32_t)(tlb_ack_count[target_cpu[i]] - seen[i]) < 1)
+                flushed_all = 0;
+        }
+        if (flushed_all) {
+            /* Restore entry IF state: we entered with interrupts live
+             * and must not leak a cli into the caller's context. */
+            __asm__ volatile("push %0; popfl" :: "r"(entry_eflags));
+            return;
+        }
+        /* Open an interrupt window so pending IPIs on THIS cpu can
+         * also drain -- two concurrent flushers must never starve
+         * each other's acknowledgements. */
+        __asm__ volatile("sti");
+        __asm__ volatile("pause");
+        __asm__ volatile("cli");
+    }
 }
 
 /**
@@ -598,18 +682,22 @@ void free_kernel_stack(uint32_t kstack_vaddr)
     if (kstack_vaddr < KSTACK_VADDR_BASE)
         return;
 
+    uint32_t phys[KSTACK_SIZE / 4096];
+    int freed = 0;
+
     uint32_t irq_flags;
     spin_lock_irqsave(&kstack_lock, &irq_flags);
 
     uint32_t slot_idx = (kstack_vaddr - KSTACK_VADDR_BASE) / 4096;
-    if (slot_idx + KSTACK_SIZE / 4096 > 1024)
+    if (slot_idx + KSTACK_SIZE / 4096 > 1024) {
+        spin_unlock_irqrestore(&kstack_lock, irq_flags);
         return;
+    }
 
     page_table_t* kstack_pt = (page_table_t*)PTE_PTR(KSTACK_PDE_IDX);
     for (int i = 0; i < KSTACK_SIZE / 4096; i++) {
         if (kstack_pt->pages[slot_idx + i].present) {
-            uint32_t phys = kstack_pt->pages[slot_idx + i].frame << 12;
-            pmm_free_block((void*)phys);
+            phys[freed++] = kstack_pt->pages[slot_idx + i].frame << 12;
             kstack_pt->pages[slot_idx + i].present = 0;
         }
     }
@@ -619,6 +707,15 @@ void free_kernel_stack(uint32_t kstack_vaddr)
         asm volatile("invlpg (%0)" :: "r"(kstack_vaddr + i * 4096));
     }
     spin_unlock_irqrestore(&kstack_lock, irq_flags);
+
+    /* Frames are unmapped but not yet reusable: drop every other
+     * CPU's stale translations BEFORE returning them to PMM, or a
+     * remote CPU could write through its TLB into a new owner's
+     * memory. */
+    tlb_flush_others();
+
+    for (int i = 0; i < freed; i++)
+        pmm_free_block((void*)phys[i]);
 }
 
 /**
