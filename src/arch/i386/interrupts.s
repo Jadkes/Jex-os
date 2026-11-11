@@ -132,8 +132,7 @@ isr_common_stub:
 
     popa                     /* Restore registers */
     add $8, %esp             /* Clean up pushed error code and int number */
-    sti
-    iret                     /* Return to interrupted code */
+    iret                     /* Return to interrupted code (restores EFLAGS.IF) */
 
 /* IRQ handlers (Hardware Interrupts) */
 .extern irq_handler
@@ -192,7 +191,9 @@ irq_common_stub:
     mov %ax, %fs
     mov %ax, %gs
 
-    call irq_handler
+    push %esp                /* Pass pointer to register frame */
+    call irq_handler         /* Call C handler (registers_t *regs) */
+    add $4, %esp             /* Pop the pointer */
 
     pop %ebx
     mov %bx, %ds
@@ -202,7 +203,6 @@ irq_common_stub:
 
     popa
     add $8, %esp
-    sti
     iret
 
 /**

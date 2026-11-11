@@ -99,7 +99,7 @@ early_init(init_irq);
  * 
  * @param regs CPU state at the time of the interrupt.
  */
-void irq_handler(registers_t regs)
+void irq_handler(registers_t* regs)
 {
     /*
      * Track IRQ nesting PER TASK.  A global counter lies across
@@ -130,20 +130,20 @@ void irq_handler(registers_t regs)
     if (using_apic) {
         apic_eoi();
     } else {
-        if (regs.int_no >= 40)
+        if (regs->int_no >= 40)
             outb(0xA0, 0x20); /* Slave PIC EOI */
         outb(0x20, 0x20);     /* Master PIC EOI */
     }
 
     /* Execute custom handler if one is registered */
     void (*handler)(registers_t*);
-    if (regs.int_no - IRQ_VECTOR_BASE < (int)(sizeof(irq_routines) / sizeof(irq_routines[0])))
-        handler = irq_routines[regs.int_no - IRQ_VECTOR_BASE];
+    if (regs->int_no - IRQ_VECTOR_BASE < (int)(sizeof(irq_routines) / sizeof(irq_routines[0])))
+        handler = irq_routines[regs->int_no - IRQ_VECTOR_BASE];
     else
         handler = NULL;
     if (handler)
     {
-        handler(&regs);
+        handler(regs);
     }
 
     if (irq_task)
