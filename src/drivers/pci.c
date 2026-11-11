@@ -226,13 +226,29 @@ static void pci_probe_driver(struct pci_driver* drv)
                      id->vendor != 0; id++) {
                     uint16_t device = pci_config_read_word(bus, slot, func, 2);
                     if (vendor == id->vendor && device == id->device) {
-                        pci_device_t pdev;
+                        /* Zero-init: probe() receives this struct, so any
+                         * field left out here would reach the driver as
+                         * indeterminate stack contents. */
+                        pci_device_t pdev = {0};
                         pdev.bus = bus;
                         pdev.device = slot;
                         pdev.function = func;
                         pdev.vendor_id = vendor;
                         pdev.device_id = device;
+
+                        uint32_t reg8 = pci_config_read_dword(bus, slot, func, 8);
+                        pdev.revision_id = reg8 & 0xFF;
+                        pdev.prog_if     = (reg8 >> 8) & 0xFF;
+                        pdev.subclass    = (reg8 >> 16) & 0xFF;
+                        pdev.class_code  = (reg8 >> 24) & 0xFF;
+
                         pdev.bar0 = pci_config_read_dword(bus, slot, func, 0x10);
+                        pdev.bar1 = pci_config_read_dword(bus, slot, func, 0x14);
+                        pdev.bar2 = pci_config_read_dword(bus, slot, func, 0x18);
+                        pdev.bar3 = pci_config_read_dword(bus, slot, func, 0x1C);
+                        pdev.bar4 = pci_config_read_dword(bus, slot, func, 0x20);
+                        pdev.bar5 = pci_config_read_dword(bus, slot, func, 0x24);
+
                         pdev.irq_line = (uint8_t)(pci_config_read_dword(bus, slot, func, 0x3C) & 0xFF);
                         drv->probe(&pdev);
                     }
