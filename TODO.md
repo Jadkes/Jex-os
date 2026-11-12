@@ -6,9 +6,10 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ### v0.7.9 — Selftest Suite, Build Flavors, Bug Harvest
 
+- [x] **Rootfs Persistence Mirror**: `make deliver` builds `jexosg.img` = hybrid ISO + fresh rootfs appended at the tail; booted as an IDE hard disk, the kernel IDENTIFYs the drive, validates a JexFS superblock in the last `ramdisk_blocks` blocks, restores that mirror over the RAM rootfs (`jexfs_mount_persistence()`, process context after sti — the IDE mutex sleeps, so it cannot run from initcalls) and mirrors every `write_block()` back to the tail. History and files now survive reboots from read-only media. Verified end-to-end: fingerprinted mirror restored over pristine module, suite write-through changed 9014 tail bytes, second boot passed on restored state; no-disk runs skip cleanly via the 0xFF floating-bus guard. `ide_init()` was previously never called anywhere — the probe is now its only user-driven init point
 - [x] **Build Flavors**: `FLAVOR=debug|test` variants with separate object dirs and artifacts; debug cranks serial verbosity to everything, test replaces the shell with the suite
 - [x] **In-Kernel Selftest Runner**: registered suites announce `[RUN]` before executing (a hang names its test), results mirror to serial, and the exit code goes out the isa-debug-exit port — `make run-test` streams live output headless and fails on 7 (fail) or timeout (hang); pass is 33 because qemu arg errors also exit 1
-- [x] **Test Suites**: 21 tests — heap classes/double-free/OOM, ringbuf wrap/full-drop, SMP atomic hammer via `kernel_fork_on`, mutex exclusion, completion early-signal, memops/snprintf truncation+formats, JexFS 9KB roundtrip/remove-missing/concurrent writers
+- [x] **Test Suites**: 26 tests — heap classes/double-free/OOM, ringbuf wrap/full-drop, SMP atomic hammer via `kernel_fork_on`, mutex exclusion, completion early-signal, memops/snprintf truncation+formats, JexFS 9KB roundtrip/remove-missing/concurrent writers, SMP counter/diverge/torture, kernel_fork stress, page fault in kernel
 - [x] **kheap Lock Leaks**: kmalloc OOM path and kfree invalid-pointer path returned holding `kheap_lock` with IRQs off — later allocations froze forever (the mystery hang)
 - [x] **Slab Double-Free Detection**: free_count only catches whole-slab over-freeing, so a same-object double free aliased two freelist entries; per-slab in-use bitmap rejects it and corrupt freelists outright
 - [x] **Per-Task ISR Depth**: the global `in_isr` lied across preemption — a victim frozen in `irq_handler` left it stranded positive and unrelated tasks failed the can-sleep assert; every task counts its own depth now, the global only gates printk
@@ -121,7 +122,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ### Shell & UX
 - [x] **Tab Completion**: Auto-complete filenames and commands
-- [x] **Command History**: `.history` saved and reloaded within a session (RAM-backed fs: it dies with the power)
+- [x] **Command History**: `.history` saved and reloaded within a session; on the delivery image (`make deliver`, IDE hard disk boot) the persistence mirror carries it and all other rootfs writes across reboots
 - [x] **Dynamic Prompt**: Color-coded, directory-aware
 - [x] **Uptime**: System uptime command
 - [x] **Top**: Per-task CPU usage monitor
@@ -165,10 +166,10 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **arp/netlog/tcpdump/nicregs**: Network diagnostics
 
 ### Storage
-- [x] **JexFS**: RAM-backed rootfs with hierarchy (image reloads every boot; flushing to the hda data disk is open work)
+- [x] **JexFS**: RAM-backed rootfs with hierarchy; persistence mirror via `make deliver` (append at tail, restore on boot, write-through on every block write) — history and files survive reboots from read-only media
 - [x] **VFS Layer**: Mount point dispatch
 - [x] **devtmpfs/sysfs**: Virtual filesystems
-- [x] **IDE PIO Driver**: ATA disk access
+- [x] **IDE PIO Driver**: ATA disk access; PIO transfers hold a mutex instead of cli — contending tasks sleep while timers keep ticking on both cores; sector cache on its own short spinlock with in-progress fill marks
 - [x] **Standard commands**: `cp`, `mv`, `rm`, `ls`, `cat`, `mkdir`, `cd`
 
 ### Kernel Infrastructure
@@ -186,9 +187,11 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 ### SMP Follow-ups
 - [x] **Spinlocks / Mutexes**: PMM bitmap, kheap slabs, kstack slots, PID handout and the task lists now run on real spinlocks (`spinlock.h`), not IF games
 - [x] **Load Balancing**: fork/kernel_fork place new tasks on the shortest ready queue; APs wake into a seeded idle task and preempt off their own LAPIC timer
+- [x] **TLB Shootdown IPI**: `free_kernel_stack()` clears PTEs, then IPIs every other online CPU (vector 49, handler does a full CR3-reload flush and acks) and only returns frames to PMM after all acks land — stale remote translations can no longer alias recycled kstack memory into a new owner's pages. Single-CPU builds skip the broadcast entirely.
+- [ ] **PID 2 Boot Stack Page**: give PID 2 an alloc'd kernel stack page (0xFFC08000) and update `set_kernel_stack()`/TSS.ESP0, so ISR frames never land on the real boot stack. This eliminates the entire class of iret corruption bugs on SMP.
 - [ ] **IPI Reschedule**: wake a CPU's scheduler remotely instead of polling
 - [ ] **Per-CPU `%gs`**: cache the CPU index / per-CPU pointer instead of an MMIO LAPIC ID read + scan in every `cpu_id()`
-- [ ] **TLB Shootdown IPI**: `free_kernel_stack()`/page-table edits only `invlpg` locally — a stale remote TLB can alias freed frames once memory is recycled across CPUs
+- [ ] **Remaining shootdown scope**: generic page-table unmaps (`paging_unmap_page` userspace paths) still flush locally only; wire them once ring-3 makes remote aliasing reachable.
 - [ ] **FPU/SSE State**: no fxsave/frstor or #NM handler — float code in two interleaved tasks corrupts state (pre-existing, worse with SMP)
 - [x] **LAPIC Timer**: per-CPU tick source armed after PIT calibration; PIT keeps wall-clock duty only
 - [x] **Per-CPU TSS**: GDT grew one TSS slot per core, each AP LTRs its own at startup — ring-3 interrupts work off-BSP
@@ -225,6 +228,11 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [ ] **PS/2 Mouse Driver**: QEMU emulates it; a text-mode cursor is the gateway drug to GUI
 - [ ] **AHCI / SATA**: Faster disk I/O
 - [ ] **USB Keyboard/Mouse**: Beyond PS/2
+
+### Audio
+- [ ] **Speaker Driver v2 (blocking → timer-driven)**: `beep()` is `play_sound(); sleep(ms); stop_sound();`, and `sleep()` is an `hlt` spin counted in ticks — so the calling task sits in `beep()` for the whole note and the shell takes no input until the tune ends. Needs a note queue advanced from the tick handler so `beep()` returns immediately.
+- [x] **PCM Output Driver**: AC'97 (`src/drivers/ac97.c`), 44.1 kHz s16 stereo over PCI bus-master DMA. The PC speaker is a 1-bit square wave (PIT ch2 → port 0x61) — no amplitude, no sample clock, so it could never play samples. `sndtest` plays a four-note arpeggio. Two warts worth knowing: completion is polled from the PIT tick because QEMU puts AC'97 and RTL8139 on the same IRQ line and `irq.c` allows one handler per line; and `out.mixing-engine=off` in `QEMU_OPTS` is what keeps the stream at real time (see the comment there).
+- [ ] **MP3 Playback**: fixed-point MPEG-1 Layer III (Huffman, IMDCT, polyphase synthesis) reading `.mp3` from JexFS and feeding the PCM driver. Must be integer-only — there is no `fxsave`/`frstor` and no `#NM` handler, so a float decoder corrupts FPU state across tasks (see the FPU/SSE item above). Keep the first cut small: mono, 44.1 kHz, CBR; VBR + joint stereo is thousands of lines more.
 
 ### Deep End
 - [ ] **Grow TCC toward real C**: pointers and structs would let the OS compile non-toy programs of itself
