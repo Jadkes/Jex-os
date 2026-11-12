@@ -35,6 +35,15 @@ extern multiboot_info_t *g_mboot_info;
 static uint8_t *ramdisk_base;
 static uint32_t ramdisk_blocks;
 
+/*
+ * Persistence mirror: LBA of a rootfs copy kept on the tail of the
+ * primary master.  When booting from read-only media (hybrid ISO as
+ * hard disk), every rootfs write is mirrored there and
+ * jexfs_mount_persistence() restores the mirror over the RAM image,
+ * so state survives reboots.  0 disables mirroring.
+ */
+static uint32_t mirror_lba;
+
 /* ── Filesystem lock ───────────────────────────────────
  * One coarse sleeping lock covers every metadata operation.  JexFS ops
  * are RAM-speed so contention is brief, and a coarse lock beats a web
@@ -94,6 +103,11 @@ void write_block(uint32_t block, const uint8_t *buffer)
             return;
         }
         memcpy(ramdisk_base + block * BLOCK_SIZE, buffer, BLOCK_SIZE);
+        /* Mirror to the disk tail so state survives reboot */
+        if (mirror_lba) {
+            ide_write_sector(mirror_lba + block * 2, buffer);
+            ide_write_sector(mirror_lba + block * 2 + 1, buffer + 512);
+        }
         return;
     }
     ide_write_sector(block * 2, buffer);
@@ -767,6 +781,70 @@ next:
         off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     terminal_writestring("\n");
+}
+
+/**
+ * jexfs_mount_persistence -- Restore any rootfs mirror from the primary
+ * master and enable write mirroring.
+ *
+ * The mirror occupies the last ramdisk_blocks blocks of the disk (the
+ * delivery image appends a fresh rootfs there at build time).  A valid
+ * JexFS superblock in the mirror means an earlier boot left state behind:
+ * restore it over the freshly loaded RAM image so the mount sees the
+ * persisted filesystem instead of the pristine module payload.
+ *
+ * Runs in process context (sleeping IDE mutex), after IRQs are enabled
+ * and before anything touches JexFS blocks.
+ */
+void jexfs_mount_persistence(void)
+{
+    uint32_t total_sectors;
+    uint32_t mirror_sectors = ramdisk_blocks * 2;
+    uint8_t buf[BLOCK_SIZE];
+    struct jex_superblock *probe;
+
+    /* Without a RAM image the rootfs already lives on this disk and
+     * persists naturally.  The IDE driver has no initcall of its own,
+     * so select the drive here -- we are its only user. */
+    if (!ramdisk_base)
+        return;
+    ide_init();
+
+    if (ide_identify(&total_sectors) < 0) {
+        pr_info("No writable disk found, persistence disabled\n");
+        return;
+    }
+    if (total_sectors <= mirror_sectors) {
+        return;
+    }
+
+    uint32_t start = total_sectors - mirror_sectors;
+
+    if (ide_read_sector(start + 2, buf) < 0 ||
+        ide_read_sector(start + 3, buf + 512) < 0)
+        return;
+
+    probe = (struct jex_superblock *)buf;
+    if (probe->magic != JEXFS_MAGIC ||
+        probe->inode_size != JEXFS_INODE_SIZE ||
+        probe->total_blocks != ramdisk_blocks) {
+        pr_info("No valid rootfs mirror at LBA %u, starting fresh\n", start);
+        return;
+    }
+
+    mirror_lba = start;
+    pr_info("Restoring %u blocks from mirror @ LBA %u\n",
+            ramdisk_blocks, mirror_lba);
+    for (uint32_t i = 0; i < ramdisk_blocks; i++) {
+        ide_read_sector(mirror_lba + i * 2,
+                        ramdisk_base + i * BLOCK_SIZE);
+        ide_read_sector(mirror_lba + i * 2 + 1,
+                        ramdisk_base + i * BLOCK_SIZE + 512);
+    }
+
+    probe = (struct jex_superblock *)(ramdisk_base + BLOCK_SIZE);
+    pr_info("Mirror active: sb.total_blocks=%u total_inodes=%u\n",
+            probe->total_blocks, probe->total_inodes);
 }
 
 void jexfs_init(void)

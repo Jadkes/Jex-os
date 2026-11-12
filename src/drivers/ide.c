@@ -195,6 +195,47 @@ static int ide_write_sector_raw(uint32_t lba, const uint8_t* buffer) {
     /* Send CACHE FLUSH command to ensure data is written to media */
     outb(IDE_COMMAND, 0xE7);
     ide_wait_busy();
+
+    return 0;
+}
+
+/**
+ * @brief Identify the primary master drive (ATA IDENTIFY DEVICE).
+ *
+ * @param sector_count Set to the total LBA28 sector count on success.
+ * @return 0 on success, -ENODEV if no drive answered, -EIO on error.
+ */
+int ide_identify(uint32_t* sector_count) {
+    uint16_t id[256];
+
+    /* Select master */
+    outb(IDE_DRIVE_SEL, 0xA0);
+
+    /* A floating bus reads 0xFF (BSY set), which would burn the whole
+     * wait_busy timeout -- bail out early when no drive is attached. */
+    for (int i = 0; i < 4; i++)
+        inb(IDE_STATUS);   /* ~400ns drive selection delay */
+    if (inb(IDE_STATUS) == 0xFF)
+        return -ENODEV;
+
+    ide_wait_busy();
+
+    /* IDENTIFY DEVICE with a zeroed block register set */
+    outb(IDE_SECTOR_CNT, 0);
+    outb(IDE_LBA_LO, 0);
+    outb(IDE_LBA_MID, 0);
+    outb(IDE_LBA_HI, 0);
+    outb(IDE_COMMAND, IDE_CMD_IDENTIFY);
+
+    ide_wait_busy();
+    if (inb(IDE_STATUS) & (IDE_STATUS_ERR | IDE_STATUS_DF))
+        return -EIO;
+
+    ide_wait_drq();
+    insw(IDE_DATA, id, 256);
+
+    /* Words 60-61: total user-addressable sectors (LBA28) */
+    *sector_count = ((uint32_t)id[61] << 16) | id[60];
     return 0;
 }
 

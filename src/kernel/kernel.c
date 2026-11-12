@@ -188,6 +188,11 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     pr_serial("task: pid %d on cpu%d, kstack top 0x%08x\n",
               cur_task() ? cur_task()->id : 0, cpu_id(), kernel_stack_top);
 
+    /* Restore persisted rootfs state from the disk mirror before the
+     * selftest suite or the shell can touch JexFS.  Sleeps on the IDE
+     * mutex, so it must run here, not in an initcall. */
+    jexfs_mount_persistence();
+
 #ifdef JEXOS_SELFTEST
     /* Trap any write to irq_routines[0] as a #DB panic: that word is dead
      * after IRQ registration, and the silent BSS wipe crosses it. */

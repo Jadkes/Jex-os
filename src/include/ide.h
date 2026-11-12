@@ -24,6 +24,7 @@
 /* IDE Commands */
 #define IDE_CMD_READ    0x20
 #define IDE_CMD_WRITE   0x30
+#define IDE_CMD_IDENTIFY 0xEC
 
 /* IDE Status bits */
 #define IDE_STATUS_BSY  0x80 /**< Busy. */
@@ -54,5 +55,14 @@ int ide_read_sector(uint32_t lba, uint8_t* buffer);
  * @return 0 on success, -1 on failure.
  */
 int ide_write_sector(uint32_t lba, const uint8_t* buffer);
+
+/**
+ * Identify the primary master drive.
+ *
+ * @param sector_count Set to the total LBA28 sector count on success.
+ * @return 0 on success, -ENODEV if no drive is attached (floating bus),
+ *         -EIO on identify error (e.g. ATAPI packet device).
+ */
+int ide_identify(uint32_t* sector_count);
 
 #endif // IDE_H

@@ -83,6 +83,7 @@ CFLAGS   += -DJEXOS_DEBUG
 KERNEL    = jexos-debug.bin
 IMG       = jexos-debug.img
 ISO       = jexos-debug.iso
+DELIVERY  = jexosg-debug.img
 OBJ_DIR   = $(BUILD)/obj-debug
 endif
 ifeq ($(FLAVOR),test)
@@ -90,6 +91,7 @@ CFLAGS   += -DJEXOS_SELFTEST -DJEXOS_DEBUG
 KERNEL    = jexos-test.bin
 IMG       = jexos-test.img
 ISO       = jexos-test.iso
+DELIVERY  = jexosg-test.img
 OBJ_DIR   = $(BUILD)/obj-test
 endif
 BOOTSECT  = $(BUILD)/bootsect.bin
@@ -176,6 +178,17 @@ $(ISO): $(KERNEL) $(IMG)
 
 iso: $(ISO)
 
+## Delivery image: hybrid ISO with a fresh rootfs appended at the tail.
+## Attached as an IDE hard disk (86box), the kernel restores that tail
+## over the RAM rootfs at mount and mirrors every rootfs write back
+## into it, so history and files survive reboots from read-only media.
+$(DELIVERY): $(ISO) $(IMG)
+	$(Q)printf "  DELIVER $@\n"
+	$(Q)cp $(ISO) $@
+	$(Q)cat $(IMG) >> $@
+
+deliver: $(DELIVERY)
+
 
 ## Boot image (native boot, no GRUB)
 
@@ -238,7 +251,7 @@ debug:
 	$(Q)$(MAKE) FLAVOR=debug all
 
 run-debug:
-	$(Q)$(MAKE) FLAVOR=debug all
+	$(Q)$(MAKE) FLAVOR=debug iso
 	$(Q)$(QEMU) -cdrom jexos-debug.iso -hda jexos-debug.img $(QEMU_OPTS)
 
 # Fallback: boot through the custom stage-1/stage-2 bootloader.
@@ -261,7 +274,7 @@ docs-run: docs
 
 clean:
 	$(Q)printf "  CLEAN\n"
-	rm -rf $(BUILD) $(KERNEL) $(IMG) $(ISO) $(KALLSYMS_S) $(BOOT_IMG) iso/
+	rm -rf $(BUILD) $(KERNEL) $(IMG) $(ISO) $(DELIVERY) $(KALLSYMS_S) $(BOOT_IMG) iso/
 
 distclean: clean
 	$(Q)printf "  DISTCLEAN\n"
@@ -279,6 +292,7 @@ help:
 	@echo "  make docs         Generate HTML docs via Doxygen"
 	@echo "  make docs-run     Generate docs + serve at :8000"
 	@echo "  make iso          Build GRUB bootable ISO"
+	@echo "  make deliver      Build delivery image (ISO + persistence mirror)"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
 	@echo ""
@@ -289,4 +303,4 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run run-native clean distclean iso docs docs-run boot help debug run-debug test run-test
+.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test
