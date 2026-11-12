@@ -362,9 +362,13 @@ static int jexfs_find_entry(uint32_t dir_ino, const char *name, uint16_t name_le
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
-        /* Inner walk stopped mid-block or at its edge -- jump to the next
-         * block boundary so the outer loop always makes progress */
-        off += BLOCK_SIZE - (off % BLOCK_SIZE);
+        /* Inner walk stopped mid-block or at its edge.  Advance to the
+         * next block boundary so the outer loop always makes progress --
+         * but only when not already on one: an entry that ends exactly at
+         * the boundary would otherwise skip the whole next block, losing
+         * every name stored after it. */
+        if (off % BLOCK_SIZE)
+            off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     return -ENOENT;
 }
@@ -669,9 +673,13 @@ static int jexfs_remove_nolock(const char *name)
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
-        /* Inner walk stopped mid-block or at its edge -- jump to the next
-         * block boundary so the outer loop always makes progress */
-        off += BLOCK_SIZE - (off % BLOCK_SIZE);
+        /* Inner walk stopped mid-block or at its edge.  Advance to the
+         * next block boundary so the outer loop always makes progress --
+         * but only when not already on one: an entry that ends exactly at
+         * the boundary would otherwise skip the whole next block, losing
+         * every name stored after it. */
+        if (off % BLOCK_SIZE)
+            off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     return -ENOENT;
 }
@@ -725,9 +733,13 @@ static int jexfs_rename_nolock(const char *old_name, const char *new_name)
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
-        /* Inner walk stopped mid-block or at its edge -- jump to the next
-         * block boundary so the outer loop always makes progress */
-        off += BLOCK_SIZE - (off % BLOCK_SIZE);
+        /* Inner walk stopped mid-block or at its edge.  Advance to the
+         * next block boundary so the outer loop always makes progress --
+         * but only when not already on one: an entry that ends exactly at
+         * the boundary would otherwise skip the whole next block, losing
+         * every name stored after it. */
+        if (off % BLOCK_SIZE)
+            off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     return -ENOENT;
 }
@@ -776,9 +788,13 @@ next:
             uint16_t esz = 5 + de->name_len;
             bo += esz; off += esz;
         }
-        /* Inner walk stopped mid-block or at its edge -- jump to the next
-         * block boundary so the outer loop always makes progress */
-        off += BLOCK_SIZE - (off % BLOCK_SIZE);
+        /* Inner walk stopped mid-block or at its edge.  Advance to the
+         * next block boundary so the outer loop always makes progress --
+         * but only when not already on one: an entry that ends exactly at
+         * the boundary would otherwise skip the whole next block, losing
+         * every name stored after it. */
+        if (off % BLOCK_SIZE)
+            off += BLOCK_SIZE - (off % BLOCK_SIZE);
     }
     terminal_writestring("\n");
 }
