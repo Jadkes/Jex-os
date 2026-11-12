@@ -400,7 +400,26 @@ void task_switch_impl() {
         return;
     }
 
-    uint32_t esp, ebp, eip;
+    uint32_t esp, ebp, eip, ebx, esi, edi;
+
+    /*
+     * ebx is the register the context jump uses to hold the target, so a
+     * task resumed from a switch finds it pointing at read_eip's return
+     * (0x...a4) instead of holding its own value.  The compiler spills the
+     * other callee-saved registers before the resume point below, but it
+     * only needs ebx's slot once it starts arranging the jump -- after the
+     * compare -- so the resume path never restores it.  A caller that keeps
+     * state in ebx across task_switch() then dereferences the entry address:
+     * completion_wait() keeps its completion_t* there and stamps a spinlock
+     * over this function's own code.
+     */
+    __asm__ volatile("mov %%ebx, %0" : "=m"(ebx));
+
+    /* Same hazard, same fix: whatever the compiler has not spilled yet
+     * would be replaced by the jump's leftovers when this task resumes. */
+    __asm__ volatile("mov %%esi, %0" : "=m"(esi));
+    __asm__ volatile("mov %%edi, %0" : "=m"(edi));
+
     __asm__ volatile("mov %%esp, %0" : "=r"(esp));
     __asm__ volatile("mov %%ebp, %0" : "=r"(ebp));
 
@@ -410,6 +429,9 @@ void task_switch_impl() {
      * mutex_block) this is the only path back to IF=1. */
     eip = read_eip();
     if (eip == 0x12345) {
+        __asm__ volatile("mov %0, %%ebx" : : "m"(ebx));
+        __asm__ volatile("mov %0, %%esi" : : "m"(esi));
+        __asm__ volatile("mov %0, %%edi" : : "m"(edi));
         __asm__ volatile("sti");
         return;
     }
