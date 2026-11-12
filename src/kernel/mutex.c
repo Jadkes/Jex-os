@@ -93,55 +93,64 @@ void mutex_lock(mutex_t* m)
             m->held = 1;
             spin_unlock_irqrestore(&m->lock, flags);
 #ifdef JEXOS_DEBUG
+            dbg_mtx_fast++;
             lockdep_acquire(&m->dep,
                             (uint32_t)__builtin_return_address(0));
 #endif
             return;
         }
 
-        /* Park: FIFO order keeps the lock fair-ish under load */
+        /* Park: set BLOCKED and enqueue under the same lock so the
+         * waker's READY write (also under m->lock) is serialized
+         * against our BLOCKED write.  The old code released m->lock
+         * first and then set BLOCKED under tasklist_lock -- a
+         * different lock -- allowing the waker's READY to be
+         * overwritten by our BLOCKED, causing a lost wakeup. */
         task_t* self = cur_task();
+        self->state = STATE_BLOCKED;
         mutex_waiter_push(m, self);
         spin_unlock_irqrestore(&m->lock, flags);
+#ifdef JEXOS_DEBUG
+        dbg_mtx_park++;
+#endif
 
-        task_block_current();
-        /* Woken -- loop and race for it again.  The re-check closes
-         * every lost-wakeup window between park and switch. */
+        task_switch();
     }
 }
 
 void mutex_unlock(mutex_t* m)
 {
 #ifdef JEXOS_DEBUG
-    /* One release hook covers both exit paths: plain release and the
-     * direct handoff below leave via different branches. */
     lockdep_release(&m->dep);
 #endif
     uint32_t flags;
     spin_lock_irqsave(&m->lock, &flags);
 
-    if (!m->wait_head) {
-        /* No contenders: plain release */
-        m->held = 0;
-        spin_unlock_irqrestore(&m->lock, flags);
-        return;
-    }
-
-    /* Direct handoff: ownership moves to the first live waiter without
-     * ever passing through unlocked. */
-    task_t* w;
-    while ((w = mutex_waiter_pop(m)) != NULL) {
-        /* Corpses are dropped; a live waiter gets a direct handoff */
-        if (w->state != STATE_ZOMBIE) {
-            w->state = STATE_READY;
-            spin_unlock_irqrestore(&m->lock, flags);
-            return;
-        }
-    }
-
-    /* Every waiter died while parked; nobody inherits */
+    /* Always release held before waking anyone.  The old "direct
+     * handoff" left held=1 and just marked a waiter READY, but the
+     * woken task re-contends instead of assuming ownership, so the
+     * token was orphaned: nobody holds the mutex and nobody ever
+     * unlocks it again.  Waking one waiter to race for a now-free
+     * lock loses FIFO fairness but matches what mutex_lock's wake
+     * path actually does. */
     m->held = 0;
+
+    while (m->wait_head) {
+        task_t* w = mutex_waiter_pop(m);
+        if (w && w->state != STATE_ZOMBIE) {
+            w->state = STATE_READY;
+#ifdef JEXOS_DEBUG
+            dbg_mtx_wake++;
+#endif
+            break;
+        }
+        /* Corpse parked on the wait list: drop it, try the next */
+    }
+
     spin_unlock_irqrestore(&m->lock, flags);
+#ifdef JEXOS_DEBUG
+    dbg_mtx_plain++;
+#endif
 }
 
 /* ── Completion ───────────────────────────────────────── */
@@ -174,8 +183,9 @@ void completion_wait(completion_t* c)
             c->wait_head = self;
         c->wait_tail = self;
 
+        self->state = STATE_BLOCKED;
         spin_unlock_irqrestore(&c->lock, flags);
-        task_block_current();
+        task_switch();
     }
 }
 
