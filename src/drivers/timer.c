@@ -13,6 +13,7 @@
 #include "task.h"
 #include "kernel/printk.h"
 #include "apic.h"
+#include "serial.h"
 /**
  * @brief Global system tick counter.
  * Marked volatile because it is modified within an interrupt handler.
@@ -28,6 +29,37 @@ volatile uint32_t system_ticks = 0;
 void timer_callback(registers_t *regs)
 {
     system_ticks++;
+
+#ifdef JEXOS_DEBUG
+    sched_watchdog_tick();
+    /* Mutex path counters every ~2s of PIT time: when a mutex wedges
+     * the frozen counter names the transition that stopped happening.
+     * Raw UART only -- log_serial's locks are not IRQ-context safe
+     * here and can be held by a STUCKDUMP on the other core.
+     * Opt-in: `make MUTEX_TRACE=1`. */
+#ifdef JEXOS_MUTEX_TRACE
+    {
+        static uint32_t mtx_dbg_div;
+        if (++mtx_dbg_div >= 200) {
+            mtx_dbg_div = 0;
+            extern uint32_t dbg_mtx_fast, dbg_mtx_park, dbg_mtx_wake, dbg_mtx_plain;
+            static const char hx[] = "0123456789ABCDEF";
+            const char* s;
+            uint32_t vals[4], v;
+            int i, j;
+            vals[0] = dbg_mtx_fast; vals[1] = dbg_mtx_park;
+            vals[2] = dbg_mtx_wake; vals[3] = dbg_mtx_plain;
+            s = "\nMTX f=";   while (*s) write_serial(*s++);
+            for (j = 0; j < 4; j++) {
+                v = vals[j];
+                for (i = 28; i >= 0; i -= 4) write_serial(hx[(v >> i) & 0xF]);
+                s = (j == 3) ? "\n" : (j == 1 ? " w=" : " p=");
+                while (*s) write_serial(*s++);
+            }
+        }
+    }
+#endif
+#endif
 
     /*
      * Preemption moves to the per-CPU LAPIC timers once they run: they
@@ -54,6 +86,40 @@ void timer_callback(registers_t *regs)
  */
 void lapic_timer_tick(registers_t *regs)
 {
+#ifdef JEXOS_DEBUG
+    sched_watchdog_tick();
+    /* Mutex path counters every ~200 slices from cpu0: when a mutex
+     * wedges, the frozen counter names the transition that stopped.
+     * Raw UART only -- log_serial's locks are not safe from tick
+     * context here and may be held by a STUCKDUMP on the other core.
+     * Opt-in: `make MUTEX_TRACE=1`. */
+#ifdef JEXOS_MUTEX_TRACE
+    if (cpu_id() == 0) {
+        static uint32_t mtx_dbg_div;
+        uint32_t d = ++mtx_dbg_div;
+        if (d == 1)
+            { const char* z = "\nMTX-ALIVE\n"; while (*z) write_serial(*z++); }
+        if (d >= 200) {
+            mtx_dbg_div = 0;
+            extern uint32_t dbg_mtx_fast, dbg_mtx_park, dbg_mtx_wake, dbg_mtx_plain;
+            static const char hx[] = "0123456789ABCDEF";
+            const char* s;
+            uint32_t vals[4], v;
+            int i, j;
+            vals[0] = dbg_mtx_fast; vals[1] = dbg_mtx_park;
+            vals[2] = dbg_mtx_wake; vals[3] = dbg_mtx_plain;
+            s = "\nMTX f=";   while (*s) write_serial(*s++);
+            for (j = 0; j < 4; j++) {
+                v = vals[j];
+                for (i = 28; i >= 0; i -= 4) write_serial(hx[(v >> i) & 0xF]);
+                s = (j == 3) ? "\n" : (j == 1 ? " w=" : " p=");
+                while (*s) write_serial(*s++);
+            }
+        }
+    }
+#endif
+#endif
+
     task_t* t = cur_task();
     if (t)
         t->cpu_ticks++;

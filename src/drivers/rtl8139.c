@@ -119,12 +119,15 @@ static int rtl8139_drain_rx(void)
         uint16_t rx_status = header[0];
         uint16_t rx_len    = header[1];
 
-        if (RTL8139_DEBUG)
-            pr_debug("RX: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
-
-        /* ROK bit (0x0001) in packet status means valid packet */
+        /* ROK bit (0x0001) in packet status means valid packet.
+         * Empty slots are the normal condition while polling, so log only
+         * real frames -- dumping every empty probe buries the network log
+         * under dozens of zero-length lines per ping. */
         if (!(rx_status & 0x0001))
             break;
+
+        if (RTL8139_DEBUG)
+            pr_debug("RX: off=0x%x status=0x%x len=0x%x\n", offset, rx_status, rx_len);
 
         /* Bound by the linearized copy size, not the ring size */
         if (rx_len > RX_MAX_FRAME || rx_len < 4)

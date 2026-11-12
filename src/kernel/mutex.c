@@ -20,6 +20,12 @@
 
 /* ── Mutex ────────────────────────────────────────────── */
 
+#ifdef JEXOS_DEBUG
+/* Path counters for the SMP hang hunts: a periodic timer dump of
+ * these shows which transition stops happening when a mutex wedges. */
+uint32_t dbg_mtx_fast, dbg_mtx_park, dbg_mtx_wake, dbg_mtx_plain;
+#endif
+
 void mutex_init(mutex_t* m, const char* name)
 {
     m->held = 0;

@@ -135,8 +135,21 @@ void isr_handler(registers_t *regs)
         return;
     }
 
-    /* Debug exception (int 1) — currently only handles single-step (TF flag) */
+    /* Debug exception (int 1) — currently only handles single-step (TF flag)
+     * and DR0 data watchpoints.  The watchpoint arms on irq_routines[0]:
+     * that word is never legitimately written after IRQ registration, but it
+     * sits inside the BSS range a runaway allocator once memset to zero.
+     * A hit means something wrote over live kernel data — dump and die loud
+     * instead of dissolving silently minutes later. */
     if (regs->int_no == 1) {
+        uint32_t dr6;
+        __asm__ volatile("mov %%dr6, %0" : "=r"(dr6));
+        if (dr6 & 1) {
+            __asm__ volatile("mov %0, %%dr6" :: "r"(0u));
+            panic_handler(regs);
+            for (;;)
+                asm volatile("hlt");
+        }
         if (regs->eflags & 0x100) {
             gdb_stub_handle_trace(regs);
         }

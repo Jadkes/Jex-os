@@ -47,10 +47,26 @@ ifeq ($(DEBUG),1)
 CFLAGS += -finstrument-functions
 endif
 
+# Scheduler switch tracing: per-context-switch SAVE2/SW2 dumps for PID 2.
+# Off by default -- it floods serial (~2000 lines/60s idle) and buries the
+# boot log.  Enable with `make SWITCH_TRACE=1` when debugging the
+# switch/trampoline path.
+ifeq ($(SWITCH_TRACE),1)
+CFLAGS += -DJEXOS_SWITCH_TRACE
+endif
+
+# Mutex-path counters (MTX f=/MTX-ALIVE) emitted from the tick handlers.
+# Off by default -- two lines every ~200 slices forever.  Enable with
+# `make MUTEX_TRACE=1` when a mutex wedge needs the transition counters.
+ifeq ($(MUTEX_TRACE),1)
+CFLAGS += -DJEXOS_MUTEX_TRACE
+endif
+
 ## Output files
 KERNEL    = jexos.bin
 IMG       = jexos.img
 ISO       = jexos.iso
+DELIVERY  = jexosg.img
 BUILD     = build
 OBJ_DIR   = $(BUILD)/obj
 BOOT_IMG  = jexos.boot.img

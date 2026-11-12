@@ -189,6 +189,9 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
               cur_task() ? cur_task()->id : 0, cpu_id(), kernel_stack_top);
 
 #ifdef JEXOS_SELFTEST
+    /* Trap any write to irq_routines[0] as a #DB panic: that word is dead
+     * after IRQ registration, and the silent BSS wipe crosses it. */
+    debug_arm_bss_watchpoint();
     pr_info("SELFTEST build: running full kernel self-test suite\n");
     {
         int failures = run_selftests();

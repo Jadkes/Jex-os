@@ -31,4 +31,14 @@ void init_irq();
  */
 void register_interrupt_handler(uint8_t n, irq_handler_t handler);
 
+/**
+ * @brief Arm a DR0 write watchpoint on irq_routines[0].
+ *
+ * Debug trap for the silent BSS-wipe bug: any write to that word (even
+ * zero-over-zero) raises #DB, which isr_handler turns into a full panic
+ * dump naming the writing instruction.  Never arm in production kernels —
+ * it burns DR0 and fires on corrupters only by construction.
+ */
+void debug_arm_bss_watchpoint(void);
+
 #endif // IRQ_H

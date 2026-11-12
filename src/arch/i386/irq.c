@@ -38,7 +38,19 @@ void* irq_routines[32] =   /* 16 PIC IRQs + extra vectors (LAPIC timer at 48) */
  */
 void register_interrupt_handler(uint8_t n, irq_handler_t handler)
 {
+#ifdef JEXOS_DEBUG
+    /* Boot-time audit trail: every registration prints slot + target so
+     * a lost or clobbered handler is visible in the serial log. */
+    pr_info("irq: register slot %u -> %p\n", n, handler);
+#endif
     irq_routines[n] = handler;
+}
+
+void debug_arm_bss_watchpoint(void)
+{
+    __asm__ volatile("mov %0, %%dr0" :: "r"((uint32_t)&irq_routines[0]));
+    /* L0=1, R/W0=01 (write), LEN0=11 (dword) */
+    __asm__ volatile("mov %0, %%dr7" :: "r"(0xD0001u));
 }
 
 /**
