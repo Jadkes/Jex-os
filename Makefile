@@ -28,11 +28,21 @@ PYTHON    = python3
 QEMU      = qemu-system-i386
 
 ## QEMU options shared by all run targets
+# out.mixing-engine=off matters: with QEMU's software mixer in the path the
+# AC'97 voice is fed a full mixer window per audio timer tick, which runs the
+# stream ~2.3x faster than the codec rate.  Bypassing it hands the samples to
+# the backend and the DMA position advances at the programmed 44.1 kHz.
+# It also turns fixed settings off, so each voice opens the backend at its own
+# format -- no resampler in the path.  That works because pa accepts
+# 44.1 kHz / s16 / stereo and PipeWire converts to the device rate itself;
+# a backend that insists on 48 kHz would play the stream fast.
 QEMU_OPTS = -serial stdio \
             -smp 2 \
-            -machine pcspk-audiodev=audio0 -audiodev pa,id=audio0 \
+            -machine pcspk-audiodev=audio0 \
+            -audiodev pa,id=audio0,out.mixing-engine=off \
             -netdev user,id=net0,hostfwd=tcp::8080-:80 \
-            -device rtl8139,netdev=net0
+            -device rtl8139,netdev=net0 \
+            -device AC97,audiodev=audio0
 
 ## Architecture 
 CFLAGS    = -m32 -march=i486 -ffreestanding -std=gnu99 -fno-pie -fno-stack-protector

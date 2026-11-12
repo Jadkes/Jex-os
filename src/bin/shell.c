@@ -37,6 +37,7 @@
 #include "dhcp.h"
 #include "debug/ftrace.h"
 #include "kernel/vsnprintf.h"
+#include "ac97.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -948,6 +949,8 @@ void help_command() {
     more_prompt(&hlp_line);
     terminal_writestring("  music     - Start Jexos Tune\n");
     more_prompt(&hlp_line);
+    terminal_writestring("  sndtest   - Play a 4-note arpeggio through AC'97\n");
+    more_prompt(&hlp_line);
     terminal_writestring("  uptime    - Show system uptime\n");
     more_prompt(&hlp_line);
     terminal_writestring("  cpuinfo   - CPU vendor, features and per-core state\n");
@@ -1407,6 +1410,22 @@ void execute_command() {
     }
     else if (strncmp(shell_buffer, "vix ", 4) == 0) start_editor(shell_buffer + 4);
     else if (strcmp(shell_buffer, "music") == 0) play_tune();
+    else if (strcmp(shell_buffer, "sndtest") == 0) {
+        if (!ac97_present()) {
+            terminal_writestring("No AC'97 audio device (run with the QEMU AC97 device).\n");
+        } else {
+            char rate[12];
+            int_to_string((int)ac97_rate(), rate);
+            terminal_writestring("AC'97: 4-note arpeggio at ");
+            terminal_writestring(rate);
+            terminal_writestring(" Hz...\n");
+            ac97_test_tone(440, 250);
+            ac97_test_tone(660, 250);
+            ac97_test_tone(880, 250);
+            ac97_test_tone(1100, 250);
+            terminal_writestring("tone queued.\n");
+        }
+    }
     else if (strcmp(shell_buffer, "spin") == 0) {
         terminal_writestring("spinning (Ctrl+C to stop) ");
         /* Dot every 250 ms so it's obvious the loop is alive but the

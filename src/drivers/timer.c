@@ -14,6 +14,7 @@
 #include "kernel/printk.h"
 #include "apic.h"
 #include "serial.h"
+#include "ac97.h"
 /**
  * @brief Global system tick counter.
  * Marked volatile because it is modified within an interrupt handler.
@@ -29,6 +30,11 @@ volatile uint32_t system_ticks = 0;
 void timer_callback(registers_t *regs)
 {
     system_ticks++;
+
+    /* Feed the AC'97 descriptor list.  It has no usable IRQ of its own
+     * (shared with the NIC), so the tick is its completion clock.  No-op
+     * when no controller was found. */
+    ac97_tick();
 
 #ifdef JEXOS_DEBUG
     sched_watchdog_tick();
