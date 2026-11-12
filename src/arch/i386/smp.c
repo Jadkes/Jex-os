@@ -31,6 +31,7 @@
 #include "idt.h"
 #include "ports.h"
 #include "task.h"
+#include "fpu.h"
 #include "timer.h"
 #include "kernel/printk.h"
 #include <string.h>
@@ -313,6 +314,10 @@ void ap_startup(void)
     __asm__ volatile("" ::: "memory");
 
     apic_init();
+
+    /* CR0/CR4 are per-CPU.  Until this runs, the first FXSAVE this core
+     * performs is an invalid instruction, so it must precede any switch. */
+    fpu_init_cpu();
 
     pr_info("CPU %d (LAPIC ID 0x%x) alive!\n", me, cpus[me].lapic_id);
 

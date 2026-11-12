@@ -94,6 +94,7 @@ int run_selftests(void)
     register_kallsyms_tests();
     register_lockdep_tests();
     register_jexfs_tests();
+    register_fpu_tests();
 
     int_to_string(test_count, buf);
     terminal_writestring("=== Running ");

@@ -6,6 +6,7 @@
  */
 
 #include "task.h"
+#include "fpu.h"
 #include "kernel/atomic.h"
 #include "kheap.h"
 #include "pmm.h"
@@ -258,6 +259,12 @@ void init_tasking() {
     cur_task()->eip = 0;
     cur_task()->page_directory = &kernel_directory;
     cur_task()->kstack = alloc_kernel_stack();
+    /* No FPU image means the bootstrap task would share the raw unit
+     * with every fork; that is a silent-corruption state, not a
+     * degraded one, so refuse to start. */
+    if (task_fpu_init(cur_task()) < 0)
+        panic_assert("init_tasking: no memory for FPU state",
+                     __FILE__, __LINE__);
     cur_task()->cpu_ticks = 0;
     cur_task()->next = NULL;
     cur_task()->state = STATE_RUNNING;
@@ -586,6 +593,12 @@ void task_switch_impl() {
         set_kernel_stack(ct->kstack + KSTACK_SIZE);
     }
 
+    /* Hand the FPU over.  Interrupts are off and nothing between here and
+     * the jump touches x87 (the kernel is built with -mno-80387), so the
+     * incoming image cannot be clobbered before its owner resumes. */
+    fpu_save(outgoing);
+    fpu_restore(ct);
+
 
     /* The context jump lands on either read_eip (resumed task, must be
      * IF=0 so the 2-instruction read_eip cannot be interrupted) or
@@ -700,6 +713,10 @@ int fork(registers_t* regs) {
     if (!child)
         return -ENOMEM;
     child->wait_next = NULL;
+    if (task_fpu_init(child) < 0) {
+        kfree(child);
+        return -ENOMEM;
+    }
 
     /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
@@ -842,6 +859,10 @@ int kernel_fork_on(void (*func)(void*), void* arg, int cpu)
     if (!child)
         return -ENOMEM;
     child->wait_next = NULL;
+    if (task_fpu_init(child) < 0) {
+        kfree(child);
+        return -ENOMEM;
+    }
 
     /* Clone the page directory */
     page_directory_t* new_dir = clone_page_directory(parent->page_directory);
@@ -1029,6 +1050,7 @@ int waitpid(int pid, int* status, int options) {
                      * fork() or kernel_fork() that exits leaks ~10+ physical
                      * pages.  Needs a full teardown walking all user PDEs. */
 
+                    task_fpu_free(scan);
                     kfree(scan);
 
                     /* Reap orphaned zombies reparented to us (PID 1/init):
@@ -1115,6 +1137,7 @@ static void reap_orphan_zombies(void)
 
             if (s->kstack)
                 free_kernel_stack((uint32_t)s->kstack);
+            task_fpu_free(s);
             kfree(s);
         }
     }
@@ -1276,6 +1299,12 @@ void task_spawn_idle(int cpu_index)
     }
 
     memset(idle, 0, sizeof(*idle));
+
+    if (task_fpu_init(idle) < 0) {
+        pr_err("no memory for idle FPU state on CPU %d\n", cpu_index);
+        kfree(idle);
+        return;
+    }
 
     uint32_t flags;
     spin_lock_irqsave(&pid_lock, &flags);

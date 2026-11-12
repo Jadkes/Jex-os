@@ -37,6 +37,9 @@ typedef struct task {
     uint32_t eip;                       /**< Instruction pointer for context switching. */
     page_directory_t* page_directory;   /**< Virtual memory space for this task. */
     uint32_t kstack;                    /**< Kernel stack base for this task. */
+    void* fpu_state;                    /**< Per-task x87/SSE image, aligned on use.
+                                             See fpu.h; NULL only when the CPU
+                                             reports no FPU. */
     task_state_t state;                 /**< Current execution state. */
     volatile int on_cpu;                /**< CPU index currently executing
                                              this task, or -1 if unclaimed.
