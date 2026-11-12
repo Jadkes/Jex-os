@@ -28,7 +28,14 @@
 #define INODE_TABLE_START       11
 #define DATA_START              54
 #define DEFAULT_BLOCK_COUNT     4096
-#define MAX_FILE_BLOCKS         JEXFS_DIRECT_COUNT    /* 8 direct blocks only */
+/*
+ * 8 direct blocks plus one indirect table of 512 entries -- the layout
+ * jexfs_bmap() already walks in the kernel.  Double indirect is not
+ * emitted: 520 KB is far more than the assets here need, and a file that
+ * big is truncated with a warning rather than silently mis-linked.
+ */
+#define MAX_FILE_BLOCKS \
+    ((uint32_t)JEXFS_DIRECT_COUNT + (uint32_t)JEXFS_INDIRECT_ENTRIES)
 
 /*
  * Inodes per block and total: 1024/42 = 24 (16 bytes spare per block).
@@ -109,6 +116,24 @@ static uint32_t dirent_write(uint8_t *buf, uint32_t offset,
     return offset + sizeof(*de) + name_len;
 }
 
+/**
+ * Copy the next BLOCK_SIZE bytes of @p f into @p block.
+ *
+ * @return 0 on success, -1 when the read failed.
+ */
+static int file_block_write(FILE *f, uint32_t block, const char *name)
+{
+    size_t nread;
+
+    block_bitmap_set(block);
+    nread = fread(img + (size_t)block * BLOCK_SIZE, 1, BLOCK_SIZE, f);
+    if (nread == 0 && ferror(f)) {
+        fprintf(stderr, "Warning: read error on %s\n", name);
+        return -1;
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main                                                               */
 /* ------------------------------------------------------------------ */
@@ -121,7 +146,7 @@ int main(int argc, char **argv)
 
     /* ---- parse arguments ---- */
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <output.img> [block_count]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <output.img> [block_count] [source_dir...]\n", argv[0]);
         return 1;
     }
     total_blocks = (argc > 2) ? (uint32_t)atoi(argv[2]) : DEFAULT_BLOCK_COUNT;
@@ -178,11 +203,31 @@ int main(int argc, char **argv)
     dir_off = dirent_write(dir_data, dir_off, 1, "..", JEXFS_DIRENT_DIR);
     root_inode->size = dir_off;
 
-    /* ---- pack files from rootfs/ ---- */
-    DIR *d = opendir("rootfs");
-    if (!d) {
-        fprintf(stderr, "Warning: cannot open rootfs/ (%s)\n", strerror(errno));
+    /* ---- pack files from the source directories ---- */
+    /* Defaults to rootfs/ so plain "mkjexfs out.img" keeps working; extra
+     * directories are merged into the image root, which is how generated
+     * assets get in without being written into the untracked runtime
+     * directory the user keeps there. */
+    const char *dirs[8];
+    uint32_t dir_count = 0;
+
+    if (argc > 3) {
+        for (int i = 3; i < argc && dir_count < 8; i++)
+            dirs[dir_count++] = argv[i];
     } else {
+        dirs[dir_count++] = "rootfs";
+    }
+
+    for (uint32_t di = 0; di < dir_count; di++) {
+        const char *dirpath = dirs[di];
+        DIR *d = opendir(dirpath);
+
+        if (!d) {
+            fprintf(stderr, "Warning: cannot open %s (%s)\n",
+                    dirpath, strerror(errno));
+            continue;
+        }
+
         struct dirent *ent;
         while ((ent = readdir(d)) != NULL) {
             if (ent->d_name[0] == '.')
@@ -190,7 +235,8 @@ int main(int argc, char **argv)
 
             /* Build source path */
             char path[512];
-            int ret = snprintf(path, sizeof(path), "rootfs/%s", ent->d_name);
+            int ret = snprintf(path, sizeof(path), "%s/%s",
+                               dirpath, ent->d_name);
             if (ret < 0 || (size_t)ret >= sizeof(path)) {
                 fprintf(stderr, "Warning: path too long for %s\n", ent->d_name);
                 continue;
@@ -219,7 +265,8 @@ int main(int argc, char **argv)
 
             uint32_t size = (uint32_t)file_size;
 
-            /* Clamp to direct-block limit (8 blocks = 8192 bytes) */
+            /* Clamp to what the packer writes: direct blocks plus the
+             * single indirect table. */
             if (size > MAX_FILE_BLOCKS * BLOCK_SIZE) {
                 fprintf(stderr, "Warning: %s is %lu bytes, truncating to %u\n",
                         ent->d_name, (unsigned long)file_size,
@@ -229,17 +276,21 @@ int main(int argc, char **argv)
 
             uint32_t blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
+            /* A file past the direct range also needs one block for the
+             * indirect table itself. */
+            uint32_t extra_blocks = blocks_needed > JEXFS_DIRECT_COUNT ? 1 : 0;
+
             /* Check resource limits */
             if (next_inode >= TOTAL_INODES) {
                 fprintf(stderr, "Error: out of inodes (max %u)\n", TOTAL_INODES);
                 fclose(f);
-                break;
+                goto packing_done;
             }
-            if (next_data_block + blocks_needed > total_blocks) {
+            if (next_data_block + blocks_needed + extra_blocks > total_blocks) {
                 fprintf(stderr, "Error: image full at block %u (max %u)\n",
                         next_data_block, total_blocks);
                 fclose(f);
-                break;
+                goto packing_done;
             }
 
             /* Allocate inode */
@@ -252,16 +303,31 @@ int main(int argc, char **argv)
             inode->size = size;
 
             /* Copy file data into direct blocks */
-            for (uint32_t b = 0; b < blocks_needed; b++) {
+            uint32_t direct_blocks = blocks_needed < JEXFS_DIRECT_COUNT
+                                     ? blocks_needed : JEXFS_DIRECT_COUNT;
+
+            for (uint32_t b = 0; b < direct_blocks; b++) {
                 inode->direct_blocks[b] = (uint16_t)next_data_block;
-                block_bitmap_set(next_data_block);
-                size_t nread = fread(img + next_data_block * BLOCK_SIZE,
-                                     1, BLOCK_SIZE, f);
-                if (nread == 0 && ferror(f)) {
-                    fprintf(stderr, "Warning: read error on %s\n", path);
+                if (file_block_write(f, next_data_block, ent->d_name) != 0)
                     break;
-                }
                 next_data_block++;
+            }
+
+            /* Everything past the direct range hangs off one indirect
+             * table of 512 u16 block numbers, table block first. */
+            if (blocks_needed > direct_blocks) {
+                uint32_t table = next_data_block++;
+                uint16_t *tbl = (uint16_t *)(img + (size_t)table * BLOCK_SIZE);
+
+                block_bitmap_set(table);
+                inode->indirect_block = (uint16_t)table;
+
+                for (uint32_t b = direct_blocks; b < blocks_needed; b++) {
+                    tbl[b - JEXFS_DIRECT_COUNT] = (uint16_t)next_data_block;
+                    if (file_block_write(f, next_data_block, ent->d_name) != 0)
+                        break;
+                    next_data_block++;
+                }
             }
 
             /* Add directory entry to root dir */
@@ -270,7 +336,7 @@ int main(int argc, char **argv)
                 fprintf(stderr, "Warning: root directory full, skipping %s\n",
                         ent->d_name);
                 fclose(f);
-                break;
+                goto packing_done;
             }
 
             dir_off = dirent_write(dir_data, dir_off,
@@ -287,6 +353,7 @@ int main(int argc, char **argv)
         closedir(d);
     }
 
+packing_done:
     /* ---- write image to disk ---- */
     FILE *out = fopen(argv[1], "wb");
     if (!out) {
