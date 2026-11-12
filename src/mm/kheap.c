@@ -278,6 +278,26 @@ void* __memcpy_chk(void* dest, const void* src, size_t len, size_t destlen) {
     return memcpy(dest, src, len);
 }
 
+void* memmove(void* dest, const void* src, size_t n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* s = (const unsigned char*)src;
+
+    if (d == s || !n)
+        return dest;
+
+    /* The forward loop is correct whenever the regions do not overlap, or
+     * when dest starts below src.  Only dest above src can overwrite bytes
+     * it has not read yet, so that is the one case that runs backwards. */
+    if (d < s || d >= s + n) {
+        while (n--) *d++ = *s++;
+    } else {
+        d += n;
+        s += n;
+        while (n--) *--d = *--s;
+    }
+    return dest;
+}
+
 void* memset(void* s, int c, size_t n) {
     unsigned char* p = (unsigned char*)s;
     while(n--) *p++ = (unsigned char)c;

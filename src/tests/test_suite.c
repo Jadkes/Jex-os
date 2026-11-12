@@ -15,6 +15,9 @@ static int test_count = 0;
 static int passed = 0;
 static int failed = 0;
 static int skipped = 0;
+/* Set by test_skip() so the runner does not also print a PASS for a test
+ * that decided at run time it has nothing to check. */
+static int skip_requested = 0;
 
 static char fail_msg[128];
 
@@ -61,6 +64,7 @@ void test_fail(const char* msg)
 void test_skip(const char* name)
 {
     skipped++;
+    skip_requested = 1;
     log_serial("[SKIP] ");
     log_serial(name);
     log_serial("\n");
@@ -95,6 +99,7 @@ int run_selftests(void)
     register_lockdep_tests();
     register_jexfs_tests();
     register_fpu_tests();
+    register_mp3_tests();
 
     int_to_string(test_count, buf);
     terminal_writestring("=== Running ");
@@ -113,8 +118,11 @@ int run_selftests(void)
          * test name as the last line in the log. */
         announce("[RUN  ] ", tests[i].name);
         int before_fail = failed;
+        skip_requested = 0;
         tests[i].fn();
-        if (failed == before_fail) {
+        /* A test may declare itself skipped at run time (missing asset,
+         * absent hardware); test_skip() already reported it, so no PASS. */
+        if (failed == before_fail && !skip_requested) {
             test_pass(tests[i].name);
         }
     }

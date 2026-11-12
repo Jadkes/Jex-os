@@ -56,5 +56,6 @@ void register_kallsyms_tests(void);
 void register_lockdep_tests(void);
 void register_jexfs_tests(void);
 void register_fpu_tests(void);
+void register_mp3_tests(void);
 
 #endif /* TEST_SUITE_H */

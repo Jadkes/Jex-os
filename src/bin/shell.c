@@ -38,6 +38,8 @@
 #include "debug/ftrace.h"
 #include "kernel/vsnprintf.h"
 #include "ac97.h"
+#include "mp3.h"
+#include "jexos/errno.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -827,6 +829,71 @@ static int got_ctrl_c(void) {
     return keyboard_read() == CTRL('C');
 }
 
+/**
+ * @brief Play an MP3 file through AC'97, reporting what came out.
+ *
+ * Kept out of the command chain because it is a page of reporting, and
+ * behind mp3_play_file() because this file is built with -mno-80387: the
+ * float decoder must not leak into the shell's translation unit.
+ */
+static void play_command(const char* path) {
+    mp3_info_t info;
+    char buf[24];
+    int rc;
+
+    while (*path == ' ') path++;
+    if (!*path) {
+        terminal_writestring("Usage: play <file.mp3>\n");
+        return;
+    }
+    if (!ac97_present()) {
+        terminal_writestring("No AC'97 audio device (run with the QEMU AC97 device).\n");
+        return;
+    }
+
+    terminal_writestring("Playing ");
+    terminal_writestring(path);
+    terminal_writestring(" (Ctrl+C stops)...\n");
+
+    rc = mp3_play_file(path, got_ctrl_c, &info);
+
+    if (rc == 0 || rc == -EINTR) {
+        uint32_t millis = (info.frames % info.sample_rate) * 1000
+                          / info.sample_rate;
+
+        terminal_writestring(rc == 0 ? "Done: " : "Stopped: ");
+        int_to_string((int)(info.frames / info.sample_rate), buf);
+        terminal_writestring(buf);
+        terminal_putchar('.');
+        if (millis < 100) terminal_putchar('0');
+        if (millis < 10) terminal_putchar('0');
+        int_to_string((int)millis, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" s at ");
+        int_to_string((int)info.sample_rate, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" Hz, ");
+        terminal_writestring(info.channels == 1 ? "mono" : "stereo");
+        terminal_writestring(", ");
+        int_to_string((int)info.bitrate_kbps, buf);
+        terminal_writestring(buf);
+        terminal_writestring(" kbit/s\n");
+        return;
+    }
+
+    if (rc == -ENOENT)
+        terminal_writestring("No such file.\n");
+    else if (rc == -EINVAL)
+        terminal_writestring("Not an MPEG-1 Layer III stream at 44.1 kHz "
+                             "(other rates are not resampled yet).\n");
+    else if (rc == -EBUSY)
+        terminal_writestring("Another playback is already running.\n");
+    else if (rc == -ENOMEM)
+        terminal_writestring("Out of memory: playback needs about 48 KB.\n");
+    else
+        terminal_writestring("Playback failed (audio or file I/O error).\n");
+}
+
 /* sleep() slice length — short enough that ^C feels instant */
 #define SLEEP_SLICE_MS 50
 
@@ -950,6 +1017,8 @@ void help_command() {
     terminal_writestring("  music     - Start Jexos Tune\n");
     more_prompt(&hlp_line);
     terminal_writestring("  sndtest   - Play a 4-note arpeggio through AC'97\n");
+    more_prompt(&hlp_line);
+    terminal_writestring("  play <f>  - Decode an MP3 file to AC'97 (Ctrl+C stops)\n");
     more_prompt(&hlp_line);
     terminal_writestring("  uptime    - Show system uptime\n");
     more_prompt(&hlp_line);
@@ -1426,6 +1495,7 @@ void execute_command() {
             terminal_writestring("tone queued.\n");
         }
     }
+    else if (strncmp(shell_buffer, "play ", 5) == 0) play_command(shell_buffer + 5);
     else if (strcmp(shell_buffer, "spin") == 0) {
         terminal_writestring("spinning (Ctrl+C to stop) ");
         /* Dot every 250 ms so it's obvious the loop is alive but the
