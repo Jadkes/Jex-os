@@ -192,12 +192,12 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [ ] **IPI Reschedule**: wake a CPU's scheduler remotely instead of polling
 - [ ] **Per-CPU `%gs`**: cache the CPU index / per-CPU pointer instead of an MMIO LAPIC ID read + scan in every `cpu_id()`
 - [ ] **Remaining shootdown scope**: generic page-table unmaps (`paging_unmap_page` userspace paths) still flush locally only; wire them once ring-3 makes remote aliasing reachable.
-- [ ] **FPU/SSE State**: no fxsave/frstor or #NM handler — float code in two interleaved tasks corrupts state (pre-existing, worse with SMP)
+- [ ] **FPU/SSE State**: the kernel is deliberately integer-only — `-mno-80387` makes any float in kernel C fail at link, because nothing saves x87 state across a switch. What is still missing is ring-3 support: TCC-emitted `double` code runs on the shared x87 unit with no save/restore and no `#NM` handler, so two user tasks using float corrupt each other silently. Doing it properly means a per-task 512-byte FXSAVE area (16-byte aligned, or `fnsave` when CPUID says no SSE), `CR0.MP=1`/`EM=0`, `CR4.OSFXSR|OSXMMEXCPT`, and eager save/restore in `task_switch()`; it also means dropping `-mno-80387` and accepting float in kernel code, which needs the no-float-in-IRQ rule documented (an ISR's x87 use is saved as the interrupted task's state).
 - [x] **LAPIC Timer**: per-CPU tick source armed after PIT calibration; PIT keeps wall-clock duty only
 - [x] **Per-CPU TSS**: GDT grew one TSS slot per core, each AP LTRs its own at startup — ring-3 interrupts work off-BSP
 - [ ] **Page-Directory Teardown on Reap**: waitpid still leaks cloned address spaces (see TODO in task.c)
 - [x] **Atomic Console Writes**: log_serial locks whole messages; serial output is line-clean with both cores logging
-- [ ] **SMP Runtime Soak**: exercise fork-heavy loops, Ctrl+C storms and `top` on both cores for a while before trusting it (FPU corruption and TLB shootdown above are the known sharp edges)
+- [ ] **SMP Runtime Soak**: exercise fork-heavy loops, Ctrl+C storms and `top` on both cores for a while before trusting it (ring-3 FPU state and the PID 2 boot stack above are the known sharp edges)
 - [ ] **Wire Completions to Hardware**: completion_t exists but nothing signals one; IRQ-driven IDE transfers would be the first real user
 - [ ] **Kernel-Resident Apps**: ping/serve/vix live in kernel space where a bug takes the machine down — migrate to the ring-3 user/ tree (needs console syscalls, then ELF injection into the rootfs image)
 - [ ] **Userspace Socket API**: networking is kernel-builtin only; syscalls or a socket fs before ring-3 programs can speak IP
@@ -232,7 +232,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 ### Audio
 - [ ] **Speaker Driver v2 (blocking → timer-driven)**: `beep()` is `play_sound(); sleep(ms); stop_sound();`, and `sleep()` is an `hlt` spin counted in ticks — so the calling task sits in `beep()` for the whole note and the shell takes no input until the tune ends. Needs a note queue advanced from the tick handler so `beep()` returns immediately.
 - [x] **PCM Output Driver**: AC'97 (`src/drivers/ac97.c`), 44.1 kHz s16 stereo over PCI bus-master DMA. The PC speaker is a 1-bit square wave (PIT ch2 → port 0x61) — no amplitude, no sample clock, so it could never play samples. `sndtest` plays a four-note arpeggio. Two warts worth knowing: completion is polled from the PIT tick because QEMU puts AC'97 and RTL8139 on the same IRQ line and `irq.c` allows one handler per line; and `out.mixing-engine=off` in `QEMU_OPTS` is what keeps the stream at real time (see the comment there).
-- [ ] **MP3 Playback**: fixed-point MPEG-1 Layer III (Huffman, IMDCT, polyphase synthesis) reading `.mp3` from JexFS and feeding the PCM driver. Must be integer-only — there is no `fxsave`/`frstor` and no `#NM` handler, so a float decoder corrupts FPU state across tasks (see the FPU/SSE item above). Keep the first cut small: mono, 44.1 kHz, CBR; VBR + joint stereo is thousands of lines more.
+- [ ] **MP3 Playback**: fixed-point MPEG-1 Layer III (Huffman, IMDCT, polyphase synthesis) reading `.mp3` from JexFS and feeding the PCM driver. Integer-only is enforced, not just preferred: `-mno-80387` rejects float in kernel C at link time (see the FPU/SSE item above). Keep the first cut small: mono, 44.1 kHz, CBR; VBR + joint stereo is thousands of lines more.
 
 ### Deep End
 - [ ] **Grow TCC toward real C**: pointers and structs would let the OS compile non-toy programs of itself

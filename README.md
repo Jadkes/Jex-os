@@ -68,7 +68,7 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; kernel restores it on boot, mirrors writes back — history and files survive reboots from read-only media
 - [x] TLB shootdown IPIs: `free_kernel_stack()` flushes remote TLBs via IPI before returning frames to PMM
 - [ ] PID 2 boot stack page: give the BSP task a proper kernel stack page so ISR frames never land on the real boot stack (eliminates SMP iret corruption class)
-- [ ] FPU state saving: fxsave/frstor + #NM handler for safe float interleaving
+- [ ] Per-task FPU state: the kernel is integer-only by construction (`-mno-80387` turns any kernel float into a link error, since nothing saves x87 state across a switch); ring-3 float still needs a per-task FXSAVE area and `#NM` handling
 - [ ] Pipes & redirection
 
 ## Status

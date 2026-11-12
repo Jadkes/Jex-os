@@ -45,7 +45,14 @@ QEMU_OPTS = -serial stdio \
             -device AC97,audiodev=audio0
 
 ## Architecture 
+# -mno-80387 is a correctness guard, not an optimization.  Nothing saves the
+# x87 state across a task switch, so a float in kernel C would silently
+# corrupt whatever the preempted task had in its registers.  With the flag,
+# such a float compiles to a soft-float call that nothing provides and the
+# link fails -- loud, immediate, and impossible to miss.  See TODO.md
+# "FPU/SSE State" before removing it.
 CFLAGS    = -m32 -march=i486 -ffreestanding -std=gnu99 -fno-pie -fno-stack-protector
+CFLAGS   += -mno-80387
 CFLAGS   += -O2 -Wall -Wextra
 CFLAGS   += -fno-omit-frame-pointer
 CFLAGS   += -Isrc/include -Isrc/tests
