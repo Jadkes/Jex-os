@@ -156,9 +156,9 @@ ROOTFS_FILES = $(wildcard rootfs/*)
 # can be compared by ear or by capture.  Two files, because the stereo and
 # mono decode paths differ: /test.mp3 is 64 kbit/s stereo, /test-mono.mp3
 # is 32 kbit/s mono and exercises the channel duplication.  They are packed
-# into the image from $(ASSETS_DIR) instead of rootfs/, which is the user's
-# untracked runtime directory.  Best-effort: without ffmpeg the image still
-# builds, it just ships no sample.
+# into the image from $(ASSETS_DIR) alongside rootfs/ (the user's untracked
+# runtime directory) rather than being written into it.  Best-effort: without
+# ffmpeg the image still builds, it just ships no sample.
 ASSETS_DIR      = $(BUILD)/assets
 MP3_ASSET       = $(ASSETS_DIR)/test.mp3
 MP3_MONO_ASSET  = $(ASSETS_DIR)/test-mono.mp3
@@ -197,7 +197,7 @@ $(KERNEL): $(OBJECTS) $(GEN_KS)
 
 $(IMG): $(MKJEXFS) $(ROOTFS_FILES) $(MP3_ASSET) $(MP3_MONO_ASSET)
 	$(Q)printf "  IMG     $@\n"
-	$(Q)./$(MKJEXFS) $@ 4096 $(ASSETS_DIR)
+	$(Q)./$(MKJEXFS) $@ 4096 $(if $(wildcard rootfs),rootfs) $(ASSETS_DIR)
 
 $(FLAG_STAMP): FORCE
 	$(Q)mkdir -p $(@D)
