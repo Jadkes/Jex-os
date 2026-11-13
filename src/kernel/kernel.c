@@ -188,9 +188,9 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
     pr_serial("task: pid %d on cpu%d, kstack top 0x%08x\n",
               cur_task() ? cur_task()->id : 0, cpu_id(), kernel_stack_top);
 
-    /* Restore persisted rootfs state from the disk mirror before the
-     * selftest suite or the shell can touch JexFS.  Sleeps on the IDE
-     * mutex, so it must run here, not in an initcall. */
+    /* Pick the rootfs: a JexFS on the disk if there is one, otherwise the
+     * GRUB module.  Sleeps on the IDE mutex, so it must run here, not in
+     * an initcall, and before the selftest suite or shell touch JexFS. */
     jexfs_mount_persistence();
 
 #ifdef JEXOS_SELFTEST

@@ -23,6 +23,7 @@
 #include "terminal.h"
 #include <jexos/errno.h>
 #include "kernel/mutex.h"
+#include "pmm.h"
 
 extern multiboot_info_t *g_mboot_info;
 
@@ -36,13 +37,20 @@ static uint8_t *ramdisk_base;
 static uint32_t ramdisk_blocks;
 
 /*
- * Persistence mirror: LBA of a rootfs copy kept on the tail of the
- * primary master.  When booting from read-only media (hybrid ISO as
- * hard disk), every rootfs write is mirrored there and
- * jexfs_mount_persistence() restores the mirror over the RAM image,
- * so state survives reboots.  0 disables mirroring.
+ * Disk root: LBA of the sector holding block 0 when the mounted rootfs
+ * lives on the primary master.  Zero for a raw image at the start of the
+ * drive; the tail of a delivery image otherwise.  ramdisk_base == NULL
+ * selects the disk path.
  */
-static uint32_t mirror_lba;
+static uint32_t disk_root_lba;
+
+/*
+ * Page-aligned extent of the multiboot module that carried the RAM
+ * image.  Once the disk mount replaces it, these frames go back to the
+ * PMM so a 64 MB image stops costing half of guest RAM.
+ */
+static uint32_t module_first_frame;
+static uint32_t module_frame_count;
 
 /* ── Filesystem lock ───────────────────────────────────
  * One coarse sleeping lock covers every metadata operation.  JexFS ops
@@ -91,8 +99,9 @@ void read_block(uint32_t block, uint8_t *buffer)
         memcpy(buffer, ramdisk_base + block * BLOCK_SIZE, BLOCK_SIZE);
         return;
     }
-    ide_read_sector(block * 2, buffer);
-    ide_read_sector(block * 2 + 1, buffer + 512);
+    uint32_t lba = disk_root_lba + block * 2;
+    ide_read_sector(lba, buffer);
+    ide_read_sector(lba + 1, buffer + 512);
 }
 
 void write_block(uint32_t block, const uint8_t *buffer)
@@ -103,15 +112,11 @@ void write_block(uint32_t block, const uint8_t *buffer)
             return;
         }
         memcpy(ramdisk_base + block * BLOCK_SIZE, buffer, BLOCK_SIZE);
-        /* Mirror to the disk tail so state survives reboot */
-        if (mirror_lba) {
-            ide_write_sector(mirror_lba + block * 2, buffer);
-            ide_write_sector(mirror_lba + block * 2 + 1, buffer + 512);
-        }
         return;
     }
-    ide_write_sector(block * 2, buffer);
-    ide_write_sector(block * 2 + 1, buffer + 512);
+    uint32_t lba = disk_root_lba + block * 2;
+    ide_write_sector(lba, buffer);
+    ide_write_sector(lba + 1, buffer + 512);
 }
 
 /**
@@ -800,14 +805,90 @@ next:
 }
 
 /**
- * jexfs_mount_persistence -- Restore any rootfs mirror from the primary
- * master and enable write mirroring.
+ * jexfs_release_module -- Return the module root image to the PMM.
  *
- * The mirror occupies the last ramdisk_blocks blocks of the disk (the
- * delivery image appends a fresh rootfs there at build time).  A valid
- * JexFS superblock in the mirror means an earlier boot left state behind:
- * restore it over the freshly loaded RAM image so the mount sees the
- * persisted filesystem instead of the pristine module payload.
+ * The image is the GRUB-loaded multiboot module that pmm_init() pinned.
+ * Once the disk is authoritative nothing reads it, so the frames become
+ * usable heap memory.  Only the page-aligned interior is freed: the first
+ * or last page can be shared with something the loader placed there.
+ */
+static void jexfs_release_module(void)
+{
+    if (!module_frame_count)
+        return;
+    pmm_free_blocks((void *)module_first_frame, module_frame_count);
+    pr_info("Freed %u KB of module root image, %u KB now free\n",
+            module_frame_count * (PMM_BLOCK_SIZE / 1024),
+            pmm_get_free_memory() / 1024);
+    module_first_frame = 0;
+    module_frame_count = 0;
+}
+
+/**
+ * jexfs_read_superblock -- Read and validate a JexFS superblock from disk.
+ *
+ * @param lba First sector of filesystem block 0
+ * @param out Filled with the superblock on success
+ * @return 0 on a valid superblock, -1 otherwise
+ */
+static int jexfs_read_superblock(uint32_t lba, struct jex_superblock *out)
+{
+    uint8_t buf[BLOCK_SIZE];
+
+    if (ide_read_sector(lba + 2, buf) < 0 ||
+        ide_read_sector(lba + 3, buf + 512) < 0)
+        return -1;
+    memcpy(out, buf, sizeof(*out));
+    if (out->magic != JEXFS_MAGIC || out->inode_size != JEXFS_INODE_SIZE)
+        return -1;
+    return 0;
+}
+
+/**
+ * jexfs_mount_disk -- Adopt the filesystem at lba as the mounted rootfs.
+ *
+ * Validates the superblock and checks that the described image actually
+ * fits on the drive before committing anything, then switches block I/O
+ * to the disk.
+ *
+ * @param lba First sector of filesystem block 0
+ * @param expected_blocks Expected total_blocks, or 0 to accept any
+ * @param total_sectors Drive capacity from IDENTIFY
+ * @return 0 on success, -1 if there is no usable filesystem there
+ */
+static int jexfs_mount_disk(uint32_t lba, uint32_t expected_blocks,
+                            uint32_t total_sectors)
+{
+    struct jex_superblock probe;
+
+    if (jexfs_read_superblock(lba, &probe) < 0)
+        return -1;
+    if (probe.total_blocks == 0)
+        return -1;
+    if (expected_blocks && probe.total_blocks != expected_blocks)
+        return -1;
+    if ((uint64_t)lba + (uint64_t)probe.total_blocks * 2 > total_sectors)
+        return -1;
+
+    sb            = probe;
+    disk_root_lba = lba;
+    ramdisk_base  = NULL;
+    cwd_inode     = 1;
+    jexfs_mounted = 1;
+
+    pr_info("Mounted from disk @ LBA %u: %u blocks, %u inodes\n",
+            lba, sb.total_blocks, sb.total_inodes);
+    return 0;
+}
+
+/**
+ * jexfs_mount_persistence -- Choose the disk or the module as the rootfs.
+ *
+ * Prefers a JexFS on the primary master: either a raw image at LBA 0
+ * (`make run`) or the copy a delivery image appends at the tail.  Mounting
+ * the disk directly means the module is no longer the live rootfs, so its
+ * pages are handed back to the PMM.  When no disk filesystem is found the
+ * module stays live.
  *
  * Runs in process context (sleeping IDE mutex), after IRQs are enabled
  * and before anything touches JexFS blocks.
@@ -815,52 +896,37 @@ next:
 void jexfs_mount_persistence(void)
 {
     uint32_t total_sectors;
-    uint32_t mirror_sectors = ramdisk_blocks * 2;
-    uint8_t buf[BLOCK_SIZE];
-    struct jex_superblock *probe;
 
-    /* Without a RAM image the rootfs already lives on this disk and
-     * persists naturally.  The IDE driver has no initcall of its own,
-     * so select the drive here -- we are its only user. */
-    if (!ramdisk_base)
-        return;
+    /* The IDE driver has no initcall of its own; this is its only init
+     * point, and it must not run from an initcall because reads sleep. */
     ide_init();
 
     if (ide_identify(&total_sectors) < 0) {
-        pr_info("No writable disk found, persistence disabled\n");
-        return;
-    }
-    if (total_sectors <= mirror_sectors) {
-        return;
-    }
-
-    uint32_t start = total_sectors - mirror_sectors;
-
-    if (ide_read_sector(start + 2, buf) < 0 ||
-        ide_read_sector(start + 3, buf + 512) < 0)
-        return;
-
-    probe = (struct jex_superblock *)buf;
-    if (probe->magic != JEXFS_MAGIC ||
-        probe->inode_size != JEXFS_INODE_SIZE ||
-        probe->total_blocks != ramdisk_blocks) {
-        pr_info("No valid rootfs mirror at LBA %u, starting fresh\n", start);
+        pr_info("No disk found, rootfs stays %s\n",
+                ramdisk_base ? "in the module" : "unmounted");
         return;
     }
 
-    mirror_lba = start;
-    pr_info("Restoring %u blocks from mirror @ LBA %u\n",
-            ramdisk_blocks, mirror_lba);
-    for (uint32_t i = 0; i < ramdisk_blocks; i++) {
-        ide_read_sector(mirror_lba + i * 2,
-                        ramdisk_base + i * BLOCK_SIZE);
-        ide_read_sector(mirror_lba + i * 2 + 1,
-                        ramdisk_base + i * BLOCK_SIZE + 512);
+    /* Raw JexFS at the start of the drive (`make run`). */
+    if (jexfs_mount_disk(0, 0, total_sectors) == 0) {
+        jexfs_release_module();
+        return;
     }
 
-    probe = (struct jex_superblock *)(ramdisk_base + BLOCK_SIZE);
-    pr_info("Mirror active: sb.total_blocks=%u total_inodes=%u\n",
-            probe->total_blocks, probe->total_inodes);
+    /* Delivery images append the rootfs after the ISO. */
+    if (ramdisk_blocks && total_sectors > ramdisk_blocks * 2) {
+        uint32_t tail = total_sectors - ramdisk_blocks * 2;
+        if (jexfs_mount_disk(tail, ramdisk_blocks, total_sectors) == 0) {
+            jexfs_release_module();
+            return;
+        }
+    }
+
+    if (ramdisk_base)
+        pr_info("No disk rootfs, using module image @ 0x%08x\n",
+                (uint32_t)ramdisk_base);
+    else
+        pr_info("No disk rootfs and no module image\n");
 }
 
 void jexfs_init(void)
@@ -869,7 +935,8 @@ void jexfs_init(void)
     pr_info("Mounting JexFS v2...\n");
 
     /* A GRUB-loaded multiboot module carries the root image in RAM.
-     * Probe each module's superblock before falling back to the IDE disk. */
+     * Probe each module for a valid superblock; the disk is tried later,
+     * from process context, because IDE reads sleep on a mutex. */
     if (g_mboot_info->flags & (1 << 3)) {
         multiboot_module_t *mod = (multiboot_module_t *)g_mboot_info->mods_addr;
         for (uint32_t i = 0; i < g_mboot_info->mods_count; i++, mod++) {
@@ -881,11 +948,26 @@ void jexfs_init(void)
             if (probe->magic == JEXFS_MAGIC &&
                 probe->inode_size == JEXFS_INODE_SIZE) {
                 jexfs_set_ramdisk((void *)mod->start, size);
+                /* Remember the page-aligned interior for a later free. */
+                uint32_t first = (mod->start + PMM_BLOCK_SIZE - 1)
+                                 & ~(uint32_t)(PMM_BLOCK_SIZE - 1);
+                uint32_t last  = mod->end & ~(uint32_t)(PMM_BLOCK_SIZE - 1);
+                if (last > first) {
+                    module_first_frame = first;
+                    module_frame_count = (last - first) / PMM_BLOCK_SIZE;
+                }
                 pr_info("Root image from module @ 0x%08x, %u bytes\n",
                         mod->start, size);
                 break;
             }
         }
+    }
+
+    /* Without a module the rootfs may live on the disk, but IDE reads
+     * sleep and this runs from an initcall, so defer the mount. */
+    if (!ramdisk_base) {
+        pr_info("No module root image, disk mount deferred\n");
+        return;
     }
 
     uint8_t buf[BLOCK_SIZE];
