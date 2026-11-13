@@ -2,17 +2,46 @@
 
 The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
+## 🚧 In Progress — JexFS v3 (target: v0.8)
+
+JexFS v3 is a format break, not a tuning pass. It changes the four things
+that separate a major filesystem version from a point release: address
+width, allocation model, consistency model, and integrity.
+
+- **Address space** — 32-bit block numbers and 4 KB blocks (16 TiB ceiling)
+  instead of 16-bit block numbers and 1 KB blocks (64 MB ceiling); 64-bit
+  file sizes instead of 32-bit.
+- **Allocation** — an extent tree in the inode instead of 8 direct + one
+  single-indirect + one double-indirect block pointer.
+- **Consistency** — a metadata journal with ordered data writes (ext3
+  model), replayed at mount, instead of in-place metadata updates with no
+  recovery path.
+- **Integrity** — crc32c on every metadata block, a filesystem UUID,
+  per-inode generation numbers, and a backup superblock.
+
+Explicit non-goals for v3.0: snapshots, reflinks, compression,
+encryption, quotas, multi-device.
+
+| Phase | Work | Exit criterion | Status |
+|---|---|---|---|
+| 0 | Disk-first mount: probe LBA 0 or the delivery tail, mount the disk copy, return the module pages to the PMM (v2 format unchanged) | `free` recovers ~64 MB; audio, suite and delivery round-trip pass | [x] |
+| 1 | `docs/jexfs-v3.md`, `mkjexfs3` + host verifier, read-only v3 mount | Host-built v3 image mounts and every file verifies byte-for-byte | [ ] |
+| 2 | Metadata journal, replay, ordered data; crash injection | Kill QEMU at random points during writes, remount, `jexfsck` clean | [ ] |
+| 3 | Extent tree, delayed allocation, hashed directories | Image larger than 64 MB; large-file metadata reads measurably lower | [ ] |
+| 4 | v2→v3 converter, persistence rewrite, docs | Existing `jexos.img` converts; `make deliver` round-trips | [ ] |
+
 ## ✅ Completed Milestones
 
 ### v0.8.0 — 64 MB Disk, Build-Time MP3 Transcode, AC'97 Underrun Fix
 
-- [x] **64 MB Disk Image**: `IMG_BLOCKS ?= 65536` (64 MB at 1 KB blocks) is the format ceiling, not a preference — inode block numbers are `uint16_t` and the block bitmap is 8 blocks (65536 bits), so `mkjexfs` rejects anything larger. GRUB loads the image as a multiboot module and the kernel uses it in place rather than copying it; `pmm_init()` reserves module memory, so a 64 MB image still leaves roughly half of the 128 MB guest RAM free. Verified `jexos.img` is exactly 67,108,864 bytes and every packed file compares byte-for-byte against its source.
+- [x] **Disk-First Rootfs (JexFS v3 Phase 0)**: `jexfs_mount_persistence()` probes the primary master before trusting the GRUB module. A JexFS superblock at LBA 0 (`make run`) or at `total_sectors - ramdisk_blocks*2` (the tail of a `make deliver` image) is validated against the drive capacity, and the mount switches block I/O to that copy. The module is then cold: its page-aligned interior goes back to `pmm_free_blocks()`, so the RAM it pinned is usable again. Measured on a 128 MB guest: 61,708 KB free at PMM init, 127,232 KB after the switch — 65,536 KB returned. `make run` boots a throwaway `build/run-jexos.img` copy (`run-debug` likewise) so guest writes no longer dirty the build artifact; `jexos.img` has the same md5 before and after a boot. Verified disk-mode selftest (exit 33), playback from disk (9.68 s of music in a 9.94 s capture, max RMS 21083), and a delivery round-trip: the first boot writes the tail, the second mounts the changed tail and still passes. No disk and a module still boots from the module exactly as before.
+- [x] **64 MB Disk Image**: `IMG_BLOCKS ?= 65536` (64 MB at 1 KB blocks) is the format ceiling, not a preference — inode block numbers are `uint16_t` and the block bitmap is 8 blocks (65536 bits), so `mkjexfs` rejects anything larger. GRUB loads the image as a multiboot module so a diskless boot still works, but the module is only a fallback now: when an IDE disk is present the kernel mounts the on-disk copy and frees the module (see the disk-first bullet above). Verified `jexos.img` is exactly 67,108,864 bytes and every packed file compares byte-for-byte against its source.
 - [x] **Build-Time MP3 Transcode**: the image rule stages `rootfs/` into `build/rootfs`, re-encodes each `rootfs/*.mp3` with ffmpeg (`-ar 44100`, libmp3lame, CBR 96 kbit/s, metadata stripped) and packs the result; `rootfs/` itself is never modified, so the originals stay untouched. `ROOTFS_MP3_BITRATE=<kbps>` overrides the rate. A missing or failing ffmpeg packs the original with a warning instead of failing the build, and the staging directory is wiped on every rebuild so deleted rootfs files cannot linger in the image. Verified with a 48 kHz source: build emits 44.1 kHz / 96 kbit/s (2,984,542 bytes), source md5 unchanged, image contents byte-verified.
 - [x] **AC'97 Descriptor Ring**: CIV and LVI are 5-bit indices that wrap at 32, but the driver published an 8-entry list and wrapped its own arithmetic at 8 — past the first cycle the bus master fetched descriptors 8–31 out of bounds and halted at LVI. With `out.mixing-engine=off` the backend fills its whole period with silence as soon as the list stops, which is the music/silence alternation that was audible. The list is now 32 entries, LVI is an absolute index, only descriptors the ring can fill are queued, and the engine is left halted only when the ring is truly empty. Verified: a 4 s tone records as one continuous 4040 ms block, Get Lucky as 24.7 s of continuous music, and the 64 MB image yields 9.7 s of music in a 9.97 s capture.
 
 ### v0.7.9 — Selftest Suite, Build Flavors, Bug Harvest
 
-- [x] **Rootfs Persistence Mirror**: `make deliver` builds `jexosg.img` = hybrid ISO + fresh rootfs appended at the tail; booted as an IDE hard disk, the kernel IDENTIFYs the drive, validates a JexFS superblock in the last `ramdisk_blocks` blocks, restores that mirror over the RAM rootfs (`jexfs_mount_persistence()`, process context after sti — the IDE mutex sleeps, so it cannot run from initcalls) and mirrors every `write_block()` back to the tail. History and files now survive reboots from read-only media. Verified end-to-end: fingerprinted mirror restored over pristine module, suite write-through changed 9014 tail bytes, second boot passed on restored state; no-disk runs skip cleanly via the 0xFF floating-bus guard. `ide_init()` was previously never called anywhere — the probe is now its only user-driven init point
+- [x] **Rootfs Persistence Mirror**: `make deliver` builds `jexosg.img` = hybrid ISO + fresh rootfs appended at the tail; booted as an IDE hard disk, the kernel IDENTIFYs the drive, validates a JexFS superblock in the last `ramdisk_blocks` blocks, restores that mirror over the RAM rootfs (`jexfs_mount_persistence()`, process context after sti — the IDE mutex sleeps, so it cannot run from initcalls) and mirrors every `write_block()` back to the tail. (Superseded by the v0.8.0 disk-first mount, which mounts the tail directly and frees the module.) History and files now survive reboots from read-only media. Verified end-to-end: fingerprinted mirror restored over pristine module, suite write-through changed 9014 tail bytes, second boot passed on restored state; no-disk runs skip cleanly via the 0xFF floating-bus guard. `ide_init()` was previously never called anywhere — the probe is now its only user-driven init point
 - [x] **Build Flavors**: `FLAVOR=debug|test` variants with separate object dirs and artifacts; debug cranks serial verbosity to everything, test replaces the shell with the suite
 - [x] **In-Kernel Selftest Runner**: registered suites announce `[RUN]` before executing (a hang names its test), results mirror to serial, and the exit code goes out the isa-debug-exit port — `make run-test` streams live output headless and fails on 7 (fail) or timeout (hang); pass is 33 because qemu arg errors also exit 1
 - [x] **Test Suites**: 30 tests — heap classes/double-free/OOM, ringbuf wrap/full-drop, SMP atomic hammer via `kernel_fork_on`, mutex exclusion, completion early-signal, memops/snprintf truncation+formats, JexFS 9KB roundtrip/remove-missing/concurrent writers, SMP counter/diverge/torture, kernel_fork stress, page fault in kernel, per-task FPU isolation/template, MP3 stereo+mono decode
@@ -128,7 +157,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 
 ### Shell & UX
 - [x] **Tab Completion**: Auto-complete filenames and commands
-- [x] **Command History**: `.history` saved and reloaded within a session; on the delivery image (`make deliver`, IDE hard disk boot) the persistence mirror carries it and all other rootfs writes across reboots
+- [x] **Command History**: `.history` saved and reloaded within a session; on the delivery image (`make deliver`, IDE hard disk boot) it survives reboots (the tail is now mounted directly — see v0.8.0)
 - [x] **Dynamic Prompt**: Color-coded, directory-aware
 - [x] **Uptime**: System uptime command
 - [x] **Top**: Per-task CPU usage monitor
@@ -172,7 +201,7 @@ The OS has evolved beyond the original v0.5 goals. Here's what's next.
 - [x] **arp/netlog/tcpdump/nicregs**: Network diagnostics
 
 ### Storage
-- [x] **JexFS**: RAM-backed rootfs with hierarchy; persistence mirror via `make deliver` (append at tail, restore on boot, write-through on every block write) — history and files survive reboots from read-only media
+- [x] **JexFS**: disk-backed rootfs with hierarchy; `make deliver` appends it at the tail and the kernel mounts that tail directly (v0.8.0; the earlier RAM image + write mirror is gone) — history and files survive reboots from read-only media
 - [x] **VFS Layer**: Mount point dispatch
 - [x] **devtmpfs/sysfs**: Virtual filesystems
 - [x] **IDE PIO Driver**: ATA disk access; PIO transfers hold a mutex instead of cli — contending tasks sleep while timers keep ticking on both cores; sector cache on its own short spinlock with in-progress fill marks

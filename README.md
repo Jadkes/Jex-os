@@ -16,7 +16,7 @@ filesystem, and a self-hosting TCC compiler.
   (DMA ring buffer, interrupt-driven)
 - **HTTP** — `serve` (TCP server) and `fetch` (client); DHCP and DNS clients
 - **Compiler** — self-hosting TCC with `if`/`else`, `while`, `for`, and hex printing
-- **Filesystem** — JexFS on a 64 MB RAM-backed root image; hierarchy, proper errno codes; persistence mirror via `make deliver` (survives reboots from read-only media)
+- **Filesystem** — JexFS on a 64 MB disk image, mounted directly from the drive (the GRUB module copy is released to the PMM at boot); hierarchy, proper errno codes; persistence via `make deliver` (survives reboots from read-only media)
 - **Audio** — AC'97 bus-master PCM at 44.1 kHz/16-bit stereo, and `play` for MP3 files decoded straight out of JexFS; MP3s dropped in `rootfs/` are transcoded to the codec's format at image-build time
 - **Multitasking** — round-robin scheduler, `fork`/`waitpid`, signals, per-process page tables
 - **SMP** — both CPUs run the scheduler: ACPI MADT discovery, INIT-SIPI bring-up,
@@ -60,9 +60,13 @@ through JexOS's own stage-1/stage-2 bootloader
 
 The disk image is 64 MB (`IMG_BLOCKS=65536` 1 KB blocks), the largest
 JexFS can address: inode block numbers are 16-bit and the block bitmap is
-8 blocks. GRUB loads it as a multiboot module and the kernel uses it in
-place, so it costs 64 MB of guest RAM — the default 128 MB QEMU guest has
-room to spare.
+8 blocks. GRUB still loads it as a multiboot module so a diskless boot
+works, but the kernel prefers the disk: it validates a superblock at LBA 0
+(or at the tail of a `make deliver` image), switches block I/O there, and
+hands the module's pages back to the allocator. On a 128 MB guest that
+takes free memory from 61,708 KB to 127,232 KB. `make run` boots a
+throwaway `build/run-jexos.img` copy so guest writes do not dirty the
+build artifact.
 
 Anything in `rootfs/` is staged into the image at build time. `*.mp3` in
 `rootfs/` is re-encoded to 44.1 kHz, 96 kbit/s (the only rate the kernel
@@ -79,7 +83,9 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] Self-hosting TCC
 - [x] TCP server (passive open)
 - [x] SMP scheduling on all CPUs (spinlocks, per-CPU timers, load spreading)
-- [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; kernel restores it on boot, mirrors writes back — history and files survive reboots from read-only media
+- [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; the kernel mounts that tail directly — history and files survive reboots from read-only media
+- [x] Disk-first rootfs: mount the on-disk copy and return the 64 MB GRUB module to the PMM (61,708 → 127,232 KB free on a 128 MB guest)
+- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums, `mkjexfs3`/`jexfsck`, v2→v3 converter (Phase 0 done)
 - [x] TLB shootdown IPIs: `free_kernel_stack()` flushes remote TLBs via IPI before returning frames to PMM
 - [x] 64 MB disk image: `IMG_BLOCKS=65536` blocks, the maximum JexFS can address with 16-bit block numbers
 - [x] Audio: AC'97 44.1 kHz stereo PCM, MP3 playback from JexFS, and build-time MP3 transcoding for `rootfs/`
@@ -89,14 +95,17 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 
 ## Status
 
-v0.8.0: bigger disk and working audio. The JexFS image is now 64 MB —
-the format's ceiling, since inode block numbers are 16-bit and the block
-bitmap is 8 blocks — loaded by GRUB as a module and used in place, so it
-costs 64 MB of the 128 MB guest RAM rather than a second copy. The image
-rule also stages `rootfs/` and re-encodes every MP3 in it to 44.1 kHz /
-96 kbit/s at build time, which is the only rate the in-kernel decoder
-accepts; the originals in `rootfs/` are never modified and
-`ROOTFS_MP3_BITRATE` overrides the rate.
+v0.8.0: bigger disk, the RAM back, and working audio. The JexFS image is
+now 64 MB — the v2 format's ceiling, since inode block numbers are 16-bit
+and the block bitmap is 8 blocks. GRUB still loads it as a module, but the
+kernel no longer keeps that copy alive: it validates a JexFS superblock at
+LBA 0 or at the delivery tail, mounts the disk copy, and returns the
+module's 64 MB to the PMM. On a 128 MB guest free memory goes from
+61,708 KB at PMM init to 127,232 KB after the switch, and `make run`
+boots a throwaway copy so the build artifact stays clean. The image rule
+also stages `rootfs/` and re-encodes every MP3 to 44.1 kHz / 96 kbit/s at
+build time, which is the only rate the in-kernel decoder accepts; the
+originals are never modified and `ROOTFS_MP3_BITRATE` overrides the rate.
 
 Audio was fixed rather than just added. AC'97 playback alternated between
 music and silence because CIV/LVI are 5-bit indices that wrap at 32 while
@@ -121,10 +130,15 @@ TLB shootdown IRQ windows, mutex handoff orphaning the lock token, and
 iret frame corruption from nested interrupts on PID 2's boot stack.
 
 Persistence works. `make deliver` appends the rootfs at the tail of the
-ISO; booted as an IDE hard disk, the kernel identifies the drive,
-validates the superblock, and restores the mirror over the RAM rootfs on
-every boot. Every `write_block()` is mirrored back, so history and files
-survive reboots from read-only media.
+ISO; booted as an IDE hard disk, the kernel identifies the drive and
+mounts that tail as the live rootfs. Writes go straight there, so history
+and files survive reboots from read-only media without a mirror copy.
+
+JexFS v3 is underway. Phase 0 (disk-first mount) is in; the format work is
+a real break: 32-bit block numbers and 4 KB blocks, an extent tree,
+a metadata journal with ordered data, and crc32c checksums, with
+`mkjexfs3`, a host verifier and a v2→v3 converter. See `TODO.md` for the
+phase table.
 
 SMP: both CPUs boot, arm their own LAPIC timer, run the scheduler, and
 spread load via shortest-queue forks. The root causes found across this
