@@ -24,9 +24,10 @@ vga_*.bin
 slowloris_test.*
 test_cmd.*
 
-# Generated docs
+# Generated docs (the v3 format spec is hand-written and tracked)
 Doxyfile
-docs/
+docs/*
+!docs/jexfs-v3.md
 
 # Tool config
 .sisyphus/
