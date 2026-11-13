@@ -65,11 +65,11 @@ static void print_banner(void)
     terminal_writestring("\n");
     /* Show CPU count (updated by smp_init) */
     char cpuinfo[64];
-    snprintf(cpuinfo, sizeof(cpuinfo), "JexOS v0.7.9 \x97 i386 \x97 %d CPU%s\n",
+    snprintf(cpuinfo, sizeof(cpuinfo), "JexOS v0.8.0 \x97 i386 \x97 %d CPU%s\n",
              cpu_count, cpu_count > 1 ? "s" : "");
     terminal_writestring(cpuinfo);
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
-    log_serial("JexOS v0.7.9\n");
+    log_serial("JexOS v0.8.0\n");
 
     /* RAM size from Multiboot info (safe in protected mode) */
     uint32_t ram_kb = g_mboot_info->mem_lower + g_mboot_info->mem_upper;

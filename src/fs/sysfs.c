@@ -26,7 +26,7 @@
 
 static int sys_read_version(char* buf, int max)
 {
-    const char* v = "JexOS v0.7.9 (i386)\n";
+    const char* v = "JexOS v0.8.0 (i386)\n";
     int len = strlen(v);
     if (len > max)
         len = max;
