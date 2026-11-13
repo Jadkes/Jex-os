@@ -281,9 +281,9 @@ $(ISO): $(KERNEL) $(IMG)
 iso: $(ISO)
 
 ## Delivery image: hybrid ISO with a fresh rootfs appended at the tail.
-## Attached as an IDE hard disk (86box), the kernel restores that tail
-## over the RAM rootfs at mount and mirrors every rootfs write back
-## into it, so history and files survive reboots from read-only media.
+## Attached as an IDE hard disk (86box), the kernel finds that tail and
+## mounts it directly -- it is the live rootfs, so writes persist without
+## a mirror copy.
 $(DELIVERY): $(ISO) $(IMG)
 	$(Q)printf "  DELIVER $@\n"
 	$(Q)cp $(ISO) $@
@@ -321,9 +321,18 @@ $(BOOT_IMG): $(BOOTSECT) $(LOADER) $(KERNEL)
 # map (the custom loader only fakes mem_lower/mem_upper) and lets the
 # JexFS data disk live on hda, which the native bootloader cannot do
 # because boot.img needs hda for itself.
-run: $(ISO) $(IMG)
+#
+# Boot a runtime copy of the image: the disk is the live rootfs now, not a
+# mirror, so guest writes would otherwise dirty the build artifact.
+RUN_DISK = $(BUILD)/run-$(notdir $(IMG))
+
+$(RUN_DISK): $(IMG)
+	$(Q)mkdir -p $(@D)
+	$(Q)cp $(IMG) $@
+
+run: $(ISO) $(RUN_DISK)
 	$(Q)printf "  QEMU    %s (GRUB ISO)\n" "$(QEMU)"
-	$(Q)$(QEMU) -cdrom $(ISO) -hda $(IMG) $(QEMU_OPTS)
+	$(Q)$(QEMU) -cdrom $(ISO) -hda $(RUN_DISK) $(QEMU_OPTS)
 
 # Headless self-test run: boots the test flavor, QEMU exits itself via
 # the isa-debug-exit port when the suite finishes.  timeout catches a
@@ -354,7 +363,8 @@ debug:
 
 run-debug:
 	$(Q)$(MAKE) FLAVOR=debug iso
-	$(Q)$(QEMU) -cdrom jexos-debug.iso -hda jexos-debug.img $(QEMU_OPTS)
+	$(Q)$(MAKE) FLAVOR=debug $(BUILD)/run-jexos-debug.img
+	$(Q)$(QEMU) -cdrom jexos-debug.iso -hda $(BUILD)/run-jexos-debug.img $(QEMU_OPTS)
 
 # Fallback: boot through the custom stage-1/stage-2 bootloader.
 run-native: $(BOOT_IMG) $(IMG)
