@@ -147,8 +147,20 @@ MKJEXFS   = $(BUILD)/tools/mkjexfs
 GEN_KS    = $(BUILD)/tools/gen_kallsyms
 KALLSYMS_S = src/kernel/kallsyms_data.S
 
-## Rootfs (trigger disk image rebuild when these change) 
+## Rootfs (trigger disk image rebuild when these change)
 ROOTFS_FILES = $(wildcard rootfs/*)
+
+## Rootfs staging for the disk image
+# JexFS inodes store block numbers as u16 and the block bitmap is 8 blocks
+# (65536 bits), so 65536 blocks -- 64 MB at 1 KB per block -- is the largest
+# image the on-disk format can address.
+IMG_BLOCKS ?= 65536
+
+# MP3s in rootfs/ are re-encoded at image build time: the kernel decoder
+# only accepts 44.1 kHz, and the lower bitrate keeps the image compact.
+# rootfs/ itself is never modified, so the originals stay untouched.
+ROOTFS_STAGE       = $(BUILD)/rootfs
+ROOTFS_MP3_BITRATE ?= 96
 
 ## Generated audio sample
 # Not committed: a four-second arpeggio at the codec's format (440/660/880/
@@ -197,7 +209,30 @@ $(KERNEL): $(OBJECTS) $(GEN_KS)
 
 $(IMG): $(MKJEXFS) $(ROOTFS_FILES) $(MP3_ASSET) $(MP3_MONO_ASSET)
 	$(Q)printf "  IMG     $@\n"
-	$(Q)./$(MKJEXFS) $@ 4096 $(if $(wildcard rootfs),rootfs) $(ASSETS_DIR)
+	$(Q)rm -rf $(ROOTFS_STAGE) && mkdir -p $(ROOTFS_STAGE)
+	$(Q)if [ -d rootfs ]; then \
+		for f in rootfs/*.mp3; do \
+			[ -e "$$f" ] || continue; \
+			name=$${f##*/}; \
+			printf "  MP3     %s -> %s kbit/s\n" "$$name" $(ROOTFS_MP3_BITRATE); \
+			if ffmpeg -hide_banner -loglevel error -y -i "$$f" -vn \
+				-map 0:a:0 -map_metadata -1 -id3v2_version 0 \
+				-ar 44100 -c:a libmp3lame -b:a $(ROOTFS_MP3_BITRATE)k \
+				-f mp3 "$(ROOTFS_STAGE)/$$name.part"; then \
+				mv "$(ROOTFS_STAGE)/$$name.part" "$(ROOTFS_STAGE)/$$name"; \
+			else \
+				rm -f "$(ROOTFS_STAGE)/$$name.part"; \
+				printf "  WARN    ffmpeg failed on %s, packing the original\n" "$$name"; \
+				cp "$$f" "$(ROOTFS_STAGE)/$$name"; \
+			fi; \
+		done; \
+		for f in rootfs/*; do \
+			[ -e "$$f" ] || continue; \
+			case "$$f" in *.mp3) continue;; esac; \
+			cp "$$f" "$(ROOTFS_STAGE)/"; \
+		done; \
+	fi
+	$(Q)./$(MKJEXFS) $@ $(IMG_BLOCKS) $(if $(ROOTFS_FILES),$(ROOTFS_STAGE)) $(ASSETS_DIR)
 
 $(FLAG_STAMP): FORCE
 	$(Q)mkdir -p $(@D)
