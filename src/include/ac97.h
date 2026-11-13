@@ -7,13 +7,13 @@
  *          audio; this driver feeds real 16-bit PCM to the AC'97 codec,
  *          which is the prerequisite for MP3 playback.
  *
- * Design:  The AC'97 bus master consumes a list of 8 fixed-size buffers
- *          and raises no interrupt we can own (QEMU puts it on the same
- *          PCI IRQ as the RTL8139, and irq.c holds one handler per line).
- *          So the list is advanced from the PIT tick instead — see
- *          ac97_tick().  Buffers are recycled with silence when the
- *          caller has nothing queued, which keeps the engine from
- *          underrunning and needing a restart mid-stream.
+ * Design:  The AC'97 bus master consumes a list of 32 fixed-size buffers
+ *          (CIV and LVI are 5-bit, so the list length is fixed at 32) and
+ *          raises no interrupt we can own (QEMU puts it on the same PCI IRQ
+ *          as the RTL8139, and irq.c holds one handler per line).  So the
+ *          list is advanced from the PIT tick instead — see ac97_tick().
+ *          Descriptors are published ahead of the engine and padded with
+ *          silence only when the caller has nothing queued.
  *
  * Thread-safety: ac97_write() is task context only and blocks while the
  *          software ring is full.  ac97_tick() runs in IRQ context and

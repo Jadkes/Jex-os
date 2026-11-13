@@ -10,15 +10,22 @@
  *   - Two I/O BARs: BAR0 is the mixer (NAM), BAR1 the bus master (NABM).
  *     Registers are addressed by their AC'97 codec offset directly; QEMU
  *     models a direct-offset map, not the real chip's index/data pair.
- *   - The bus master walks a Buffer Descriptor List of 8 fixed buffers.
- *     Every descriptor is kept valid at all times, padded with silence
- *     when the producer is dry, because a halted list needs a full reset
- *     to restart and that produces an audible click.
+ *   - The bus master walks a Buffer Descriptor List of 32 fixed buffers.
+ *     CIV and LVI are 5-bit indices that wrap at 32, so the list must have
+ *     32 entries: an 8-entry list makes the engine fetch descriptors 8-31
+ *     out of bounds once it passes the first cycle.  Every descriptor we
+ *     publish is valid, padded with silence when the producer is dry,
+ *     because the engine halts at LVI and a halted list has to be fully
+ *     reprogrammed.
  *   - No interrupt: QEMU assigns AC'97 the same PCI IRQ line as the
  *     RTL8139, and irq.c keeps one handler per line, so claiming it would
  *     steal the NIC's.  Completion is detected by watching CIV from the
  *     PIT tick instead — 100 Hz against the ~23 ms a 4 KB buffer takes to
- *     play, so descriptors have roughly 2x headroom.
+ *     play, so a descriptor refill has more than a full cycle of slack.
+ *   - Halting is the expensive case.  With mixing off the backend fills
+ *     its whole period with silence as soon as the list stops, so the
+ *     engine is kept fed ahead of the producer rather than restarted on
+ *     every underrun: only a truly empty ring leaves it halted.
  *
  * Thread-safety:
  *   - ac97_write()  — task context, blocks on a full ring.
@@ -67,11 +74,12 @@
 #define GS_S0CR              0x0100  /* codec 0 ready */
 
 /* ---- Buffer geometry ----
- * 8 x 4 KB = 32 KB = 186 ms of stereo audio at 44.1 kHz.  With a 10 ms
- * tick that is ~23 ms of audio per descriptor, so each pump has a wide
- * margin before the next one falls due. */
-#define BD_COUNT             8
-#define BD_SAMPLES           2048          /* 16-bit stereo frames */
+ * 32 x 4 KB = 128 KB = 743 ms of stereo audio at 44.1 kHz, and the CIV/LVI
+ * registers wrap at 32 entries, so the list length is not a free choice.
+ * A 10 ms tick gives each descriptor ~23 ms of slack — well over a full
+ * cycle before the engine could catch up with the refill. */
+#define BD_COUNT             32
+#define BD_SAMPLES           2048          /* 16-bit words: 4096 B = 1024 frames */
 #define BD_BYTES             (BD_SAMPLES * 2)
 #define BD_IOC               (1u << 31)
 #define AUDIO_RING_BYTES     65536
@@ -176,38 +184,57 @@ static uint32_t ring_take(uint8_t* dst, uint32_t want)
     return taken;
 }
 
-static void descriptor_fill(void)
+/*
+ * Fill the next descriptor from the ring.  With @p pad clear an empty ring
+ * leaves the slot untouched and returns 0, so engine_reload() can stop at
+ * the last slot that really has audio instead of queueing silence ahead of
+ * a producer that is still decoding.
+ */
+static uint32_t descriptor_fill(int pad)
 {
     uint32_t index = fill_idx;
     uint8_t* buffer = bd_buffers + index * BD_BYTES;
     uint32_t taken = ring_take(buffer, BD_BYTES);
 
-    if (taken < BD_BYTES)
+    if (taken < BD_BYTES) {
+        if (!pad && taken == 0)
+            return 0;
         memset(buffer + taken, 0, BD_BYTES - taken);
+    }
 
     bdl[index].addr = (uint32_t)buffer;
     bdl[index].len  = BD_IOC | BD_SAMPLES;
 
     fill_idx = (index + 1) % BD_COUNT;
+    return taken;
 }
 
-/* Rewrite the whole list in order and start the engine.  CR_RR resets the
- * bus master so civ/piv/lvi land in a known state instead of inheriting
- * stale pointers from before the halt. */
-static void engine_reload(void)
+/*
+ * Reprogram the list from slot 0 and start the engine.  CR_RR puts civ,
+ * piv and lvi in a known state instead of inheriting stale pointers from
+ * before the halt.  Returns 0 when the ring is empty and the engine is
+ * left halted; the tick restarts it on the next write.
+ */
+static int engine_reload(void)
 {
     fill_idx = 0;
-    for (uint32_t i = 0; i < BD_COUNT; i++)
-        descriptor_fill();
+
+    uint32_t filled = 0;
+    while (filled < BD_COUNT && descriptor_fill(0) > 0)
+        filled++;
 
     last_civ = 0;
     free_desc = 0;
 
+    if (!filled)
+        return 0;
+
     outb((uint16_t)(nabm_base + NABM_PO_CR), CR_RR);
     dma_barrier();
     outl((uint16_t)(nabm_base + NABM_PO_BDBAR), (uint32_t)bdl & ~3u);
-    outb((uint16_t)(nabm_base + NABM_PO_LVI), BD_COUNT - 1);
+    outb((uint16_t)(nabm_base + NABM_PO_LVI), (uint8_t)(filled - 1));
     outb((uint16_t)(nabm_base + NABM_PO_CR), CR_RPBM);
+    return 1;
 }
 
 static void pump_locked(void)
@@ -216,9 +243,11 @@ static void pump_locked(void)
         return;
 
     if (inw((uint16_t)(nabm_base + NABM_PO_SR)) & SR_DCH) {
-        /* Engine starved and halted.  Silence padding makes this rare, but
-         * a long IRQ-off stretch can still get here; rewriting the list is
-         * cheaper than reconciling civ/lvi by hand. */
+        /* The engine caught up with LVI.  With mixing off the backend
+         * fills the rest of its period with silence the moment the list
+         * stops, so do not restart until there is audio to play. */
+        if (!ring_count)
+            return;
         outw((uint16_t)(nabm_base + NABM_PO_SR), SR_FIFOE | SR_BCIS | SR_LVBCI);
         engine_reload();
         return;
@@ -238,7 +267,7 @@ static void pump_locked(void)
         return;
 
     while (free_desc) {
-        descriptor_fill();
+        descriptor_fill(1);
         free_desc--;
     }
 
