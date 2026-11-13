@@ -29,13 +29,15 @@
 #define DATA_START              54
 #define DEFAULT_BLOCK_COUNT     4096
 /*
- * 8 direct blocks plus one indirect table of 512 entries -- the layout
- * jexfs_bmap() already walks in the kernel.  Double indirect is not
- * emitted: 520 KB is far more than the assets here need, and a file that
- * big is truncated with a warning rather than silently mis-linked.
+ * 8 direct blocks, one single-indirect table of 512 entries, and one
+ * double-indirect tree (512 second-level tables of 512 entries each) --
+ * the layout jexfs_bmap() already walks in the kernel.  The image size,
+ * not this constant, is the real limit; the capacity check below rejects
+ * a file that does not fit.
  */
 #define MAX_FILE_BLOCKS \
-    ((uint32_t)JEXFS_DIRECT_COUNT + (uint32_t)JEXFS_INDIRECT_ENTRIES)
+    ((uint32_t)JEXFS_DIRECT_COUNT + (uint32_t)JEXFS_INDIRECT_ENTRIES + \
+     (uint32_t)JEXFS_INDIRECT_ENTRIES * (uint32_t)JEXFS_INDIRECT_ENTRIES)
 
 /*
  * Inodes per block and total: 1024/42 = 24 (16 bytes spare per block).
@@ -154,6 +156,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "Error: block_count must be at least 256\n");
         return 1;
     }
+    /* Inodes store block numbers as u16, and the bitmap covers 65536. */
+    if (total_blocks > 65536) {
+        fprintf(stderr, "Error: block_count must not exceed 65536\n");
+        return 1;
+    }
 
     uint32_t image_size = total_blocks * BLOCK_SIZE;
     img = (uint8_t *)calloc(1, image_size);
@@ -265,8 +272,7 @@ int main(int argc, char **argv)
 
             uint32_t size = (uint32_t)file_size;
 
-            /* Clamp to what the packer writes: direct blocks plus the
-             * single indirect table. */
+            /* Clamp to the whole direct/single/double layout. */
             if (size > MAX_FILE_BLOCKS * BLOCK_SIZE) {
                 fprintf(stderr, "Warning: %s is %lu bytes, truncating to %u\n",
                         ent->d_name, (unsigned long)file_size,
@@ -276,9 +282,25 @@ int main(int argc, char **argv)
 
             uint32_t blocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-            /* A file past the direct range also needs one block for the
-             * indirect table itself. */
-            uint32_t extra_blocks = blocks_needed > JEXFS_DIRECT_COUNT ? 1 : 0;
+            /*
+             * Cost of the tables themselves: one block for the single
+             * indirect table, and for the double indirect range one root
+             * table plus one second-level table per 512 data blocks.
+             */
+            uint32_t direct_blocks   = blocks_needed < JEXFS_DIRECT_COUNT
+                                       ? blocks_needed : JEXFS_DIRECT_COUNT;
+            uint32_t beyond_direct   = blocks_needed - direct_blocks;
+            uint32_t indirect_blocks = beyond_direct < JEXFS_INDIRECT_ENTRIES
+                                       ? beyond_direct : JEXFS_INDIRECT_ENTRIES;
+            uint32_t double_blocks   = beyond_direct - indirect_blocks;
+            uint32_t double_tables   = (double_blocks + JEXFS_INDIRECT_ENTRIES - 1)
+                                       / JEXFS_INDIRECT_ENTRIES;
+
+            uint32_t extra_blocks = 0;
+            if (indirect_blocks > 0)
+                extra_blocks += 1;
+            if (double_blocks > 0)
+                extra_blocks += 1 + double_tables;
 
             /* Check resource limits */
             if (next_inode >= TOTAL_INODES) {
@@ -302,32 +324,76 @@ int main(int argc, char **argv)
                        JEXFS_IRGRP | JEXFS_IROTH);
             inode->size = size;
 
-            /* Copy file data into direct blocks */
-            uint32_t direct_blocks = blocks_needed < JEXFS_DIRECT_COUNT
-                                     ? blocks_needed : JEXFS_DIRECT_COUNT;
+            /*
+             * Emit direct, then single indirect, then the double indirect
+             * tree.  Inodes store u16 block numbers, so the packing is
+             * capped by the image size well before that width overflows.
+             */
+            int write_failed = 0;
 
+            /* lblocks 0-7 */
             for (uint32_t b = 0; b < direct_blocks; b++) {
                 inode->direct_blocks[b] = (uint16_t)next_data_block;
-                if (file_block_write(f, next_data_block, ent->d_name) != 0)
+                if (file_block_write(f, next_data_block, ent->d_name) != 0) {
+                    write_failed = 1;
                     break;
+                }
                 next_data_block++;
             }
 
-            /* Everything past the direct range hangs off one indirect
-             * table of 512 u16 block numbers, table block first. */
-            if (blocks_needed > direct_blocks) {
+            /* lblocks 8-519: one table of 512 u16 block numbers */
+            if (!write_failed && indirect_blocks > 0) {
                 uint32_t table = next_data_block++;
                 uint16_t *tbl = (uint16_t *)(img + (size_t)table * BLOCK_SIZE);
 
                 block_bitmap_set(table);
                 inode->indirect_block = (uint16_t)table;
 
-                for (uint32_t b = direct_blocks; b < blocks_needed; b++) {
-                    tbl[b - JEXFS_DIRECT_COUNT] = (uint16_t)next_data_block;
-                    if (file_block_write(f, next_data_block, ent->d_name) != 0)
+                for (uint32_t b = 0; b < indirect_blocks; b++) {
+                    tbl[b] = (uint16_t)next_data_block;
+                    if (file_block_write(f, next_data_block, ent->d_name) != 0) {
+                        write_failed = 1;
                         break;
+                    }
                     next_data_block++;
                 }
+            }
+
+            /* lblocks 520+: root table of second-level tables */
+            if (!write_failed && double_blocks > 0) {
+                uint32_t root = next_data_block++;
+                uint16_t *root_tbl = (uint16_t *)(img + (size_t)root * BLOCK_SIZE);
+                uint32_t remaining = double_blocks;
+
+                block_bitmap_set(root);
+                inode->double_indirect = (uint16_t)root;
+
+                for (uint32_t i1 = 0; remaining > 0; i1++) {
+                    uint32_t table = next_data_block++;
+                    uint16_t *tbl = (uint16_t *)(img + (size_t)table * BLOCK_SIZE);
+                    uint32_t span = remaining < JEXFS_INDIRECT_ENTRIES
+                                    ? remaining : JEXFS_INDIRECT_ENTRIES;
+
+                    block_bitmap_set(table);
+                    root_tbl[i1] = (uint16_t)table;
+
+                    for (uint32_t i2 = 0; i2 < span; i2++) {
+                        tbl[i2] = (uint16_t)next_data_block;
+                        if (file_block_write(f, next_data_block, ent->d_name) != 0) {
+                            write_failed = 1;
+                            break;
+                        }
+                        next_data_block++;
+                    }
+                    if (write_failed)
+                        break;
+                    remaining -= span;
+                }
+            }
+
+            if (write_failed) {
+                fclose(f);
+                goto packing_done;
             }
 
             /* Add directory entry to root dir */
