@@ -16,7 +16,8 @@ filesystem, and a self-hosting TCC compiler.
   (DMA ring buffer, interrupt-driven)
 - **HTTP** — `serve` (TCP server) and `fetch` (client); DHCP and DNS clients
 - **Compiler** — self-hosting TCC with `if`/`else`, `while`, `for`, and hex printing
-- **Filesystem** — JexFS on a 4 MB RAM-backed root image; hierarchy, proper errno codes; persistence mirror via `make deliver` (survives reboots from read-only media)
+- **Filesystem** — JexFS on a 64 MB RAM-backed root image; hierarchy, proper errno codes; persistence mirror via `make deliver` (survives reboots from read-only media)
+- **Audio** — AC'97 bus-master PCM at 44.1 kHz/16-bit stereo, and `play` for MP3 files decoded straight out of JexFS; MP3s dropped in `rootfs/` are transcoded to the codec's format at image-build time
 - **Multitasking** — round-robin scheduler, `fork`/`waitpid`, signals, per-process page tables
 - **SMP** — both CPUs run the scheduler: ACPI MADT discovery, INIT-SIPI bring-up,
   per-CPU run queues with load-spreading forks, per-CPU LAPIC timer preemption,
@@ -57,8 +58,21 @@ and keeps the JexFS data disk on hda. `make run-native` instead boots
 through JexOS's own stage-1/stage-2 bootloader
 (BIOS → bootsect → loader → protected mode).
 
+The disk image is 64 MB (`IMG_BLOCKS=65536` 1 KB blocks), the largest
+JexFS can address: inode block numbers are 16-bit and the block bitmap is
+8 blocks. GRUB loads it as a multiboot module and the kernel uses it in
+place, so it costs 64 MB of guest RAM — the default 128 MB QEMU guest has
+room to spare.
+
+Anything in `rootfs/` is staged into the image at build time. `*.mp3` in
+`rootfs/` is re-encoded to 44.1 kHz, 96 kbit/s (the only rate the kernel
+decoder accepts) without touching the originals; override with
+`make ROOTFS_MP3_BITRATE=128`. Other files are copied through. If ffmpeg
+is missing or fails on a file, the original is packed with a warning
+rather than failing the build.
+
 Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
-`qemu-system-i386`.
+`qemu-system-i386`; `ffmpeg` for build-time MP3 transcoding (optional).
 
 ## Roadmap
 
@@ -67,11 +81,32 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] SMP scheduling on all CPUs (spinlocks, per-CPU timers, load spreading)
 - [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; kernel restores it on boot, mirrors writes back — history and files survive reboots from read-only media
 - [x] TLB shootdown IPIs: `free_kernel_stack()` flushes remote TLBs via IPI before returning frames to PMM
+- [x] 64 MB disk image: `IMG_BLOCKS=65536` blocks, the maximum JexFS can address with 16-bit block numbers
+- [x] Audio: AC'97 44.1 kHz stereo PCM, MP3 playback from JexFS, and build-time MP3 transcoding for `rootfs/`
 - [ ] PID 2 boot stack page: give the BSP task a proper kernel stack page so ISR frames never land on the real boot stack (eliminates SMP iret corruption class)
-- [ ] Per-task FPU state: the kernel is integer-only by construction (`-mno-80387` turns any kernel float into a link error, since nothing saves x87 state across a switch); ring-3 float still needs a per-task FXSAVE area and `#NM` handling
+- [x] Per-task FPU state: eager `FXSAVE`/`FXRSTOR` per task (plain `FNSAVE`/`FRSTOR` without FXSR), wired into `task_switch()` and AP bring-up; the kernel still builds `-mno-80387` and only `drivers/mp3.o` opts back in. Ring-3 float is not exercised by the suite and there is no lazy `#NM`/`CR0.TS` path yet
 - [ ] Pipes & redirection
 
 ## Status
+
+v0.8.0: bigger disk and working audio. The JexFS image is now 64 MB —
+the format's ceiling, since inode block numbers are 16-bit and the block
+bitmap is 8 blocks — loaded by GRUB as a module and used in place, so it
+costs 64 MB of the 128 MB guest RAM rather than a second copy. The image
+rule also stages `rootfs/` and re-encodes every MP3 in it to 44.1 kHz /
+96 kbit/s at build time, which is the only rate the in-kernel decoder
+accepts; the originals in `rootfs/` are never modified and
+`ROOTFS_MP3_BITRATE` overrides the rate.
+
+Audio was fixed rather than just added. AC'97 playback alternated between
+music and silence because CIV/LVI are 5-bit indices that wrap at 32 while
+the driver published an 8-entry descriptor list: past the first cycle the
+bus master read descriptors 8–31 out of bounds and halted at LVI, and
+with `out.mixing-engine=off` the backend padded the stall with silence.
+The list is 32 entries now, LVI is an absolute index, and only
+descriptors the ring can fill are queued. Measured on the same QEMU path
+that exposed the bug: a 4 s tone records as one continuous block and the
+song plays without gaps.
 
 v0.7.9: the kernel now tests itself. `make FLAVOR=test iso` boots
 straight into an in-kernel suite — 26 tests over the allocator, ring
