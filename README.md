@@ -52,6 +52,8 @@ make FLAVOR=debug iso   # verbose serial boot log
 make FLAVOR=test iso    # build the self-test suite
 make run-test    # headless qemu; exit 33=pass 7=fail 124=hang
 make check-v3    # build and verify the JexFS v3 test image on the host
+make run-boottime  # boot the timing build with the normal GRUB menu
+make measure-boot  # headless boot timing: kernel ms + host ms incl. GRUB
 ```
 
 Boots with GRUB by default, which gives the kernel a proper memory map
@@ -61,12 +63,13 @@ through JexOS's own stage-1/stage-2 bootloader
 
 The disk image is 64 MB (`IMG_BLOCKS=65536` 1 KB blocks), the largest
 JexFS can address: inode block numbers are 16-bit and the block bitmap is
-8 blocks. GRUB still loads it as a multiboot module so a diskless boot
+8 blocks. `make iso` embeds it as a multiboot module so a diskless boot
 works, but the kernel prefers the disk: it validates a superblock at LBA 0
 (or at the tail of a `make deliver` image), switches block I/O there, and
 hands the module's pages back to the allocator. On a 128 MB guest that
-takes free memory from 61,708 KB to 127,232 KB. `make run` boots a
-throwaway `build/run-jexos.img` copy so guest writes do not dirty the
+takes free memory from 61,708 KB to 127,232 KB. `make run` and
+`make run-debug` boot a disk-only ISO (no module to read) against a
+throwaway `build/run-jexos.img` copy, so guest writes do not dirty the
 build artifact.
 
 Anything in `rootfs/` is staged into the image at build time. `*.mp3` in
@@ -86,7 +89,7 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] SMP scheduling on all CPUs (spinlocks, per-CPU timers, load spreading)
 - [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; the kernel mounts that tail directly — history and files survive reboots from read-only media
 - [x] Disk-first rootfs: mount the on-disk copy and return the 64 MB GRUB module to the PMM (61,708 → 127,232 KB free on a 128 MB guest)
-- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums, `mkjexfs3`/`jexfsck3`, v2→v3 converter (Phases 0–1 done)
+- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums; the format, `mkjexfs3`/`jexfsck3` and a read-only kernel mount are in (Phases 0–1 done), the journal, writable path and v2→v3 converter are next
 - [x] TLB shootdown IPIs: `free_kernel_stack()` flushes remote TLBs via IPI before returning frames to PMM
 - [x] 64 MB disk image: `IMG_BLOCKS=65536` blocks, the maximum JexFS can address with 16-bit block numbers
 - [x] Audio: AC'97 44.1 kHz stereo PCM, MP3 playback from JexFS, and build-time MP3 transcoding for `rootfs/`
@@ -98,15 +101,16 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 
 v0.8.0: bigger disk, the RAM back, and working audio. The JexFS image is
 now 64 MB — the v2 format's ceiling, since inode block numbers are 16-bit
-and the block bitmap is 8 blocks. GRUB still loads it as a module, but the
-kernel no longer keeps that copy alive: it validates a JexFS superblock at
-LBA 0 or at the delivery tail, mounts the disk copy, and returns the
-module's 64 MB to the PMM. On a 128 MB guest free memory goes from
-61,708 KB at PMM init to 127,232 KB after the switch, and `make run`
-boots a throwaway copy so the build artifact stays clean. The image rule
-also stages `rootfs/` and re-encodes every MP3 to 44.1 kHz / 96 kbit/s at
-build time, which is the only rate the in-kernel decoder accepts; the
-originals are never modified and `ROOTFS_MP3_BITRATE` overrides the rate.
+and the block bitmap is 8 blocks. The CD-only image still carries it as a
+module, but the kernel no longer keeps that copy alive: it validates a
+JexFS superblock at LBA 0 or at the delivery tail, mounts the disk copy,
+and returns the module's 64 MB to the PMM. On a 128 MB guest free memory
+goes from 61,708 KB at PMM init to 127,232 KB after the switch, and
+`make run` boots a throwaway copy so the build artifact stays clean. The
+image rule also stages `rootfs/` and re-encodes every MP3 to 44.1 kHz /
+96 kbit/s at build time, which is the only rate the in-kernel decoder
+accepts; the originals are never modified and `ROOTFS_MP3_BITRATE`
+overrides the rate.
 
 Audio was fixed rather than just added. AC'97 playback alternated between
 music and silence because CIV/LVI are 5-bit indices that wrap at 32 while
@@ -118,9 +122,24 @@ descriptors the ring can fill are queued. Measured on the same QEMU path
 that exposed the bug: a 4 s tone records as one continuous block and the
 song plays without gaps.
 
+Boot got faster for two reasons, both real work rather than tuning. GRUB
+used to read the 64 MB rootfs module on every disk boot even though the
+kernel mounted the disk and released it (~6.6 s of pure waste); the run
+targets now boot a disk-only ISO. An empty IDE channel also tripped four
+full poll timeouts because QEMU's bare PIIX returns `0x00` at the status
+port, not the `0xFF` the old guard tested for; `ide_init()` now probes
+once and both wait loops fail fast with `-ENODEV` (~4.6 s saved). A
+`FLAVOR=boottime` build prints `BOOTTIME: N ms (kernel entry -> shell
+ready)` and powers off at the prompt, so `make measure-boot` can report
+the kernel's share beside GRUB's. Measured under QEMU TCG: 355 ms kernel
+on the disk path (from 7.87 s host total), 372 ms on the CD-only path
+(from 4654 ms kernel). The last tens of milliseconds vary with host load;
+treat them as noise, not regressions.
+
 v0.7.9: the kernel now tests itself. `make FLAVOR=test iso` boots
-straight into an in-kernel suite — 26 tests over the allocator, ring
-buffer, sync primitives, printf, JexFS, and SMP stress — and reports
+straight into an in-kernel suite — 31 tests over the allocator, ring
+buffer, sync primitives, printf/string, checksums, kallsyms, lockdep,
+JexFS, JexFS v3, FPU state, MP3 decoding, and SMP stress — and reports
 pass/fail through the isa-debug-exit port so `make run-test` fails hard
 on any regression, hang or panic. Writing the suite paid for itself
 immediately: it caught two kheap lock leaks, undetectable slab double
