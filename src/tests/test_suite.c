@@ -98,6 +98,7 @@ int run_selftests(void)
     register_kallsyms_tests();
     register_lockdep_tests();
     register_jexfs_tests();
+    register_jexfs3_tests();
     register_fpu_tests();
     register_mp3_tests();
 
