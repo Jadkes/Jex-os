@@ -47,6 +47,7 @@
 #include "jexfs.h"
 #include "smp.h"
 #include "apic.h"
+#include "boottime.h"
 
 // Kernel stack for user mode transitions
 uint32_t kernel_stack_top;
@@ -112,6 +113,9 @@ static void print_banner(void)
  * @param mboot_info Pointer to the Multiboot information structure.
  */
 void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
+	/* Anchor the boot-time measurement before any console setup. */
+	boottime_start();
+
 	/* VGA console first so later failures are visible */
 	terminal_initialize();
 
@@ -175,6 +179,9 @@ void kernel_main(uint32_t magic, multiboot_info_t* mboot_info) {
 
     /* First boot line proving the clock actually runs at 100 Hz. */
     timer_selftest();
+
+    /* The PIT is live now, so the boot-time flavor can price the TSC. */
+    boottime_calibrate();
 
     /* Sampled late enough that every AP has spun out of its park loop
      * and armed its own timer -- an immediate read raced them. */

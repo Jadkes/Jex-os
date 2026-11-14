@@ -88,6 +88,10 @@ BUILD     = build
 OBJ_DIR   = $(BUILD)/obj
 BOOT_IMG  = jexos.boot.img
 
+## GRUB menu wait.  measurement runs set this to 0 so the host timing
+## does not include menu idle time.
+GRUB_TIMEOUT ?= 5
+
 ## Build flavors: make / make debug / make test
 #   debug: JEXOS_DEBUG  -- insanely verbose serial logging, normal shell boot
 #   test:  JEXOS_SELFTEST -- same core + boots straight into the self-test
@@ -110,6 +114,15 @@ IMG       = jexos-test.img
 ISO       = jexos-test.iso
 DELIVERY  = jexosg-test.img
 OBJ_DIR   = $(BUILD)/obj-test
+endif
+ifeq ($(FLAVOR),boottime)
+# Measurement clone of the debug flavor: same kernel plus a boot timer.
+CFLAGS   += -DJEXOS_BOOTTIME -DJEXOS_DEBUG
+KERNEL    = jexos-boottime.bin
+IMG       = jexos-boottime.img
+ISO       = jexos-boottime.iso
+DELIVERY  = jexosg-boottime.img
+OBJ_DIR   = $(BUILD)/obj-boottime
 endif
 BOOTSECT  = $(BUILD)/bootsect.bin
 LOADER    = $(BUILD)/loader.bin
@@ -146,6 +159,8 @@ FLAG_LINE  = $(CC) $(CFLAGS) $(MP3_CFLAGS) $(ASFLAGS) $(LDFLAGS)
 MKJEXFS   = $(BUILD)/tools/mkjexfs
 MKJEXFS3  = $(BUILD)/tools/mkjexfs3
 JEXFSCK3  = $(BUILD)/tools/jexfsck3
+# Disk-boot ISO: same staging as $(ISO) but without the rootfs module.
+RUN_ISO   = $(BUILD)/run-$(notdir $(ISO))
 GEN_KS    = $(BUILD)/tools/gen_kallsyms
 KALLSYMS_S = src/kernel/kallsyms_data.S
 
@@ -313,22 +328,33 @@ check-v3: $(JEXFSCK3) $(V3_TEST_IMAGE)
 	$(Q)./$(JEXFSCK3) $(V3_TEST_IMAGE) $(V3_TREE)
 
 
+## Build an ISO staging tree.  $(1) is the output name for the log line,
+## $(2) the staging directory, and $(3) says whether to embed the rootfs
+## module.  CD-only boots need the module; run targets always attach a
+## disk and mount it directly, so there the module is dead weight -- and
+## GRUB spends seconds reading its 64 MB before the kernel starts.
+define iso_tree
+	$(Q)printf "  ISO     $(1)\n"
+	$(Q)rm -rf $(2) && mkdir -p $(2)/boot/grub
+	$(Q)cp $(KERNEL) $(2)/boot/jexos.bin
+	$(Q)if [ "$(3)" = "1" ]; then cp $(IMG) $(2)/boot/jexos.img; fi
+	$(Q)printf 'set timeout=%s\n' '$(GRUB_TIMEOUT)' > $(2)/boot/grub/grub.cfg
+	$(Q)printf 'menuentry "JexOS" {\n' >> $(2)/boot/grub/grub.cfg
+	$(Q)printf '    multiboot /boot/jexos.bin\n' >> $(2)/boot/grub/grub.cfg
+	$(Q)if [ "$(3)" = "1" ]; then printf '    module /boot/jexos.img\n' >> $(2)/boot/grub/grub.cfg; fi
+	$(Q)printf '    boot\n' >> $(2)/boot/grub/grub.cfg
+	$(Q)printf '}\n' >> $(2)/boot/grub/grub.cfg
+endef
+
 $(ISO): $(KERNEL) $(IMG)
-	$(Q)printf "  ISO     $@\n"
-	$(Q)mkdir -p iso/boot/grub
-	# grub.cfg loads fixed paths, so every flavor stages under the
-	# same name -- otherwise a stale default kernel gets booted.
-	$(Q)cp $(KERNEL) iso/boot/jexos.bin
-	$(Q)cp $(IMG) iso/boot/jexos.img
-	@if [ ! -f iso/boot/grub/grub.cfg ]; then \
-		echo 'set timeout=5' > iso/boot/grub/grub.cfg; \
-		echo 'menuentry "JexOS" {' >> iso/boot/grub/grub.cfg; \
-		echo '    multiboot /boot/jexos.bin' >> iso/boot/grub/grub.cfg; \
-		echo '    module /boot/jexos.img' >> iso/boot/grub/grub.cfg; \
-		echo '    boot' >> iso/boot/grub/grub.cfg; \
-		echo '}' >> iso/boot/grub/grub.cfg; \
-	fi
+	$(call iso_tree,$@,iso,1)
 	$(Q)grub2-mkrescue -o $@ iso
+
+# GRUB menu / module paths are fixed, so each flavor stages under the
+# same name; a stale default kernel must never be booted.
+$(RUN_ISO): $(KERNEL) $(IMG)
+	$(call iso_tree,$@,$(BUILD)/iso-run,0)
+	$(Q)grub2-mkrescue -o $@ $(BUILD)/iso-run
 
 iso: $(ISO)
 
@@ -382,9 +408,9 @@ $(RUN_DISK): $(IMG)
 	$(Q)mkdir -p $(@D)
 	$(Q)cp $(IMG) $@
 
-run: $(ISO) $(RUN_DISK)
-	$(Q)printf "  QEMU    %s (GRUB ISO)\n" "$(QEMU)"
-	$(Q)$(QEMU) -cdrom $(ISO) -hda $(RUN_DISK) $(QEMU_OPTS)
+run: $(RUN_ISO) $(RUN_DISK)
+	$(Q)printf "  QEMU    %s (disk rootfs, no module)\n" "$(QEMU)"
+	$(Q)$(QEMU) -cdrom $(RUN_ISO) -hda $(RUN_DISK) $(QEMU_OPTS)
 
 # Headless self-test run: boots the test flavor, QEMU exits itself via
 # the isa-debug-exit port when the suite finishes.  timeout catches a
@@ -414,9 +440,37 @@ debug:
 	$(Q)$(MAKE) FLAVOR=debug all
 
 run-debug:
-	$(Q)$(MAKE) FLAVOR=debug iso
+	$(Q)$(MAKE) FLAVOR=debug $(RUN_ISO)
 	$(Q)$(MAKE) FLAVOR=debug $(BUILD)/run-jexos-debug.img
-	$(Q)$(QEMU) -cdrom jexos-debug.iso -hda $(BUILD)/run-jexos-debug.img $(QEMU_OPTS)
+	$(Q)$(QEMU) -cdrom $(BUILD)/run-jexos-debug.iso -hda $(BUILD)/run-jexos-debug.img $(QEMU_OPTS)
+
+## Boot-time measurement: a debug clone that times kernel entry ->
+## shell ready and powers off at the prompt.  run-boottime keeps the
+## normal GRUB menu so a human can pick the entry; measure-boot zeroes
+## the menu wait and reports the host wall time around QEMU.
+run-boottime:
+	$(Q)$(MAKE) FLAVOR=boottime $(RUN_ISO)
+	$(Q)$(MAKE) FLAVOR=boottime $(BUILD)/run-jexos-boottime.img
+	$(Q)$(QEMU) -cdrom $(BUILD)/run-jexos-boottime.iso -hda $(BUILD)/run-jexos-boottime.img $(QEMU_OPTS)
+
+BOOTTIME_TIMEOUT ?= 120
+
+measure-boot:
+	$(Q)$(MAKE) FLAVOR=boottime $(BUILD)/run-jexos-boottime.img
+	$(Q)rm -f $(BUILD)/run-jexos-boottime.iso
+	$(Q)$(MAKE) FLAVOR=boottime GRUB_TIMEOUT=0 $(BUILD)/run-jexos-boottime.iso
+	$(Q)start=$$(date +%s%N); \
+	timeout $(BOOTTIME_TIMEOUT) $(QEMU) -cdrom $(BUILD)/run-jexos-boottime.iso \
+		-hda $(BUILD)/run-jexos-boottime.img \
+		-display none -serial stdio -no-reboot -smp 2 \
+		-netdev user,id=net0,hostfwd=tcp::8080-:80 \
+		-device rtl8139,netdev=net0 \
+		-device AC97,audiodev=audio0 -audiodev none,id=audio0 \
+		</dev/null; \
+	status=$$?; end=$$(date +%s%N); \
+	printf "  HOST TOTAL %s ms (qemu launch -> poweroff, GRUB included)\n" \
+		"$$(( (end - start) / 1000000 ))"; \
+	[ $$status -eq 0 ] || echo "  qemu exit $$status"
 
 # Fallback: boot through the custom stage-1/stage-2 bootloader.
 run-native: $(BOOT_IMG) $(IMG)
@@ -457,6 +511,8 @@ help:
 	@echo "  make docs-run     Generate docs + serve at :8000"
 	@echo "  make iso          Build GRUB bootable ISO"
 	@echo "  make check-v3     Verify the host-built JexFS v3 test image"
+	@echo "  make run-boottime Boot the timer build; powers off at shell ready"
+	@echo "  make measure-boot Time qemu launch -> shell ready -> poweroff"
 	@echo "  make deliver      Build delivery image (ISO + persistence mirror)"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
@@ -468,6 +524,6 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test check-v3 FORCE
+.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test check-v3 run-boottime measure-boot FORCE
 
 FORCE:

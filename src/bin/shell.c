@@ -40,6 +40,7 @@
 #include "ac97.h"
 #include "mp3.h"
 #include "jexos/errno.h"
+#include "boottime.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -1973,6 +1974,10 @@ void shell_main(void) {
     }
 
     shell_init();
+
+    /* The prompt is on screen; the boottime flavor stops the clock here. */
+    boottime_shell_ready();
+
     shell_loop();
 }
 
