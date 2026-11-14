@@ -12,6 +12,7 @@
 #include "test_suite.h"
 #include "jexfs.h"
 #include "jexfs3_fs.h"
+#include "jexfs3_journal.h"
 #include "kernel/vsnprintf.h"
 #include <jexos/errno.h>
 #include <string.h>
@@ -21,6 +22,15 @@
 #define V3_DATA_BYTES 300000u
 #define V3_INLINE_BYTES 200000u
 #define V3_SPLIT_BYTES (16u * JEXFS3_BLOCK_SIZE)
+
+/*
+ * A separate, small image for the journal test: 48 blocks (192 KB) fits
+ * in a static buffer, which gives the test a writable device.  The image
+ * is built by the host with an 8-block journal and one file.
+ */
+#define V3_JOURNAL_IMAGE_PATH  "/jexfs3-journal.img"
+#define V3_JOURNAL_IMAGE_BLOCKS 48u
+#define V3_JOURNAL_IMAGE_BYTES (V3_JOURNAL_IMAGE_BLOCKS * JEXFS3_BLOCK_SIZE)
 
 struct image_source {
     uint32_t inode;
@@ -53,6 +63,44 @@ static int buffer_is_byte(const uint8_t *buf, uint32_t len, uint8_t value)
     return 1;
 }
 
+/*
+ * RAM-backed device for the journal test.  The same callback shape as a
+ * real disk lets the test exercise mount-time replay, including the
+ * read-only refusal, without touching the rootfs image.
+ */
+struct memory_image {
+    uint8_t *base;
+    uint32_t blocks;
+};
+
+static int memory_read_block(void *ctx, uint32_t block, void *buf)
+{
+    struct memory_image *mem = (struct memory_image *)ctx;
+
+    if (block >= mem->blocks)
+        return -1;
+    memcpy(buf, mem->base + (size_t)block * JEXFS3_BLOCK_SIZE,
+           JEXFS3_BLOCK_SIZE);
+    return 0;
+}
+
+static int memory_write_block(void *ctx, uint32_t block, const void *buf)
+{
+    struct memory_image *mem = (struct memory_image *)ctx;
+
+    if (block >= mem->blocks)
+        return -1;
+    memcpy(mem->base + (size_t)block * JEXFS3_BLOCK_SIZE, buf,
+           JEXFS3_BLOCK_SIZE);
+    return 0;
+}
+
+static int memory_flush(void *ctx)
+{
+    (void)ctx;
+    return 0;
+}
+
 static void test_jexfs3_readonly(void)
 {
     uint8_t buf[128];
@@ -73,9 +121,11 @@ static void test_jexfs3_readonly(void)
 
     source.inode = (uint32_t)fd;
     source.bytes = (uint32_t)bytes;
-    dev.read_block = image_read_block;
-    dev.ctx = &source;
-    dev.media_bytes = (uint64_t)bytes;
+    dev = (struct jexfs3_device){
+        .read_block = image_read_block,
+        .ctx = &source,
+        .media_bytes = (uint64_t)bytes,
+    };
 
 
     int rc = jexfs3_mount(&dev);
@@ -207,9 +257,148 @@ static void test_jexfs3_readonly(void)
     TEST_ASSERT(!jexfs3_mounted(), "unmount left the filesystem mounted");
 }
 
+/*
+ * log_generation_bump - log a two-block metadata transaction that raises
+ * the generation in both superblock copies.
+ *
+ * The superblock pair is convenient because both copies must stay
+ * byte-identical, so applying only one of them would fail the mount
+ * check.  The transaction is written through the same journal code the
+ * kernel will use for real metadata.
+ */
+static uint8_t txn_block[JEXFS3_BLOCK_SIZE] __attribute__((aligned(16)));
+
+static int log_generation_bump(struct memory_image *mem,
+                               const struct jexfs3_superblock *sb,
+                               uint32_t next_generation)
+{
+    struct jexfs3_journal_io io = {
+        memory_read_block, memory_write_block, memory_flush, mem
+    };
+    struct jexfs3_superblock *next =
+        (struct jexfs3_superblock *)txn_block;
+    uint32_t targets[2] = { 0u, sb->backup_block };
+    const uint8_t *data[2] = { txn_block, txn_block };
+
+    memcpy(txn_block, mem->base, JEXFS3_BLOCK_SIZE);
+    next->generation = next_generation;
+    next->backup_generation = next_generation;
+    next->checksum = jexfs3_crc_zeroed(txn_block, JEXFS3_BLOCK_SIZE,
+                                       JEXFS3_SB_CHECKSUM_OFF);
+    return jexfs3_journal_write(sb, &io, targets, data, 2);
+}
+
+static void test_jexfs3_journal_replay(void)
+{
+    static uint8_t image[V3_JOURNAL_IMAGE_BYTES] __attribute__((aligned(16)));
+    static uint8_t commit_copy[JEXFS3_BLOCK_SIZE] __attribute__((aligned(16)));
+    struct memory_image mem;
+    struct jexfs3_device dev;
+    struct jexfs3_superblock sb;
+    uint32_t generation;
+    uint32_t commit_block;
+    uint32_t inode;
+    uint8_t buf[16];
+    int fd;
+    int bytes;
+
+    fd = jexfs_open(V3_JOURNAL_IMAGE_PATH);
+    if (fd < 0) {
+        test_skip("jexfs3_journal_replay (no image in this flavor)");
+        return;
+    }
+
+    bytes = jexfs_get_size(fd);
+    TEST_ASSERT(bytes == (int)V3_JOURNAL_IMAGE_BYTES,
+                "journal test image has the wrong size");
+    for (uint32_t block = 0; block < V3_JOURNAL_IMAGE_BLOCKS; block++) {
+        int got = jexfs_read(fd, image + (size_t)block * JEXFS3_BLOCK_SIZE,
+                             JEXFS3_BLOCK_SIZE,
+                             block * JEXFS3_BLOCK_SIZE);
+        TEST_ASSERT(got == (int)JEXFS3_BLOCK_SIZE,
+                    "journal test image read failed");
+    }
+
+    mem.base = image;
+    mem.blocks = V3_JOURNAL_IMAGE_BLOCKS;
+    dev = (struct jexfs3_device){
+        .read_block = memory_read_block,
+        .write_block = memory_write_block,
+        .flush = memory_flush,
+        .ctx = &mem,
+        .media_bytes = (uint64_t)bytes,
+    };
+
+    /* A clean journal must mount and read normally. */
+    TEST_ASSERT(jexfs3_mount(&dev) == 0,
+                "clean journal image failed to mount");
+    TEST_ASSERT(jexfs3_superblock(&sb) == 0, "superblock read failed");
+    generation = sb.generation;
+    TEST_ASSERT(jexfs3_verify() == 0, "clean journal image failed verify");
+    TEST_ASSERT(jexfs3_lookup("/hello.txt", &inode) == 0,
+                "hello.txt missing from journal image");
+    memset(buf, 0, sizeof(buf));
+    TEST_ASSERT(jexfs3_read_file(inode, buf, sizeof(buf), 0) == 13,
+                "journal image file short read");
+    TEST_ASSERT(memcmp(buf, "hello jexfs3\n", 13) == 0,
+                "journal image file content wrong");
+    jexfs3_unmount();
+
+    /* Log a generation bump that touches both superblock copies. */
+    TEST_ASSERT(log_generation_bump(&mem, &sb, generation + 1u) == 0,
+                "could not log a transaction");
+    commit_block = sb.journal_start + 2u + 2u;   /* header, desc, 2 data */
+
+    /* A transaction without its commit block must be ignored, not
+     * half-applied. */
+    memcpy(commit_copy, image + (size_t)commit_block * JEXFS3_BLOCK_SIZE,
+           JEXFS3_BLOCK_SIZE);
+    memset(image + (size_t)commit_block * JEXFS3_BLOCK_SIZE, 0,
+           JEXFS3_BLOCK_SIZE);
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "torn journal blocked the mount");
+    TEST_ASSERT(jexfs3_superblock(&sb) == 0, "superblock read failed");
+    TEST_ASSERT(sb.generation == generation,
+                "torn transaction was applied");
+    TEST_ASSERT(jexfs3_verify() == 0, "torn journal broke consistency");
+    jexfs3_unmount();
+
+    /* The same transaction with its commit block must be replayed. */
+    memcpy(image + (size_t)commit_block * JEXFS3_BLOCK_SIZE, commit_copy,
+           JEXFS3_BLOCK_SIZE);
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "committed journal failed to replay");
+    TEST_ASSERT(jexfs3_superblock(&sb) == 0, "superblock read failed");
+    TEST_ASSERT(sb.generation == generation + 1u,
+                "replay did not apply the transaction");
+    TEST_ASSERT(jexfs3_verify() == 0, "replayed image failed verify");
+    TEST_ASSERT(jexfs3_lookup("/hello.txt", &inode) == 0,
+                "replay lost the root directory");
+    jexfs3_unmount();
+
+    /* A second mount has nothing to replay and must not change state. */
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "journal stayed dirty after replay");
+    TEST_ASSERT(jexfs3_superblock(&sb) == 0, "superblock read failed");
+    TEST_ASSERT(sb.generation == generation + 1u,
+                "replay applied the transaction twice");
+    jexfs3_unmount();
+
+    /* A pending transaction on a read-only device is a mount failure:
+     * serving stale metadata is worse than refusing to mount. */
+    memcpy(&sb, image, sizeof(sb));
+    TEST_ASSERT(log_generation_bump(&mem, &sb, generation + 2u) == 0,
+                "could not log the read-only transaction");
+    dev.write_block = NULL;
+    dev.flush = NULL;
+    TEST_ASSERT(jexfs3_mount(&dev) == -EROFS,
+                "dirty journal mounted on a read-only device");
+    TEST_ASSERT(!jexfs3_mounted(), "failed mount left the filesystem mounted");
+}
+
 void register_jexfs3_tests(void)
 {
     test_register("jexfs3_readonly",
                   "mount and verify a host-built v3 image",
                   test_jexfs3_readonly);
+    test_register("jexfs3_journal_replay",
+                  "replay a committed transaction and reject a torn one",
+                  test_jexfs3_journal_replay);
 }
