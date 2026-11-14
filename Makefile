@@ -488,18 +488,14 @@ debug:
 	$(Q)$(MAKE) FLAVOR=debug all
 
 run-debug:
-	$(Q)$(MAKE) FLAVOR=debug $(RUN_ISO)
-	$(Q)$(MAKE) FLAVOR=debug $(BUILD)/run-jexos-debug.img
-	$(Q)$(QEMU) -cdrom $(BUILD)/run-jexos-debug.iso -hda $(BUILD)/run-jexos-debug.img $(QEMU_OPTS)
+	$(Q)$(MAKE) FLAVOR=debug run
 
 ## Boot-time measurement: a debug clone that times kernel entry ->
 ## shell ready and powers off at the prompt.  run-boottime keeps the
 ## normal GRUB menu so a human can pick the entry; measure-boot zeroes
 ## the menu wait and reports the host wall time around QEMU.
 run-boottime:
-	$(Q)$(MAKE) FLAVOR=boottime $(RUN_ISO)
-	$(Q)$(MAKE) FLAVOR=boottime $(BUILD)/run-jexos-boottime.img
-	$(Q)$(QEMU) -cdrom $(BUILD)/run-jexos-boottime.iso -hda $(BUILD)/run-jexos-boottime.img $(QEMU_OPTS)
+	$(Q)$(MAKE) FLAVOR=boottime run
 
 BOOTTIME_TIMEOUT ?= 120
 
