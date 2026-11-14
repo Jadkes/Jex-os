@@ -69,9 +69,26 @@ struct jex_dir_entry {
 
 extern uint32_t cwd_inode;
 
+/* Root backing store, reported by the boot banner. */
+#define JEXFS_ROOT_NONE   0
+#define JEXFS_ROOT_DISK   1
+#define JEXFS_ROOT_MODULE 2
+
 void jexfs_set_ramdisk(void *base, uint32_t bytes);
 void jexfs_init(void);
 void jexfs_mount_persistence(void);
+
+/**
+ * jexfs_root_bytes - size of the mounted rootfs image.
+ * @return Image size in bytes, or 0 when nothing is mounted.
+ */
+uint64_t jexfs_root_bytes(void);
+
+/**
+ * jexfs_root_source - where the mounted rootfs is backed.
+ * @return JEXFS_ROOT_DISK, JEXFS_ROOT_MODULE, or JEXFS_ROOT_NONE.
+ */
+int jexfs_root_source(void);
 void jexfs_lock(void);
 void jexfs_unlock(void);
 void jexfs_read_inode(uint32_t idx, struct jex_inode *inode);

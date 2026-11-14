@@ -84,6 +84,25 @@ static struct jex_superblock sb;
 static int jexfs_mounted = 0;
 uint32_t cwd_inode = 1;
 
+/*
+ * Boot banner facts: report the mounted image's real size and backing
+ * store instead of a constant, so a disk mount no longer claims to be a
+ * 4 MB RAM rootfs.
+ */
+uint64_t jexfs_root_bytes(void)
+{
+    if (!jexfs_mounted || sb.total_blocks == 0)
+        return 0;
+    return (uint64_t)sb.total_blocks * BLOCK_SIZE;
+}
+
+int jexfs_root_source(void)
+{
+    if (!jexfs_mounted)
+        return JEXFS_ROOT_NONE;
+    return ramdisk_base ? JEXFS_ROOT_MODULE : JEXFS_ROOT_DISK;
+}
+
 static int jexfs_add_dirent(uint32_t dir_ino, uint16_t entry_ino,
                             const char *name, uint16_t name_len, uint8_t file_type);
 

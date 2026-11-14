@@ -99,8 +99,27 @@ static void print_banner(void)
                   (our_ip >> 16) & 0xFF, (our_ip >> 24) & 0xFF);
     }
 
-    terminal_writestring("FS: JexFS v2, 4 MB (RAM rootfs)\n");
-    pr_serial("sys: fs JexFS v2 rootfs, shell starting\n");
+    /* Report the mounted rootfs rather than an old constant: the image is
+     * 64 MB now and usually backed by the disk, not a RAM module. */
+    uint64_t fs_bytes = jexfs_root_bytes();
+    int fs_source = jexfs_root_source();
+    const char *fs_backing = fs_source == JEXFS_ROOT_DISK ? "disk"
+                           : fs_source == JEXFS_ROOT_MODULE ? "RAM module"
+                           : "unmounted";
+
+    if (fs_bytes >= 1024u * 1024u &&
+        (fs_bytes & ((1024u * 1024u) - 1u)) == 0)
+        snprintf(buf, sizeof(buf), "FS: JexFS v2, %u MB (%s)\n",
+                 (unsigned)(fs_bytes >> 20), fs_backing);
+    else if (fs_bytes)
+        snprintf(buf, sizeof(buf), "FS: JexFS v2, %u KB (%s)\n",
+                 (unsigned)(fs_bytes >> 10), fs_backing);
+    else
+        snprintf(buf, sizeof(buf), "FS: JexFS v2, unmounted\n");
+    terminal_writestring(buf);
+
+    pr_serial("sys: fs JexFS v2 %u KB (%s), shell starting\n",
+              (unsigned)(fs_bytes >> 10), fs_backing);
     terminal_writestring("\n");
 }
 
