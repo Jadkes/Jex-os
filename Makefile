@@ -144,6 +144,8 @@ FLAG_LINE  = $(CC) $(CFLAGS) $(MP3_CFLAGS) $(ASFLAGS) $(LDFLAGS)
 
 ## Host tools 
 MKJEXFS   = $(BUILD)/tools/mkjexfs
+MKJEXFS3  = $(BUILD)/tools/mkjexfs3
+JEXFSCK3  = $(BUILD)/tools/jexfsck3
 GEN_KS    = $(BUILD)/tools/gen_kallsyms
 KALLSYMS_S = src/kernel/kallsyms_data.S
 
@@ -161,6 +163,24 @@ IMG_BLOCKS ?= 65536
 # rootfs/ itself is never modified, so the originals stay untouched.
 ROOTFS_STAGE       = $(BUILD)/rootfs
 ROOTFS_MP3_BITRATE ?= 96
+
+## JexFS v3 test image
+# Phase 1 mounts a host-built v3 image read-only.  The test flavor packs it
+# into the v2 rootfs so the kernel can mount it through a file-backed block
+# callback; other flavors stay lean.  The odd --split makes data.bin span
+# five extents, which exercises the leaf extent block.
+V3_TREE        = $(BUILD)/jexfs3tree
+V3_TREE_STAMP  = $(BUILD)/jexfs3tree.stamp
+V3_TEST_IMAGE  = $(BUILD)/jexfs3-test.img
+V3_TEST_BLOCKS ?= 256
+
+ifeq ($(FLAVOR),test)
+V3_PACK_DEP = $(V3_TEST_IMAGE)
+V3_PACK_CMD = cp $(V3_TEST_IMAGE) $(ROOTFS_STAGE)/jexfs3.img
+else
+V3_PACK_DEP =
+V3_PACK_CMD = :
+endif
 
 ## Generated audio sample
 # Not committed: a four-second arpeggio at the codec's format (440/660/880/
@@ -207,7 +227,7 @@ $(KERNEL): $(OBJECTS) $(GEN_KS)
 	$(Q)rm -f $@.tmp
 	$(Q)printf "  KERNEL  $@ (`wc -c < $@` bytes)\n"
 
-$(IMG): $(MKJEXFS) $(ROOTFS_FILES) $(MP3_ASSET) $(MP3_MONO_ASSET)
+$(IMG): $(MKJEXFS) $(ROOTFS_FILES) $(MP3_ASSET) $(MP3_MONO_ASSET) $(V3_PACK_DEP)
 	$(Q)printf "  IMG     $@\n"
 	$(Q)rm -rf $(ROOTFS_STAGE) && mkdir -p $(ROOTFS_STAGE)
 	$(Q)if [ -d rootfs ]; then \
@@ -232,6 +252,7 @@ $(IMG): $(MKJEXFS) $(ROOTFS_FILES) $(MP3_ASSET) $(MP3_MONO_ASSET)
 			cp "$$f" "$(ROOTFS_STAGE)/"; \
 		done; \
 	fi
+	$(Q)$(V3_PACK_CMD)
 	$(Q)./$(MKJEXFS) $@ $(IMG_BLOCKS) $(if $(ROOTFS_FILES),$(ROOTFS_STAGE)) $(ASSETS_DIR)
 
 $(FLAG_STAMP): FORCE
@@ -259,6 +280,37 @@ $(MKJEXFS): tools/mkjexfs.c
 	$(Q)mkdir -p $(@D)
 	$(Q)printf "  HOSTCC $<\n"
 	$(Q)$(HOSTCC) -o $@ $<
+
+$(MKJEXFS3): tools/mkjexfs3.c src/include/jexfs3.h
+	$(Q)mkdir -p $(@D)
+	$(Q)printf "  HOSTCC $<\n"
+	$(Q)$(HOSTCC) -Wall -Wextra -o $@ $<
+
+$(JEXFSCK3): tools/jexfsck3.c src/include/jexfs3.h
+	$(Q)mkdir -p $(@D)
+	$(Q)printf "  HOSTCC $<\n"
+	$(Q)$(HOSTCC) -Wall -Wextra -o $@ $<
+
+# Fixed test tree: a small file, a 300 KB file split across five extents
+# (leaf block), a 200 KB file with four inline extents, and two nesting
+# levels.  The stamp keeps the tree from being rebuilt on every make while
+# still picking up a clean build dir.
+$(V3_TREE_STAMP): Makefile
+	$(Q)rm -rf $(V3_TREE) && mkdir -p $(V3_TREE)/dir/sub
+	$(Q)printf 'hello jexfs3\n' > $(V3_TREE)/hello.txt
+	$(Q)dd if=/dev/zero bs=1000 count=300 2>/dev/null | tr '\0' 'A' > $(V3_TREE)/data.bin
+	$(Q)dd if=/dev/zero bs=1000 count=200 2>/dev/null | tr '\0' 'B' > $(V3_TREE)/inline.bin
+	$(Q)printf 'nested jexfs3\n' > $(V3_TREE)/dir/nested.txt
+	$(Q)printf 'deep jexfs3\n' > $(V3_TREE)/dir/sub/deep.txt
+	$(Q)touch $@
+
+$(V3_TEST_IMAGE): $(MKJEXFS3) $(V3_TREE_STAMP)
+	$(Q)printf "  JEXFS3  $@\n"
+	$(Q)./$(MKJEXFS3) $@ $(V3_TEST_BLOCKS) --split=16 $(V3_TREE)
+
+# Host-side verification of the same image the kernel mounts.
+check-v3: $(JEXFSCK3) $(V3_TEST_IMAGE)
+	$(Q)./$(JEXFSCK3) $(V3_TEST_IMAGE) $(V3_TREE)
 
 
 $(ISO): $(KERNEL) $(IMG)
@@ -404,6 +456,7 @@ help:
 	@echo "  make docs         Generate HTML docs via Doxygen"
 	@echo "  make docs-run     Generate docs + serve at :8000"
 	@echo "  make iso          Build GRUB bootable ISO"
+	@echo "  make check-v3     Verify the host-built JexFS v3 test image"
 	@echo "  make deliver      Build delivery image (ISO + persistence mirror)"
 	@echo "  make clean        Remove build artifacts"
 	@echo "  make distclean    Remove everything"
@@ -415,6 +468,6 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test FORCE
+.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test check-v3 FORCE
 
 FORCE:
