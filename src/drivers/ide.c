@@ -93,47 +93,98 @@ static ide_cache_line_t* cache_claim(uint32_t lba) {
     return victim;
 }
 
+/*
+ * No drive on the channel: a bare PIIX channel reads 0x00 (QEMU's
+ * emulation) or 0xFF (floating hardware) at the status port.  Neither
+ * can be a ready ATA device -- DRDY is set whenever BSY is clear -- so
+ * both mean "no drive".  Polling them burns the full multi-second
+ * timeout, which is what a CD-only boot with no disk used to pay.
+ */
+#define IDE_STATUS_FLOATING 0xFF
+
+static int ide_bus_dead(uint8_t status) {
+    return status == 0x00 || status == IDE_STATUS_FLOATING;
+}
+
+/* Set by ide_init: 0 when the primary master answered no probe.  Reads
+ * and writes then fail fast instead of timing out on every sector. */
+static int ide_present;
+
 /**
  * @brief Polling loop to wait for the BSY bit to clear.
  *
- * Returns 0 on success, -1 on timeout (~1 second).
+ * Returns 0 on success, -ENODEV if no drive is attached and -EIO on
+ * timeout (~1 second).
  */
 static int ide_wait_busy() {
     int timeout = 10000000; /* ~1 second at typical port I/O speed */
-    while (inb(IDE_STATUS) & IDE_STATUS_BSY) {
+    uint8_t status;
+
+    for (;;) {
+        status = inb(IDE_STATUS);
+        if (ide_bus_dead(status))
+            return -ENODEV;
+        if (!(status & IDE_STATUS_BSY))
+            return 0;
         if (--timeout <= 0) {
             pr_debug("ide_wait_busy: timeout\n");
             return -EIO;
         }
     }
-    return 0;
 }
 
 /**
  * @brief Polling loop to wait for the DRQ (Data Request) bit to set.
  *
- * Returns 0 on success, -1 on timeout (~1 second).
+ * Returns 0 on success, -ENODEV if no drive is attached and -EIO on
+ * timeout (~1 second).
  */
 static int ide_wait_drq() {
     int timeout = 10000000;
-    while (!(inb(IDE_STATUS) & IDE_STATUS_DRQ)) {
+    uint8_t status;
+
+    for (;;) {
+        status = inb(IDE_STATUS);
+        if (ide_bus_dead(status))
+            return -ENODEV;
+        if (status & IDE_STATUS_DRQ)
+            return 0;
         if (--timeout <= 0) {
             pr_debug("ide_wait_drq: timeout\n");
             return -EIO;
         }
     }
-    return 0;
 }
 
 /**
  * @brief Initialize the primary master IDE drive.
+ *
+ * Probes once for a drive and caches the answer.  Selecting a drive
+ * takes ~400ns to settle.  A channel with no drive reads 0x00 (QEMU) or
+ * 0xFF (floating) and stays there, while a real drive asserts DRDY (or
+ * BSY while spinning up); poll briefly so the empty channel still bails
+ * in milliseconds instead of burning the multi-second transfer timeout.
  */
 void ide_init() {
+    int timeout = 100000;   /* ~14 ms: enough for a ready drive to answer */
+
     pr_info("Initializing Primary Master...\n");
     mutex_init(&ide_mutex, "ide");
     /* Select master drive on the primary bus */
     outb(IDE_DRIVE_SEL, 0xA0);
-    ide_wait_busy();
+    for (int i = 0; i < 4; i++)
+        inb(IDE_STATUS);   /* ~400ns drive selection delay */
+
+    for (;;) {
+        if (!ide_bus_dead(inb(IDE_STATUS))) {
+            ide_present = 1;
+            return;
+        }
+        if (--timeout <= 0) {
+            ide_present = 0;
+            return;
+        }
+    }
 }
 
 /**
@@ -144,6 +195,8 @@ void ide_init() {
  * @return 0 on success, -EIO on error or timeout.
  */
 static int ide_read_sector_raw(uint32_t lba, uint8_t* buffer) {
+    if (!ide_present)
+        return -ENODEV;
     ide_wait_busy();
 
     outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
@@ -173,6 +226,8 @@ static int ide_read_sector_raw(uint32_t lba, uint8_t* buffer) {
  * @return 0 on success, -EIO on error or timeout.
  */
 static int ide_write_sector_raw(uint32_t lba, const uint8_t* buffer) {
+    if (!ide_present)
+        return -ENODEV;
     ide_wait_busy();
 
     outb(IDE_DRIVE_SEL, 0xE0 | ((lba >> 24) & 0x0F));
@@ -208,14 +263,15 @@ static int ide_write_sector_raw(uint32_t lba, const uint8_t* buffer) {
 int ide_identify(uint32_t* sector_count) {
     uint16_t id[256];
 
+    if (!ide_present)
+        return -ENODEV;
+
     /* Select master */
     outb(IDE_DRIVE_SEL, 0xA0);
 
-    /* A floating bus reads 0xFF (BSY set), which would burn the whole
-     * wait_busy timeout -- bail out early when no drive is attached. */
     for (int i = 0; i < 4; i++)
         inb(IDE_STATUS);   /* ~400ns drive selection delay */
-    if (inb(IDE_STATUS) == 0xFF)
+    if (ide_bus_dead(inb(IDE_STATUS)))
         return -ENODEV;
 
     ide_wait_busy();
