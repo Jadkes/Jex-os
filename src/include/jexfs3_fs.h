@@ -19,25 +19,35 @@
  * struct jexfs3_device - backing store for a v3 mount.
  *
  * @read_block: read one 4 KB block; return 0 on success, negative on error
- * @ctx: caller data passed through to read_block
+ * @write_block: write one 4 KB block; NULL on a read-only device
+ * @flush: make prior writes durable; may be NULL
+ * @ctx: caller data passed to every callback
  * @media_bytes: device size in bytes, or 0 when unknown
+ *
+ * A read-only device is enough when the journal is clean.  A dirty
+ * journal needs write_block, because recovery happens at mount.
  */
 struct jexfs3_device {
     int (*read_block)(void *ctx, uint32_t block, void *buf);
+    int (*write_block)(void *ctx, uint32_t block, const void *buf);
+    int (*flush)(void *ctx);
     void *ctx;
     uint64_t media_bytes;
 };
 
 /**
- * jexfs3_mount - validate a v3 image and mount it read-only.
+ * jexfs3_mount - validate a v3 image, replay the journal, and mount it.
  *
  * Reads the primary and backup superblocks, checks their checksums and
- * layout, and validates the root inode.  On success the driver serves
- * reads until jexfs3_unmount().
+ * layout, replays a committed journal transaction when one is pending,
+ * and validates the root inode.  A pending transaction on a read-only
+ * device fails the mount with -EROFS rather than serving stale metadata.
+ * On success the driver serves reads until jexfs3_unmount().
  *
  * @param dev Device description; must stay valid while mounted.
  * @return 0 on success, -EBUSY if already mounted, -EINVAL on a bad
- *         image, -EIO when the device fails.
+ *         image, -EROFS when replay needs a write, -EIO when the device
+ *         fails.
  */
 int jexfs3_mount(const struct jexfs3_device *dev);
 

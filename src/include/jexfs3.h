@@ -7,6 +7,7 @@
  *   Blocks 1..:         Inode bitmap     (1 bit per inode)
  *   Blocks ..:          Block bitmap     (1 bit per block)
  *   Blocks ..:          Inode table      (256-byte inodes)
+ *   Blocks ..:          Journal          (optional, journal_blocks long)
  *   Blocks ..:          Data / extent blocks
  *   Last block:         Backup superblock
  *
@@ -40,8 +41,10 @@
 /* Feature flags.  An unknown incompat bit means "do not mount". */
 #define JEXFS3_FEATURE_INCOMPAT_EXTENTS 0x00000001u
 #define JEXFS3_FEATURE_INCOMPAT_CRC32C  0x00000002u
+#define JEXFS3_FEATURE_INCOMPAT_JOURNAL 0x00000004u
 #define JEXFS3_FEATURE_INCOMPAT_KNOWN \
-    (JEXFS3_FEATURE_INCOMPAT_EXTENTS | JEXFS3_FEATURE_INCOMPAT_CRC32C)
+    (JEXFS3_FEATURE_INCOMPAT_EXTENTS | JEXFS3_FEATURE_INCOMPAT_CRC32C | \
+     JEXFS3_FEATURE_INCOMPAT_JOURNAL)
 
 /* Inode mode: POSIX-style type nibble plus permission bits. */
 #define JEXFS3_TYPE_MASK          0xF000u
@@ -93,7 +96,7 @@ struct jexfs3_superblock {
     uint32_t inode_table_start;
     uint32_t inode_table_blocks;
     uint32_t first_data_block;
-    uint32_t journal_start;      /* 0 in phase 1: no journal yet */
+    uint32_t journal_start;      /* 0 when the image has no journal */
     uint32_t journal_blocks;
     uint32_t root_inode;
     uint32_t checksum_type;      /* 1 = crc32c */
@@ -140,6 +143,61 @@ struct jexfs3_dirent {
     uint8_t  name_len;
     uint8_t  file_type;
     char     name[];
+} __attribute__((packed));
+
+/*
+ * Journal -- one metadata transaction slot, not a circular ext4 log.
+ *
+ * A transaction is laid out at journal_start + 1:
+ *
+ *   descriptor block | data block 0 .. data block N-1 | commit block
+ *
+ * The descriptor lists the target block of each data block.  The commit
+ * block carries a crc32c over the descriptor and every data block, so a
+ * transaction is valid only when all of it reached the disk.  Replay
+ * applies the committed transaction and ignores one with a missing or
+ * bad commit.
+ *
+ * Writing a transaction twice is harmless: the data blocks hold whole
+ * block images, not deltas.  After applying a transaction the writer
+ * clears the descriptor magic; a crash before that clear only makes the
+ * next mount replay the same blocks again.
+ *
+ * File data is never journaled.  The writer must write data blocks to
+ * their final location and flush before writing the commit block, which
+ * is the ordered-data rule that keeps a replayed inode from pointing at
+ * stale data.
+ */
+#define JEXFS3_JOURNAL_MAGIC        0x4E4A334Au  /* "J3JN" on disk */
+#define JEXFS3_JOURNAL_DESC_MAGIC   0x534A334Au  /* "J3DS" on disk */
+#define JEXFS3_JOURNAL_COMMIT_MAGIC 0x434A334Au  /* "J3CM" on disk */
+#define JEXFS3_JOURNAL_VERSION      1u
+#define JEXFS3_JOURNAL_MIN_BLOCKS   4u   /* header + desc + one data + commit */
+#define JEXFS3_JOURNAL_MAX_TXN      64u
+
+/* Offsets of the checksum fields inside their structs. */
+#define JEXFS3_JOURNAL_HEADER_CHECKSUM_OFF 16u
+#define JEXFS3_JOURNAL_COMMIT_CHECKSUM_OFF 8u
+
+struct jexfs3_journal_header {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t block_size;
+    uint32_t journal_blocks;
+    uint32_t checksum;
+} __attribute__((packed));
+
+struct jexfs3_journal_desc {
+    uint32_t magic;
+    uint32_t count;              /* data blocks, 1..journal_blocks - 3 */
+    uint32_t targets[JEXFS3_JOURNAL_MAX_TXN];
+} __attribute__((packed));
+
+struct jexfs3_journal_commit {
+    uint32_t magic;
+    uint32_t count;
+    uint32_t checksum;           /* crc over desc + every data block */
+    uint32_t reserved;
 } __attribute__((packed));
 
 /**

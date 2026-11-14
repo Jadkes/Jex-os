@@ -30,6 +30,7 @@ extern "C" {
 #define EFBIG   27   /* File too large */
 #define ENOSPC  28   /* No space left on device */
 #define ESPIPE  29   /* Illegal seek */
+#define EROFS   30   /* Read-only file system */
 #define ERANGE        34   /* Result too large */
 #define ENAMETOOLONG  36   /* File name too long */
 #define ENOSYS        38   /* Function not implemented */

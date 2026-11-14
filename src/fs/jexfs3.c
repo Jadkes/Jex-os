@@ -17,6 +17,7 @@
 #define pr_fmt(fmt) "[JEXFS3] " fmt
 
 #include "jexfs3_fs.h"
+#include "jexfs3_journal.h"
 #include "kheap.h"
 #include "string.h"
 #include "kernel/mutex.h"
@@ -361,6 +362,7 @@ static int superblock_check(const struct jexfs3_superblock *sb)
     uint64_t inode_table_blocks;
     uint64_t block_bitmap_start;
     uint64_t inode_table_start;
+    uint64_t journal_start;
     uint64_t first_data_block;
 
     if (sb->magic != JEXFS3_MAGIC || sb->version != JEXFS3_VERSION)
@@ -382,8 +384,18 @@ static int superblock_check(const struct jexfs3_superblock *sb)
     if ((sb->feature_incompat & JEXFS3_FEATURE_INCOMPAT_EXTENTS) == 0 ||
         (sb->feature_incompat & JEXFS3_FEATURE_INCOMPAT_CRC32C) == 0)
         return -EINVAL;
-    if (sb->journal_blocks != 0 || sb->journal_start != 0)
-        return -EINVAL;   /* phase 1 cannot replay a journal */
+    if (sb->journal_blocks == 0) {
+        /* A journal bit with no region, or a region with no bit, means
+         * the superblock and the layout disagree. */
+        if (sb->journal_start != 0 ||
+            (sb->feature_incompat & JEXFS3_FEATURE_INCOMPAT_JOURNAL))
+            return -EINVAL;
+    } else {
+        if ((sb->feature_incompat & JEXFS3_FEATURE_INCOMPAT_JOURNAL) == 0)
+            return -EINVAL;
+        if (sb->journal_blocks < JEXFS3_JOURNAL_MIN_BLOCKS)
+            return -EINVAL;
+    }
 
     /* Compute the layout in 64 bits: a field that does not fit a 32-bit
      * block number must be rejected, not truncated. */
@@ -397,12 +409,14 @@ static int superblock_check(const struct jexfs3_superblock *sb)
 
     block_bitmap_start = 1 + inode_bitmap_blocks;
     inode_table_start = block_bitmap_start + block_bitmap_blocks;
-    first_data_block = inode_table_start + inode_table_blocks;
+    journal_start = inode_table_start + inode_table_blocks;
+    first_data_block = journal_start + sb->journal_blocks;
     if (inode_bitmap_blocks > UINT32_MAX ||
         block_bitmap_blocks > UINT32_MAX ||
         inode_table_blocks > UINT32_MAX ||
         block_bitmap_start > UINT32_MAX ||
         inode_table_start > UINT32_MAX ||
+        journal_start > UINT32_MAX ||
         first_data_block > UINT32_MAX)
         return -EINVAL;
 
@@ -412,11 +426,14 @@ static int superblock_check(const struct jexfs3_superblock *sb)
         sb->block_bitmap_blocks != block_bitmap_blocks ||
         sb->inode_table_start != inode_table_start ||
         sb->inode_table_blocks != inode_table_blocks ||
+        sb->journal_start != (sb->journal_blocks ? journal_start : 0) ||
         sb->first_data_block != first_data_block)
         return -EINVAL;
     if (sb->backup_block != sb->total_blocks - 1)
         return -EINVAL;
-    if (sb->first_data_block >= sb->backup_block)
+    if (first_data_block >= sb->backup_block)
+        return -EINVAL;
+    if (journal_start >= sb->backup_block)
         return -EINVAL;
     if (sb->root_inode != JEXFS3_ROOT_INODE ||
         sb->root_inode >= sb->inode_count)
@@ -462,6 +479,48 @@ int jexfs3_mount(const struct jexfs3_device *dev)
     if (rc != 0)
         goto fail;
     fs3_sb_ready = 1;
+
+    if (fs3_sb.journal_blocks != 0) {
+        struct jexfs3_journal_io jio;
+        struct jexfs3_journal_info jinfo;
+
+        jio.read_block = fs3_dev.read_block;
+        jio.write_block = fs3_dev.write_block;
+        jio.flush = fs3_dev.flush;
+        jio.ctx = fs3_dev.ctx;
+
+        stage = "journal";
+        rc = jexfs3_journal_check(&fs3_sb, &jio, &jinfo);
+        if (rc != 0)
+            goto fail;
+
+        stage = "journal replay";
+        rc = jexfs3_journal_replay(&fs3_sb, &jio, &jinfo);
+        if (rc != 0)
+            goto fail;
+        if (jinfo.replayed)
+            pr_info("journal: replayed %u metadata block(s)\n",
+                    jinfo.txn_count);
+
+        /* A transaction may have rewritten the superblock itself, so the
+         * in-memory copy has to be reloaded before anything else uses it. */
+        if (jinfo.replayed) {
+            stage = "superblock after replay";
+            fs3_cache_valid = 0;
+            rc = cache_fill(0);
+            if (rc != 0)
+                goto fail;
+            memcpy(&fs3_sb, fs3_cache, sizeof(fs3_sb));
+            if (jexfs3_crc_zeroed(fs3_cache, JEXFS3_BLOCK_SIZE,
+                                  JEXFS3_SB_CHECKSUM_OFF) != fs3_sb.checksum) {
+                rc = -EINVAL;
+                goto fail;
+            }
+            rc = superblock_check(&fs3_sb);
+            if (rc != 0)
+                goto fail;
+        }
+    }
 
     stage = "backup superblock";
     rc = cache_fill(fs3_sb.backup_block);
