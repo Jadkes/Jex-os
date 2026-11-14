@@ -6,9 +6,12 @@ and 4 KB blocks (16 TiB) instead of 16-bit block numbers and 1 KB blocks
 indirect block pointers, and crc32c integrity over metadata.
 
 Phase 1 implements the format, a host builder (`mkjexfs3`), a host
-verifier (`jexfsck3`), and a read-only kernel mount.  The journal is the
-next phase; images built now declare `journal_blocks = 0` and the kernel
-refuses to mount one that claims otherwise.
+verifier (`jexfsck3`), and a read-only kernel mount.  Phase 2a adds the
+metadata journal: its on-disk format, a shared replay path used by the
+kernel and the host verifier, and deterministic crash simulation.  The
+writable kernel path that produces transactions is phase 2b; until then
+images may carry an empty journal, and a committed transaction is
+replayed at mount before the filesystem serves anything.
 
 ## Block layout
 
@@ -21,8 +24,14 @@ field is little-endian.
 | 1 .. `inode_bitmap_blocks` | Inode bitmap, 1 bit per inode |
 | .. `block_bitmap_blocks` | Block bitmap, 1 bit per block |
 | .. `inode_table_blocks` | Inode table, 256-byte records |
+| .. `journal_blocks` | Journal, when the image has one |
 | `first_data_block` .. `backup_block - 1` | File data and extent leaf blocks |
 | `backup_block` (last block) | Backup superblock, byte-identical to block 0 |
+
+The journal sits between the inode table and the first data block, so
+`first_data_block = inode_table_start + inode_table_blocks + journal_blocks`.
+Reserving it at build time keeps the journal out of the allocator's way
+and means a torn transaction can only damage blocks the journal owns.
 
 Inode numbers 0 and 1 are reserved and are never allocated; the root is
 inode 2.  Their bitmap bits stay clear, so a scanner never expects inode
@@ -50,9 +59,9 @@ records that were never written.
 | 76 | `block_bitmap_blocks` | `ceil(total_blocks / 32768)` |
 | 80 | `inode_table_start` | Follows the block bitmap |
 | 84 | `inode_table_blocks` | `ceil(inode_count * 256 / 4096)` |
-| 88 | `first_data_block` | First block after the inode table |
-| 92 | `journal_start` | 0 until phase 2 |
-| 96 | `journal_blocks` | 0 until phase 2 |
+| 88 | `first_data_block` | First block after the inode table and journal |
+| 92 | `journal_start` | First journal block, 0 when there is no journal |
+| 96 | `journal_blocks` | Journal length in blocks, 0 when there is no journal |
 | 100 | `root_inode` | 2 |
 | 104 | `checksum_type` | 1 = crc32c |
 | 108 | `checksum` | crc32c over the full 4 KB block, this field zeroed |
@@ -60,10 +69,12 @@ records that were never written.
 | 116 | `backup_generation` | Generation of the backup copy |
 | 120 | `label[32]` | Human-readable label |
 
-Required incompat bits in phase 1 are `EXTENTS` (0x1) and `CRC32C` (0x2).
+Required incompat bits are `EXTENTS` (0x1) and `CRC32C` (0x2).
+`JOURNAL` (0x4) is set exactly when `journal_blocks != 0`; a set bit
+without a region, or a region without the bit, is an invalid superblock.
 A mount also requires the metadata layout to match the block counts
-implied by `inode_count` and `total_blocks`, and the backup superblock to
-match the primary byte-for-byte.
+implied by `inode_count`, `total_blocks` and `journal_blocks`, and the
+backup superblock to match the primary byte-for-byte.
 
 ## Inode (256 bytes)
 
@@ -151,30 +162,96 @@ All checksums are Castagnoli crc32c (`0x82F63B78` reflected polynomial):
 `jexfs3_crc_zeroed()` hashes the zero image of a field without modifying
 the buffer, so verifiers never write to media they are only checking.
 
+## Journal
+
+The journal is one metadata transaction slot, deliberately not an ext4
+log.  There is no circular buffer, no checkpointing, no revoke records
+and no multi-transaction state machine: a transaction either has a valid
+commit block or it is ignored.
+
+```
+journal_start:      header     (immutable, written at format time)
+journal_start + 1:  descriptor (magic "J3DS", count, target[count])
+journal_start + 2:  data block 0
+                    ...
+                    data block count-1
+                    commit     (magic "J3CM", count, crc32c)
+```
+
+The header records the journal magic (`0x4E4A334A`), version 1, block
+size, length and a crc32c at offset 16.  It never changes after format,
+so a torn transaction cannot lose the record of where the journal is.
+
+The descriptor carries up to 64 target block numbers.  Its targets must
+be inside the image, outside the journal itself, and unique; duplicates
+or a count above `journal_blocks - 3` are rejected.  The commit block's
+crc32c covers the descriptor block and every data block, so a commit
+proves the whole transaction reached the disk.
+
+Replay rules:
+
+- validate the header, descriptor magic, target list and commit crc;
+- a missing or invalid commit abandons the transaction without writing
+  any target, so the old on-disk state survives;
+- a valid commit applies each data block to its target, flushes, then
+  clears the descriptor magic;
+- applying the same transaction twice is harmless, because a data block
+  is a whole block image rather than a delta.  A crash between the apply
+  and the clear only repeats the same writes on the next mount.
+
+File data is never journaled.  The writer follows ordered data: write the
+new data blocks to their final homes and flush, then write the
+transaction (descriptor, data, commit) and only then apply the metadata.
+That is enough for this filesystem because a replayed inode must never
+point at data that had not reached the disk.
+
+A committed transaction on a read-only device is a mount failure
+(`-EROFS`), not a silent mount with stale metadata.  A journal with no
+committed transaction does not require write access at all.
+
 ## Host tools
 
 ```bash
-./build/tools/mkjexfs3 <out.img> <blocks> [--split=N] <dir...>
-./build/tools/jexfsck3 <image.img> [dir...]
+./build/tools/mkjexfs3 <out.img> <blocks> [--split=N] [--journal=N] <dir...>
+./build/tools/jexfsck3 <image.img> [--replay] [dir...]
+./build/tools/j3crash <image.img> [--out DIR]
 ```
 
 `mkjexfs3` merges one or more source directories into the image root and
 packs regular files and directories.  `--split=N` caps each extent at N
 blocks, which is how the test image gets a file with five extents and a
 leaf block; production images leave it unset so files are one extent when
-possible.  The builder refuses files that need more than 255 extents (a
-deeper tree is phase 3).
+possible.  `--journal=N` reserves N blocks (0, or at least 4) and writes
+an empty journal header.  The builder refuses files that need more than
+255 extents (a deeper tree is phase 3).
 
 `jexfsck3` validates both superblocks, the layout, every used inode and
 extent checksum, coverage and bounds, directory chains and link counts,
 the inode and block bitmaps, and each file's data crc.  Given the same
 source directories, it also compares every file byte-for-byte and reports
-missing or extra entries.
+missing or extra entries.  A pending transaction is reported, not
+applied, unless `--replay` is given; replay calls the same code the
+kernel uses at mount.
+
+`j3crash` logs a two-block transaction (a generation bump written to both
+superblock copies), then replays every truncation point of it against a
+scratch copy.  Each prefix stands for a crash boundary; every resulting
+image must hold either the old generation or the new one, never a torn
+pair, and must keep a valid superblock checksum.  One extra case commits
+the journal and then applies only the first target, which is the other
+crash window; replay must finish the transaction and clear the
+descriptor.
 
 `make check-v3` builds the test tree and image and runs the verifier.
-`make FLAVOR=test run-test` packs that image into the v2 test rootfs as
-`/jexfs3.img`; the kernel test mounts it, runs `jexfs3_verify()`, and
-reads files across an extent boundary.
+`make crash-sim` runs `j3crash`, writes all 33 crash images, and runs the
+full verifier with `--replay` over each one.
+`make FLAVOR=test run-test` packs two images into the v2 test rootfs:
+`/jexfs3.img` (the extent test) and `/jexfs3-journal.img` (a 48-block
+image with an 8-block journal).  The kernel test mounts the first image,
+then copies the second into a RAM buffer so it can log a transaction, tear
+off its commit block, mount (must ignore it), restore the commit, mount
+again (must replay it exactly once), and finally confirm that a pending
+transaction on a read-only device fails with `-EROFS`.
 
 ## Kernel API
 
@@ -187,13 +264,20 @@ reads files across an extent boundary.
 - `jexfs3_readdir(inode, &cookie, name, cap, &child, &type)`
 - `jexfs3_verify()`
 
-The device supplies a `read_block(ctx, block, buf)` callback, so the same
-driver can later serve an IDE partition.  A single 4 KB static cache
-keeps metadata parsing off the 8 KB kernel stack, and a mutex makes the
-cache safe for concurrent readers.  Mount verifies both superblocks and
-the root inode; `jexfs3_verify()` walks every allocated inode, recomputes
-its data crc, checks dirent chains and child types, and confirms every
-allocated inode is reachable from the root.
+The device supplies `read_block(ctx, block, buf)`, plus optional
+`write_block` and `flush` callbacks for journal replay.  A single 4 KB
+static cache keeps metadata parsing off the 8 KB kernel stack, and a
+mutex makes the cache safe for concurrent readers.  Mount validates both
+superblocks, replays a committed transaction (re-reading and
+revalidating the superblock afterwards, since a transaction can rewrite
+it), then checks the root inode.  `jexfs3_verify()` walks every allocated
+inode, recomputes its data crc, checks dirent chains and child types, and
+confirms every allocated inode is reachable from the root.
+
+`src/include/jexfs3_journal.h` exposes the shared journal API
+(`check`, `replay`, `write`, `clear`) used by the kernel, `jexfsck3` and
+`j3crash`.  One implementation of the recovery rules means the verifier
+cannot accept a transaction the kernel would reject.
 
 ## Phase status
 
@@ -201,10 +285,11 @@ allocated inode is reachable from the root.
 |---|---|---|
 | 0 | Disk-first v2 mount, module pages returned to the PMM | done |
 | 1 | Format, `mkjexfs3`, `jexfsck3`, read-only kernel mount | done |
-| 2 | Metadata journal, replay, ordered data, crash injection | next |
+| 2a | Journal format, shared replay, deterministic crash simulation | done |
+| 2b | Writable kernel path (allocation, metadata transactions) | next |
 | 3 | Extent tree, delayed allocation, hashed directories | planned |
 | 4 | v2→v3 converter, persistence rewrite | planned |
 
-Phase 1 is read-only by design.  Writes, allocation, and journal replay
-belong to phases 2–4, and the kernel rejects an image that claims a
-journal rather than mounting it without recovery.
+The kernel still serves a read-only filesystem: phase 2a replays a
+journal at mount but no kernel code writes a transaction yet.  Writes,
+allocation and the transaction-producing path belong to phase 2b.

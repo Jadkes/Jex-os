@@ -52,6 +52,7 @@ make FLAVOR=debug iso   # verbose serial boot log
 make FLAVOR=test iso    # build the self-test suite
 make run-test    # headless qemu; exit 33=pass 7=fail 124=hang
 make check-v3    # build and verify the JexFS v3 test image on the host
+make crash-sim   # replay every crash point of a logged v3 journal transaction
 make run-boottime  # boot the timing build with the normal GRUB menu
 make measure-boot  # headless boot timing: kernel ms + host ms incl. GRUB
 ```
@@ -89,7 +90,7 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] SMP scheduling on all CPUs (spinlocks, per-CPU timers, load spreading)
 - [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; the kernel mounts that tail directly — history and files survive reboots from read-only media
 - [x] Disk-first rootfs: mount the on-disk copy and return the 64 MB GRUB module to the PMM (61,708 → 127,232 KB free on a 128 MB guest)
-- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums; the format, `mkjexfs3`/`jexfsck3` and a read-only kernel mount are in (Phases 0–1 done), the journal, writable path and v2→v3 converter are next
+- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums; the format, `mkjexfs3`/`jexfsck3`, a read-only kernel mount and journal replay are in (Phases 0–2a done), the writable path and v2→v3 converter are next
 - [x] TLB shootdown IPIs: `free_kernel_stack()` flushes remote TLBs via IPI before returning frames to PMM
 - [x] 64 MB disk image: `IMG_BLOCKS=65536` blocks, the maximum JexFS can address with 16-bit block numbers
 - [x] Audio: AC'97 44.1 kHz stereo PCM, MP3 playback from JexFS, and build-time MP3 transcoding for `rootfs/`
@@ -154,13 +155,15 @@ ISO; booted as an IDE hard disk, the kernel identifies the drive and
 mounts that tail as the live rootfs. Writes go straight there, so history
 and files survive reboots from read-only media without a mirror copy.
 
-JexFS v3 is underway. Phase 0 (disk-first mount) and Phase 1 (the format,
-`mkjexfs3`, a host verifier and a read-only kernel mount) are in. The
-format is a real break: 32-bit block numbers and 4 KB blocks, extents,
-crc32c metadata and data checksums, and a backup superblock. The metadata
-journal with ordered data, the extent tree growth, and the v2→v3
-converter are the remaining phases. See `docs/jexfs-v3.md` for the format
-and `TODO.md` for the phase table.
+JexFS v3 is underway. Phase 0 (disk-first mount), Phase 1 (the format,
+`mkjexfs3`, a host verifier and a read-only kernel mount) and Phase 2a
+(the metadata journal format, shared replay and deterministic crash
+simulation) are in. The format is a real break: 32-bit block numbers and
+4 KB blocks, extents, crc32c metadata and data checksums, a backup
+superblock, and a single-transaction journal whose commit block is the
+durability point. The writable kernel path, the extent tree growth, and
+the v2→v3 converter are the remaining phases. See `docs/jexfs-v3.md` for
+the format and `TODO.md` for the phase table.
 
 SMP: both CPUs boot, arm their own LAPIC timer, run the scheduler, and
 spread load via shortest-queue forks. The root causes found across this

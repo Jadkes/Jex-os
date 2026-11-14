@@ -26,7 +26,8 @@ encryption, quotas, multi-device.
 |---|---|---|---|
 | 0 | Disk-first mount: probe LBA 0 or the delivery tail, mount the disk copy, return the module pages to the PMM (v2 format unchanged) | `free` recovers ~64 MB; audio, suite and delivery round-trip pass | [x] |
 | 1 | `docs/jexfs-v3.md`, `mkjexfs3` + host verifier, read-only v3 mount | Host-built v3 image mounts and every file verifies byte-for-byte | [x] |
-| 2 | Metadata journal, replay, ordered data; crash injection | Kill QEMU at random points during writes, remount, `jexfsck` clean | [ ] |
+| 2a | Journal format, shared replay, ordered-data rule, deterministic crash simulation | Every truncation point of a logged transaction replays to the old or the new state, never torn; a mid-apply crash is repaired; `make crash-sim` green | [x] |
+| 2b | Writable kernel path: allocation, metadata transactions, ordered data writes | Guest writes survive remount and a planted crash; `jexfsck3` clean | [ ] |
 | 3 | Extent tree, delayed allocation, hashed directories | Image larger than 64 MB; large-file metadata reads measurably lower | [ ] |
 | 4 | v2→v3 converter, persistence rewrite, docs | Existing `jexos.img` converts; `make deliver` round-trips | [ ] |
 
@@ -36,14 +37,21 @@ when a file needs more than four) and `tools/jexfsck3.c` validates both
 superblocks, layout, inode/extent checksums, extent coverage and bounds,
 dirent chains, link counts, bitmaps and data crcs, then compares every
 file against its source byte-for-byte. The kernel reader in
-`src/fs/jexfs3.c` mounts over a block callback, rejects unknown features
-and any claimed journal, and re-verifies every allocated inode and its
+`src/fs/jexfs3.c` mounts over a block callback, rejects unknown features,
+replays a committed journal transaction at mount (revalidating the
+superblock afterwards), and re-verifies every allocated inode and its
 reachability from the root. `make check-v3` reports 5 files, 3
 directories, 256 blocks, 0 failures; `make FLAVOR=test run-test` mounts
 the same image from `/jexfs3.img`, passes the in-kernel consistency
 check, reads files across an extent boundary, and walks the root
-directory. Flipping one byte in file data or an inode makes the host
-verifier fail. Format details are in `docs/jexfs-v3.md`.
+directory. A second kernel test copies a 48-block journaled image into a
+RAM buffer, logs a two-block transaction, proves a torn copy is ignored,
+proves the committed copy replays once, and proves a pending transaction
+on a read-only device fails with `-EROFS`. `make crash-sim` replays all
+32 truncation points of a real transaction, repairs a mid-apply crash,
+and runs the full verifier over every resulting image. Flipping one byte
+in file data or an inode makes the host verifier fail. Format details are
+in `docs/jexfs-v3.md`.
 
 ## ✅ Completed Milestones
 
