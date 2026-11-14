@@ -159,6 +159,8 @@ FLAG_LINE  = $(CC) $(CFLAGS) $(MP3_CFLAGS) $(ASFLAGS) $(LDFLAGS)
 MKJEXFS   = $(BUILD)/tools/mkjexfs
 MKJEXFS3  = $(BUILD)/tools/mkjexfs3
 JEXFSCK3  = $(BUILD)/tools/jexfsck3
+J3CRASH   = $(BUILD)/tools/j3crash
+V3_JOURNAL_SRC = src/fs/jexfs3_journal.c
 # Disk-boot ISO: same staging as $(ISO) but without the rootfs module.
 RUN_ISO   = $(BUILD)/run-$(notdir $(ISO))
 GEN_KS    = $(BUILD)/tools/gen_kallsyms
@@ -188,10 +190,22 @@ V3_TREE        = $(BUILD)/jexfs3tree
 V3_TREE_STAMP  = $(BUILD)/jexfs3tree.stamp
 V3_TEST_IMAGE  = $(BUILD)/jexfs3-test.img
 V3_TEST_BLOCKS ?= 256
+V3_TEST_JOURNAL ?= 64
+V3_CRASH_DIR   = $(BUILD)/j3crash
+
+# Small image for the in-kernel journal replay test.  It has to fit in a
+# static buffer in the kernel (48 * 4 KB = 192 KB) and carries an 8-block
+# journal, which is enough for the two-block transaction the test logs.
+V3_JOURNAL_TREE       = $(BUILD)/jexfs3-journal-tree
+V3_JOURNAL_TREE_STAMP = $(BUILD)/jexfs3-journal-tree.stamp
+V3_JOURNAL_IMAGE      = $(BUILD)/jexfs3-journal-test.img
+V3_JOURNAL_BLOCKS     ?= 48
+V3_JOURNAL_LOG        ?= 8
 
 ifeq ($(FLAVOR),test)
-V3_PACK_DEP = $(V3_TEST_IMAGE)
-V3_PACK_CMD = cp $(V3_TEST_IMAGE) $(ROOTFS_STAGE)/jexfs3.img
+V3_PACK_DEP = $(V3_TEST_IMAGE) $(V3_JOURNAL_IMAGE)
+V3_PACK_CMD = cp $(V3_TEST_IMAGE) $(ROOTFS_STAGE)/jexfs3.img && \
+              cp $(V3_JOURNAL_IMAGE) $(ROOTFS_STAGE)/jexfs3-journal.img
 else
 V3_PACK_DEP =
 V3_PACK_CMD = :
@@ -301,10 +315,19 @@ $(MKJEXFS3): tools/mkjexfs3.c src/include/jexfs3.h
 	$(Q)printf "  HOSTCC $<\n"
 	$(Q)$(HOSTCC) -Wall -Wextra -o $@ $<
 
-$(JEXFSCK3): tools/jexfsck3.c src/include/jexfs3.h
+$(JEXFSCK3): tools/jexfsck3.c $(V3_JOURNAL_SRC) src/include/jexfs3.h \
+             src/include/jexfs3_journal.h
 	$(Q)mkdir -p $(@D)
 	$(Q)printf "  HOSTCC $<\n"
-	$(Q)$(HOSTCC) -Wall -Wextra -o $@ $<
+	$(Q)$(HOSTCC) -Wall -Wextra -Isrc/include -o $@ tools/jexfsck3.c \
+		$(V3_JOURNAL_SRC)
+
+$(J3CRASH): tools/j3crash.c $(V3_JOURNAL_SRC) src/include/jexfs3.h \
+            src/include/jexfs3_journal.h
+	$(Q)mkdir -p $(@D)
+	$(Q)printf "  HOSTCC $<\n"
+	$(Q)$(HOSTCC) -Wall -Wextra -Isrc/include -o $@ tools/j3crash.c \
+		$(V3_JOURNAL_SRC)
 
 # Fixed test tree: a small file, a 300 KB file split across five extents
 # (leaf block), a 200 KB file with four inline extents, and two nesting
@@ -321,11 +344,36 @@ $(V3_TREE_STAMP): Makefile
 
 $(V3_TEST_IMAGE): $(MKJEXFS3) $(V3_TREE_STAMP)
 	$(Q)printf "  JEXFS3  $@\n"
-	$(Q)./$(MKJEXFS3) $@ $(V3_TEST_BLOCKS) --split=16 $(V3_TREE)
+	$(Q)./$(MKJEXFS3) $@ $(V3_TEST_BLOCKS) --split=16 \
+		--journal=$(V3_TEST_JOURNAL) $(V3_TREE)
+
+# Tiny tree for the kernel-side journal test: one file is enough to prove
+# replay did not disturb ordinary data.
+$(V3_JOURNAL_TREE_STAMP): Makefile
+	$(Q)rm -rf $(V3_JOURNAL_TREE) && mkdir -p $(V3_JOURNAL_TREE)
+	$(Q)printf 'hello jexfs3\n' > $(V3_JOURNAL_TREE)/hello.txt
+	$(Q)touch $@
+
+$(V3_JOURNAL_IMAGE): $(MKJEXFS3) $(V3_JOURNAL_TREE_STAMP)
+	$(Q)printf "  JEXFS3  $@\n"
+	$(Q)./$(MKJEXFS3) $@ $(V3_JOURNAL_BLOCKS) \
+		--journal=$(V3_JOURNAL_LOG) $(V3_JOURNAL_TREE)
 
 # Host-side verification of the same image the kernel mounts.
 check-v3: $(JEXFSCK3) $(V3_TEST_IMAGE)
 	$(Q)./$(JEXFSCK3) $(V3_TEST_IMAGE) $(V3_TREE)
+
+## Crash simulation: log a transaction, replay every truncation point of
+## it, then run the full verifier over every resulting image.  No QEMU.
+crash-sim: $(J3CRASH) $(JEXFSCK3) $(V3_TEST_IMAGE)
+	$(Q)rm -rf $(V3_CRASH_DIR) && mkdir -p $(V3_CRASH_DIR)
+	$(Q)./$(J3CRASH) $(V3_TEST_IMAGE) --out $(V3_CRASH_DIR)
+	$(Q)set -e; for img in $(V3_CRASH_DIR)/*.img; do \
+		./$(JEXFSCK3) $$img --replay >/dev/null || \
+			{ echo "  CRASHSIM FAILED: $$img"; exit 1; }; \
+	done
+	$(Q)printf "  CRASHSIM %s image(s) verified\n" \
+		"$$(ls $(V3_CRASH_DIR)/*.img | wc -l)"
 
 
 ## Build an ISO staging tree.  $(1) is the output name for the log line,
@@ -524,6 +572,6 @@ help:
 
 -include $(DEPS)
 
-.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test check-v3 run-boottime measure-boot FORCE
+.PHONY: all run run-native clean distclean iso deliver docs docs-run boot help debug run-debug test run-test check-v3 crash-sim run-boottime measure-boot FORCE
 
 FORCE:

@@ -8,8 +8,11 @@
  * (the same ones handed to mkjexfs3), it also compares every file
  * byte-for-byte and reports missing or extra entries.
  *
+ * A pending journal transaction is reported, not applied, unless
+ * --replay is given.  Replay uses the same code as the kernel mount.
+ *
  * Usage:
- *   jexfsck3 <image.img> [source_dir...]
+ *   jexfsck3 <image.img> [--replay] [source_dir...]
  */
 
 #include <stdio.h>
@@ -21,6 +24,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "../src/include/jexfs3.h"
+#include "../src/include/jexfs3_journal.h"
 
 #define MAX_SRC 1024
 #define PATH_MAX_LEN 1024
@@ -72,6 +76,33 @@ static uint8_t *block_ptr(uint32_t block)
         return NULL;
     }
     return img + (size_t)block * JEXFS3_BLOCK_SIZE;
+}
+
+/*
+ * Journal I/O over the in-memory image.  The shared replay code in
+ * src/fs/jexfs3_journal.c is the same one the kernel mounts with, so the
+ * host verifier cannot accept something the kernel would reject.
+ */
+static int image_read_block(void *ctx, uint32_t block, void *buf)
+{
+    uint8_t *p = block_ptr(block);
+
+    (void)ctx;
+    if (!p)
+        return -1;
+    memcpy(buf, p, JEXFS3_BLOCK_SIZE);
+    return 0;
+}
+
+static int image_write_block(void *ctx, uint32_t block, const void *buf)
+{
+    uint8_t *p = block_ptr(block);
+
+    (void)ctx;
+    if (!p)
+        return -1;
+    memcpy(p, buf, JEXFS3_BLOCK_SIZE);
+    return 0;
 }
 
 static int inode_read(uint32_t index, struct jexfs3_inode *out)
@@ -633,9 +664,21 @@ static int check_superblock(void)
         report("required feature bits missing");
         return -1;
     }
-    if (sb.journal_blocks != 0) {
-        report("phase 1 image claims a journal (%u blocks)", sb.journal_blocks);
-        return -1;
+    if (sb.journal_blocks == 0) {
+        if (sb.journal_start != 0 ||
+            (sb.feature_incompat & JEXFS3_FEATURE_INCOMPAT_JOURNAL)) {
+            report("journal fields and feature bit disagree");
+            return -1;
+        }
+    } else {
+        if ((sb.feature_incompat & JEXFS3_FEATURE_INCOMPAT_JOURNAL) == 0) {
+            report("journal region without the journal feature bit");
+            return -1;
+        }
+        if (sb.journal_blocks < JEXFS3_JOURNAL_MIN_BLOCKS) {
+            report("journal too small (%u blocks)", sb.journal_blocks);
+            return -1;
+        }
     }
 
     uint32_t ib = (sb.inode_count + 32767u) / 32768u;
@@ -652,12 +695,14 @@ static int check_superblock(void)
         sb.block_bitmap_blocks != bb ||
         sb.inode_table_start != sb.block_bitmap_start + bb ||
         sb.inode_table_blocks != it ||
-        sb.first_data_block != sb.inode_table_start + it) {
+        sb.journal_start != (sb.journal_blocks ? sb.inode_table_start + it : 0) ||
+        sb.first_data_block != sb.inode_table_start + it + sb.journal_blocks) {
         report("metadata layout does not match the superblock");
         return -1;
     }
     if (sb.first_data_block >= total_blocks - 1 ||
-        sb.backup_block != total_blocks - 1) {
+        sb.backup_block != total_blocks - 1 ||
+        sb.journal_start >= sb.backup_block) {
         report("data region or backup block out of range");
         return -1;
     }
@@ -679,8 +724,11 @@ static int check_superblock(void)
 
 int main(int argc, char **argv)
 {
+    int replay = 0;
+
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <image.img> [source_dir...]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <image.img> [--replay] [source_dir...]\n",
+                argv[0]);
         return 1;
     }
 
@@ -713,10 +761,59 @@ int main(int argc, char **argv)
     fclose(f);
 
     printf("JexFS v3 check: %s\n", argv[1]);
+
+    for (int i = 2; i < argc; i++)
+        if (strcmp(argv[i], "--replay") == 0)
+            replay = 1;
+
     if (check_superblock() != 0)
         goto done;
 
+    if (sb.journal_blocks != 0) {
+        struct jexfs3_journal_io jio = {
+            image_read_block, image_write_block, NULL, NULL
+        };
+        struct jexfs3_journal_info jinfo;
+        int rc;
+
+        rc = jexfs3_journal_check(&sb, &jio, &jinfo);
+        if (rc != 0) {
+            report("journal header is corrupt (%d)", rc);
+            goto done;
+        }
+        if (jinfo.txn_count != 0) {
+            if (!replay) {
+                report("journal holds a committed transaction (%u blocks); "
+                       "rerun with --replay", jinfo.txn_count);
+                goto done;
+            }
+            rc = jexfs3_journal_replay(&sb, &jio, &jinfo);
+            if (rc != 0) {
+                report("journal replay failed (%d)", rc);
+                goto done;
+            }
+            if (!jinfo.replayed) {
+                report("committed transaction was not applied");
+                goto done;
+            }
+            printf("  journal: replayed %u metadata block(s)\n", jinfo.txn_count);
+
+            /* Replay may have rewritten the superblock; re-read and
+             * revalidate before trusting anything else in it. */
+            memcpy(&sb, img, sizeof(sb));
+            if (check_superblock() != 0)
+                goto done;
+        } else if (jinfo.incomplete) {
+            printf("  journal: %u blocks, incomplete transaction ignored\n",
+                   sb.journal_blocks);
+        } else {
+            printf("  journal: %u blocks, empty\n", sb.journal_blocks);
+        }
+    }
+
     for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--replay") == 0)
+            continue;
         compare_sources = 1;
         if (scan_source(argv[i], "") != 0)
             goto done;

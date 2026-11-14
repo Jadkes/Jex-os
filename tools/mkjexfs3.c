@@ -9,11 +9,13 @@
  * data are covered by the inode's data_crc.
  *
  * Usage:
- *   mkjexfs3 <output.img> <block_count> [--split=N] <source_dir...>
+ *   mkjexfs3 <output.img> <block_count> [--split=N] [--journal=N] <source_dir...>
  *
  * --split=N caps each extent at N blocks.  It exists to exercise the leaf
  * extent path in tests; production images leave it unset so each file is
- * one contiguous extent.  Multiple source directories are merged into the
+ * one contiguous extent.  --journal=N reserves N blocks for the metadata
+ * journal (0 or at least 4) and initialises an empty journal header.
+ * Multiple source directories are merged into the
  * image root, which is how build-generated assets get in.
  */
 
@@ -53,6 +55,7 @@ static uint32_t total_blocks;
 static uint32_t next_block;
 static uint32_t next_inode;
 static uint32_t max_extent_blocks;
+static uint32_t journal_blocks;
 static struct node nodes[MAX_NODES];
 static uint32_t node_count;
 
@@ -98,6 +101,30 @@ static void inode_bitmap_set(uint32_t index)
 static void block_bitmap_set(uint32_t index)
 {
     bitmap_set(sb_ptr()->block_bitmap_start, index);
+}
+
+/*
+ * write_journal_header - initialise the journal header once at build time.
+ *
+ * The header is immutable: transactions live in the blocks after it, so a
+ * torn transaction can never damage the record of where the journal is.
+ */
+static void write_journal_header(void)
+{
+    struct jexfs3_journal_header *header;
+    uint8_t *block;
+
+    if (!journal_blocks)
+        return;
+    block = block_ptr(sb_ptr()->journal_start);
+    memset(block, 0, JEXFS3_BLOCK_SIZE);
+    header = (struct jexfs3_journal_header *)block;
+    header->magic = JEXFS3_JOURNAL_MAGIC;
+    header->version = JEXFS3_JOURNAL_VERSION;
+    header->block_size = JEXFS3_BLOCK_SIZE;
+    header->journal_blocks = journal_blocks;
+    header->checksum = jexfs3_crc_zeroed(block, JEXFS3_BLOCK_SIZE,
+                                         JEXFS3_JOURNAL_HEADER_CHECKSUM_OFF);
 }
 
 /* ------------------------------------------------------------------ */
@@ -437,7 +464,7 @@ int main(int argc, char **argv)
 
     if (argc < 3) {
         fprintf(stderr,
-                "Usage: %s <output.img> <block_count> [--split=N] <source_dir...>\n",
+                "Usage: %s <output.img> <block_count> [--split=N] [--journal=N] <source_dir...>\n",
                 argv[0]);
         return 1;
     }
@@ -449,6 +476,8 @@ int main(int argc, char **argv)
     for (int i = 3; i < argc; i++) {
         if (strncmp(argv[i], "--split=", 8) == 0)
             max_extent_blocks = (uint32_t)strtoul(argv[i] + 8, NULL, 0);
+        else if (strncmp(argv[i], "--journal=", 10) == 0)
+            journal_blocks = (uint32_t)strtoul(argv[i] + 10, NULL, 0);
         else if (dir_count < 16)
             dirs[dir_count++] = argv[i];
         else
@@ -456,6 +485,8 @@ int main(int argc, char **argv)
     }
     if (max_extent_blocks > 65535u)
         die("--split must be 1..65535");
+    if (journal_blocks != 0 && journal_blocks < JEXFS3_JOURNAL_MIN_BLOCKS)
+        die("--journal must be 0 or at least 4 blocks");
 
     if ((uint64_t)total_blocks * JEXFS3_BLOCK_SIZE > (uint64_t)SIZE_MAX)
         die("image too large for this host");
@@ -496,10 +527,14 @@ int main(int argc, char **argv)
     sb->block_bitmap_blocks = bb_blocks;
     sb->inode_table_start = sb->block_bitmap_start + bb_blocks;
     sb->inode_table_blocks = it_blocks;
-    sb->first_data_block = sb->inode_table_start + it_blocks;
+    sb->journal_start = journal_blocks ? sb->inode_table_start + it_blocks : 0;
+    sb->journal_blocks = journal_blocks;
+    sb->first_data_block = sb->inode_table_start + it_blocks + journal_blocks;
 
     if (sb->first_data_block >= total_blocks - 1)
-        die("block_count too small for the inode table");
+        die("block_count too small for the metadata region");
+
+    write_journal_header();
 
     next_block = sb->first_data_block;
 
@@ -577,11 +612,11 @@ int main(int argc, char **argv)
     sb->total_bytes = (uint64_t)total_blocks * JEXFS3_BLOCK_SIZE;
     sb->generation = 1;
     sb->feature_incompat = JEXFS3_FEATURE_INCOMPAT_EXTENTS
-                           | JEXFS3_FEATURE_INCOMPAT_CRC32C;
+                           | JEXFS3_FEATURE_INCOMPAT_CRC32C
+                           | (journal_blocks ?
+                              JEXFS3_FEATURE_INCOMPAT_JOURNAL : 0u);
     sb->inode_count = inode_count;
     sb->inode_size = JEXFS3_INODE_SIZE;
-    sb->journal_start = 0;
-    sb->journal_blocks = 0;
     sb->root_inode = JEXFS3_ROOT_INODE;
     sb->checksum_type = 1;
     sb->backup_block = total_blocks - 1;
@@ -601,8 +636,10 @@ int main(int argc, char **argv)
     }
     fclose(out);
 
-    printf("Done: %u entries, %u inodes, %u data/extent blocks used\n",
-           node_count, inode_count, next_block - sb->first_data_block);
+    printf("Done: %u entries, %u inodes, %u data/extent blocks used, "
+           "%u journal block(s)\n",
+           node_count, inode_count, next_block - sb->first_data_block,
+           journal_blocks);
     free(img);
     return 0;
 }
