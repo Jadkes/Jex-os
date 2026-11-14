@@ -41,6 +41,9 @@ docs/*
 .claude/
 /CLAUDE.md
 
+# Local agent instructions stay out of the repo
+/AGENTS.md
+
 # Local runtime state -- never committed
 /config/
 /data/
