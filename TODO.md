@@ -47,6 +47,53 @@ verifier fail. Format details are in `docs/jexfs-v3.md`.
 
 ## ✅ Completed Milestones
 
+### Boot Performance — Disk-First Boot, IDE Fast-Fail, Measurement
+
+Boot felt slow because two unrelated costs stacked up:
+
+- **GRUB read the 64 MB rootfs module on every disk boot (~6.6 s).**
+  `make run` / `run-debug` booted the CD ISO (which carries
+  `/boot/jexos.img` as a multiboot module) *and* attached the disk.
+  JexFS mounts the disk first and releases the module, so GRUB's read was
+  pure waste. The run targets now boot a disk-only ISO
+  (`build/run-<flavor>.iso`, no module); `make iso` (CD-only) still embeds
+  it. Both staging paths come from one `iso_tree` make define, and every
+  ISO build writes `GRUB_TIMEOUT` into `grub.cfg` instead of leaving a
+  stale file behind.
+- **An empty IDE channel burned four 10-million-iteration poll timeouts
+  (~4.6 s).** With no disk attached, QEMU's bare PIIX channel returns
+  `0x00` at status port `0x1F7`, not the `0xFF` the old early check tested
+  for. `ide_wait_busy` / `ide_wait_drq` then spun their full timeout, four
+  times over. `ide_init()` now probes once and caches `ide_present`, and
+  both wait loops treat `0x00` or `0xFF` as "no drive" and return
+  `-ENODEV` immediately; reads, writes and identify fail fast when the
+  channel is empty. The probe polls for a few milliseconds first, so a
+  drive that is still spinning up is not mistaken for an absent one.
+
+Measurement build:
+
+- `FLAVOR=boottime` is a debug clone plus a TSC timer anchored at the
+  first kernel instruction and calibrated against the 100 Hz PIT (the
+  calibration window is subtracted from the total). It prints
+  `BOOTTIME: N ms (kernel entry -> shell ready)` on serial and powers off
+  exactly when the shell prompt is up.
+- `make run-boottime` boots it interactively with the normal GRUB menu;
+  `make measure-boot` zeroes the menu timeout and reports host wall time
+  from QEMU launch to poweroff, so GRUB's share is visible beside the
+  kernel's.
+
+Results under QEMU TCG:
+
+| Scenario | Before | After |
+|---|---|---|
+| Disk rootfs (`make run`) | 7.87 s host total | 1.29 s host / 355 ms kernel |
+| CD-only, no disk | 4654 ms kernel | 372 ms kernel |
+
+The CD-only host total (~8.2 s) is still GRUB reading the 64 MB module;
+that path cannot get faster without a smaller or compressed module, or a
+disk. Verified: `make all`, `make check-v3` (0 failures), `make run-test`
+(`SELFTEST PASS`, exit 0), and both measurement scenarios above.
+
 ### v0.8.0 — 64 MB Disk, Build-Time MP3 Transcode, AC'97 Underrun Fix
 
 - [x] **Disk-First Rootfs (JexFS v3 Phase 0)**: `jexfs_mount_persistence()` probes the primary master before trusting the GRUB module. A JexFS superblock at LBA 0 (`make run`) or at `total_sectors - ramdisk_blocks*2` (the tail of a `make deliver` image) is validated against the drive capacity, and the mount switches block I/O to that copy. The module is then cold: its page-aligned interior goes back to `pmm_free_blocks()`, so the RAM it pinned is usable again. Measured on a 128 MB guest: 61,708 KB free at PMM init, 127,232 KB after the switch — 65,536 KB returned. `make run` boots a throwaway `build/run-jexos.img` copy (`run-debug` likewise) so guest writes no longer dirty the build artifact; `jexos.img` has the same md5 before and after a boot. Verified disk-mode selftest (exit 33), playback from disk (9.68 s of music in a 9.94 s capture, max RMS 21083), and a delivery round-trip: the first boot writes the tail, the second mounts the changed tail and still passes. No disk and a module still boots from the module exactly as before.
