@@ -25,10 +25,25 @@ encryption, quotas, multi-device.
 | Phase | Work | Exit criterion | Status |
 |---|---|---|---|
 | 0 | Disk-first mount: probe LBA 0 or the delivery tail, mount the disk copy, return the module pages to the PMM (v2 format unchanged) | `free` recovers ~64 MB; audio, suite and delivery round-trip pass | [x] |
-| 1 | `docs/jexfs-v3.md`, `mkjexfs3` + host verifier, read-only v3 mount | Host-built v3 image mounts and every file verifies byte-for-byte | [ ] |
+| 1 | `docs/jexfs-v3.md`, `mkjexfs3` + host verifier, read-only v3 mount | Host-built v3 image mounts and every file verifies byte-for-byte | [x] |
 | 2 | Metadata journal, replay, ordered data; crash injection | Kill QEMU at random points during writes, remount, `jexfsck` clean | [ ] |
 | 3 | Extent tree, delayed allocation, hashed directories | Image larger than 64 MB; large-file metadata reads measurably lower | [ ] |
 | 4 | v2→v3 converter, persistence rewrite, docs | Existing `jexos.img` converts; `make deliver` round-trips | [ ] |
+
+Phase 1 is done. `src/include/jexfs3.h` defines the 4 KB-block format;
+`tools/mkjexfs3.c` packs a tree (inline extents, with a 255-entry leaf
+when a file needs more than four) and `tools/jexfsck3.c` validates both
+superblocks, layout, inode/extent checksums, extent coverage and bounds,
+dirent chains, link counts, bitmaps and data crcs, then compares every
+file against its source byte-for-byte. The kernel reader in
+`src/fs/jexfs3.c` mounts over a block callback, rejects unknown features
+and any claimed journal, and re-verifies every allocated inode and its
+reachability from the root. `make check-v3` reports 5 files, 3
+directories, 256 blocks, 0 failures; `make FLAVOR=test run-test` mounts
+the same image from `/jexfs3.img`, passes the in-kernel consistency
+check, reads files across an extent boundary, and walks the root
+directory. Flipping one byte in file data or an inode makes the host
+verifier fail. Format details are in `docs/jexfs-v3.md`.
 
 ## ✅ Completed Milestones
 
