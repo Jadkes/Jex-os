@@ -161,6 +161,7 @@ MKJEXFS3  = $(BUILD)/tools/mkjexfs3
 JEXFSCK3  = $(BUILD)/tools/jexfsck3
 J3CRASH   = $(BUILD)/tools/j3crash
 V3_JOURNAL_SRC = src/fs/jexfs3_journal.c
+V3_WRITE_SRC   = src/fs/jexfs3_write.c
 # Disk-boot ISO: same staging as $(ISO) but without the rootfs module.
 RUN_ISO   = $(BUILD)/run-$(notdir $(ISO))
 GEN_KS    = $(BUILD)/tools/gen_kallsyms
@@ -322,12 +323,13 @@ $(JEXFSCK3): tools/jexfsck3.c $(V3_JOURNAL_SRC) src/include/jexfs3.h \
 	$(Q)$(HOSTCC) -Wall -Wextra -Isrc/include -o $@ tools/jexfsck3.c \
 		$(V3_JOURNAL_SRC)
 
-$(J3CRASH): tools/j3crash.c $(V3_JOURNAL_SRC) src/include/jexfs3.h \
-            src/include/jexfs3_journal.h
+$(J3CRASH): tools/j3crash.c $(V3_JOURNAL_SRC) $(V3_WRITE_SRC) \
+            src/include/jexfs3.h src/include/jexfs3_journal.h \
+            src/include/jexfs3_write.h
 	$(Q)mkdir -p $(@D)
 	$(Q)printf "  HOSTCC $<\n"
 	$(Q)$(HOSTCC) -Wall -Wextra -Isrc/include -o $@ tools/j3crash.c \
-		$(V3_JOURNAL_SRC)
+		$(V3_JOURNAL_SRC) $(V3_WRITE_SRC)
 
 # Fixed test tree: a small file, a 300 KB file split across five extents
 # (leaf block), a 200 KB file with four inline extents, and two nesting

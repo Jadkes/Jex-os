@@ -1,23 +1,25 @@
 /**
  * @file j3crash.c
- * @brief Crash simulator for the JexFS v3 journal.
+ * @brief Crash simulator for the JexFS v3 journal and file writer.
  *
  * Purpose: prove that a transaction is all-or-nothing without booting
- * QEMU.  The tool logs a two-block metadata transaction (a superblock
- * generation bump in the primary and the backup), then copies the journal
- * back into a scratch image one byte-range at a time.  Each prefix is a
- * simulated crash point; replaying it must leave both superblocks on the
- * same generation, either the old one or the new one.
+ * QEMU.  Two scenarios run:
  *
- * The transaction is written by the same jexfs3_journal_write() the kernel
- * will use, and replayed by the same jexfs3_journal_replay() the kernel
- * mounts with, so this tests the real code rather than a model of it.
+ *   1. A two-block superblock generation bump is logged, then copied back
+ *      into a scratch image one byte-range at a time.  Replay must leave
+ *      the pair on the old generation or the new one.
+ *   2. jexfs3_image_replace_file() rewrites a real file through a write
+ *      callback that fails after N writes.  Reboot replay must leave the
+ *      old file or the complete new one.
+ *
+ * Both scenarios use the same journal and writer code the kernel uses,
+ * so they test the real rules rather than a model of them.
  *
  * Usage:
  *   j3crash <image.img> [--out DIR]
  *
  * With --out, every replayed image is written to DIR so jexfsck3 can
- * verify the whole filesystem, not just the generation field.
+ * verify the whole filesystem, not just one inode.
  */
 
 #include <stdio.h>
@@ -27,6 +29,7 @@
 #include <sys/stat.h>
 #include "../src/include/jexfs3.h"
 #include "../src/include/jexfs3_journal.h"
+#include "../src/include/jexfs3_write.h"
 
 static uint8_t *base;
 static uint8_t *logged;
@@ -309,6 +312,271 @@ static void check_partial_apply(uint32_t new_generation, int index)
     free(crash);
 }
 
+static int inode_at(const uint8_t *img, uint32_t index,
+                    struct jexfs3_inode *out)
+{
+    uint64_t byte_off;
+    uint32_t block;
+    uint32_t within;
+
+    if (index >= sb.inode_count)
+        return -1;
+    byte_off = (uint64_t)index * JEXFS3_INODE_SIZE;
+    block = sb.inode_table_start + (uint32_t)(byte_off >> 12);
+    within = (uint32_t)(byte_off & (JEXFS3_BLOCK_SIZE - 1u));
+    if ((uint64_t)block * JEXFS3_BLOCK_SIZE + within + JEXFS3_INODE_SIZE >
+        image_size)
+        return -1;
+    memcpy(out, img + (size_t)block * JEXFS3_BLOCK_SIZE + within,
+           sizeof(*out));
+    if (jexfs3_crc_zeroed(out, JEXFS3_INODE_SIZE,
+                          JEXFS3_INODE_CHECKSUM_OFF) != out->checksum)
+        return -1;
+    return 0;
+}
+
+static int inode_block_for(const uint8_t *img,
+                           const struct jexfs3_inode *inode,
+                           uint32_t logical, uint32_t *physical)
+{
+    uint8_t leaf[JEXFS3_BLOCK_SIZE];
+    uint32_t i;
+
+    if (inode->extent_depth == 0) {
+        for (i = 0; i < inode->extent_count; i++) {
+            const struct jexfs3_extent *ext = &inode->inline_extents[i];
+
+            if (logical >= ext->logical &&
+                (uint64_t)logical < (uint64_t)ext->logical + ext->length) {
+                *physical = ext->physical + (logical - ext->logical);
+                return 0;
+            }
+        }
+        return -1;
+    }
+    if (inode->extent_depth != 1 ||
+        inode->extent_root >= total_blocks)
+        return -1;
+    memcpy(leaf, img + (size_t)inode->extent_root * JEXFS3_BLOCK_SIZE,
+           JEXFS3_BLOCK_SIZE);
+    {
+        const struct jexfs3_extent_block *eb =
+            (const struct jexfs3_extent_block *)leaf;
+
+        if (eb->magic != JEXFS3_EXTENT_MAGIC || eb->depth != 1 ||
+            eb->count > JEXFS3_EXTENT_ENTRIES)
+            return -1;
+        for (i = 0; i < eb->count; i++) {
+            const struct jexfs3_extent *ext = &eb->entries[i];
+
+            if (logical >= ext->logical &&
+                (uint64_t)logical < (uint64_t)ext->logical + ext->length) {
+                *physical = ext->physical + (logical - ext->logical);
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+/*
+ * find_file_inode - resolve a name in the root directory.
+ *
+ * The test image's root directory fits one block; this is a test helper,
+ * not a general path walker.
+ */
+static uint32_t find_file_inode(const uint8_t *img, const char *name)
+{
+    struct jexfs3_inode root;
+    uint8_t block[JEXFS3_BLOCK_SIZE];
+    uint64_t pos = 0;
+    uint64_t limit;
+    uint32_t physical;
+
+    if (inode_at(img, sb.root_inode, &root) != 0)
+        return 0;
+    if ((root.mode & JEXFS3_TYPE_MASK) != JEXFS3_TYPE_DIR)
+        return 0;
+    if (inode_block_for(img, &root, 0, &physical) != 0)
+        return 0;
+    memcpy(block, img + (size_t)physical * JEXFS3_BLOCK_SIZE,
+           JEXFS3_BLOCK_SIZE);
+
+    limit = root.size < JEXFS3_BLOCK_SIZE ? root.size : JEXFS3_BLOCK_SIZE;
+    while (pos + JEXFS3_DIRENT_MIN <= limit) {
+        const struct jexfs3_dirent *de =
+            (const struct jexfs3_dirent *)(block + pos);
+
+        if (de->rec_len < JEXFS3_DIRENT_MIN || pos + de->rec_len > limit)
+            return 0;
+        if (de->name_len != 0 &&
+            de->name_len <= de->rec_len - JEXFS3_DIRENT_MIN &&
+            de->name_len == strlen(name) &&
+            memcmp(de->name, name, de->name_len) == 0)
+            return de->inode;
+        pos += de->rec_len;
+    }
+    return 0;
+}
+
+static int read_file_meta(const uint8_t *img, uint32_t index,
+                          uint64_t *size, uint32_t *crc)
+{
+    struct jexfs3_inode inode;
+
+    if (inode_at(img, index, &inode) != 0)
+        return -1;
+    if ((inode.mode & JEXFS3_TYPE_MASK) != JEXFS3_TYPE_FILE)
+        return -1;
+    *size = inode.size;
+    *crc = inode.data_crc;
+    return 0;
+}
+
+/*
+ * Write-crash scenario: fail the real writer after N block writes, then
+ * replay the surviving journal exactly as a mount would.
+ */
+struct crash_call {
+    uint8_t *img;
+    uint32_t budget;
+    uint32_t done;
+};
+
+static int crash_read_block(void *ctx, uint32_t block, void *buf)
+{
+    struct crash_call *call = (struct crash_call *)ctx;
+
+    if (block >= total_blocks)
+        return -1;
+    memcpy(buf, call->img + (size_t)block * JEXFS3_BLOCK_SIZE,
+           JEXFS3_BLOCK_SIZE);
+    return 0;
+}
+
+static int crash_write_limited(void *ctx, uint32_t block, const void *buf)
+{
+    struct crash_call *call = (struct crash_call *)ctx;
+
+    if (block >= total_blocks)
+        return -1;
+    if (call->budget == 0)
+        return -1;
+    call->budget--;
+    call->done++;
+    memcpy(call->img + (size_t)block * JEXFS3_BLOCK_SIZE, buf,
+           JEXFS3_BLOCK_SIZE);
+    return 0;
+}
+
+static int crash_image_write(void *ctx, uint32_t block, const void *buf)
+{
+    struct crash_call *call = (struct crash_call *)ctx;
+
+    if (block >= total_blocks)
+        return -1;
+    memcpy(call->img + (size_t)block * JEXFS3_BLOCK_SIZE, buf,
+           JEXFS3_BLOCK_SIZE);
+    return 0;
+}
+
+static int crash_flush(void *ctx)
+{
+    (void)ctx;
+    return 0;
+}
+
+static void *crash_alloc(size_t size)
+{
+    return malloc(size);
+}
+
+static void crash_free(void *ptr)
+{
+    free(ptr);
+}
+
+static uint8_t write_payload[3u * JEXFS3_BLOCK_SIZE + 123u];
+
+static void check_write_case(uint32_t budget, uint32_t inode,
+                             uint64_t old_size, uint32_t old_crc,
+                             uint64_t new_size, uint32_t new_crc,
+                             uint32_t *done_out)
+{
+    uint8_t *crash = (uint8_t *)malloc(image_size);
+    struct crash_call call;
+    struct jexfs3_write_io wio;
+    struct jexfs3_journal_io jio;
+    struct jexfs3_journal_info info;
+    uint64_t size = 0;
+    uint32_t crc = 0;
+    char path[1024];
+    int write_rc;
+    int replay_rc;
+    int meta_rc;
+    int is_old;
+    int is_new;
+
+    if (!crash)
+        die("out of memory for a write crash image");
+    memcpy(crash, base, image_size);
+
+    call.img = crash;
+    call.budget = budget;
+    call.done = 0;
+
+    wio.read_block = crash_read_block;
+    wio.write_block = crash_write_limited;
+    wio.flush = crash_flush;
+    wio.alloc = crash_alloc;
+    wio.free = crash_free;
+    wio.ctx = &call;
+
+    write_rc = jexfs3_image_replace_file(&sb, &wio, inode, write_payload,
+                                         sizeof(write_payload));
+    if (done_out)
+        *done_out = call.done;
+
+    jio.read_block = crash_read_block;
+    jio.write_block = crash_image_write;
+    jio.flush = crash_flush;
+    jio.ctx = &call;
+
+    replay_rc = jexfs3_journal_replay(&sb, &jio, &info);
+    meta_rc = read_file_meta(crash, inode, &size, &crc);
+    is_old = meta_rc == 0 && size == old_size && crc == old_crc;
+    is_new = meta_rc == 0 && size == new_size && crc == new_crc;
+
+    cases++;
+    if (replay_rc != 0) {
+        fprintf(stderr, "  FAIL write budget=%u: replay returned %d\n",
+                budget, replay_rc);
+        failures++;
+    } else if (meta_rc != 0) {
+        fprintf(stderr, "  FAIL write budget=%u: inode unreadable after replay\n",
+                budget);
+        failures++;
+    } else if (!is_old && !is_new) {
+        fprintf(stderr, "  FAIL write budget=%u: inode is neither old nor new\n",
+                budget);
+        failures++;
+    } else if (write_rc == 0 && !is_new) {
+        fprintf(stderr, "  FAIL write budget=%u: success kept the old file\n",
+                budget);
+        failures++;
+    }
+
+    if (out_dir) {
+        snprintf(path, sizeof(path), "%s/write-%03d-%05u.img",
+                 out_dir, cases, budget);
+        write_image(path, crash);
+    }
+    printf("  write budget %6u: %s%s\n", budget,
+           is_new ? "new file" : "old file",
+           write_rc == 0 ? " (complete)" : "");
+    free(crash);
+}
+
 int main(int argc, char **argv)
 {
     uint32_t targets[2];
@@ -354,6 +622,46 @@ int main(int argc, char **argv)
         }
     }
     check_partial_apply(new_generation, index++);
+
+    /*
+     * Second scenario: crash the real file writer at every write
+     * boundary.  The writer allocates blocks, writes data, logs the
+     * bitmap+inode transaction and applies it.  A reboot replay must
+     * leave each file exactly old or exactly new.
+     *
+     * data.bin also frees a depth-1 extent leaf in the transaction, so
+     * the verifier can confirm both the data blocks and the leaf return
+     * to the block bitmap.
+     */
+    {
+        static const char *const names[] = { "hello.txt", "data.bin" };
+
+        for (unsigned f = 0; f < sizeof(names) / sizeof(names[0]); f++) {
+            uint32_t inode = find_file_inode(base, names[f]);
+            uint64_t old_size;
+            uint32_t old_crc;
+            uint32_t new_crc;
+            uint32_t total = 0;
+
+            if (inode == 0)
+                die("write test file not found in the image");
+            if (read_file_meta(base, inode, &old_size, &old_crc) != 0)
+                die("write test inode is unreadable");
+            for (uint32_t i = 0; i < sizeof(write_payload); i++)
+                write_payload[i] = (uint8_t)(0x5Au + i * 7u + f * 11u);
+            new_crc = jexfs3_crc32c(0, write_payload, sizeof(write_payload));
+
+            printf("j3crash: write path, %s inode %u, %llu -> %zu bytes\n",
+                   names[f], inode, (unsigned long long)old_size,
+                   sizeof(write_payload));
+            check_write_case(UINT32_MAX, inode, old_size, old_crc,
+                             sizeof(write_payload), new_crc, &total);
+            printf("j3crash: write path uses %u block writes\n", total);
+            for (uint32_t n = 0; n < total; n++)
+                check_write_case(n, inode, old_size, old_crc,
+                                 sizeof(write_payload), new_crc, NULL);
+        }
+    }
 
     printf("j3crash: %d case(s), %d failure(s)\n", cases, failures);
     free(txn_sb);
