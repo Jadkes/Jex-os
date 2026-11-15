@@ -8,10 +8,10 @@ indirect block pointers, and crc32c integrity over metadata.
 Phase 1 implements the format, a host builder (`mkjexfs3`), a host
 verifier (`jexfsck3`), and a read-only kernel mount.  Phase 2a adds the
 metadata journal: its on-disk format, a shared replay path used by the
-kernel and the host verifier, and deterministic crash simulation.  The
-writable kernel path that produces transactions is phase 2b; until then
-images may carry an empty journal, and a committed transaction is
-replayed at mount before the filesystem serves anything.
+kernel and the host verifier, and deterministic crash simulation.  Phase
+2b adds the writable kernel path: block allocation, ordered data writes
+and a journaled metadata transaction that replaces an existing file.
+Images may still carry no journal, in which case they remain read-only.
 
 ## Block layout
 
@@ -47,7 +47,7 @@ records that were never written.
 | 12 | `total_blocks` | Device size in blocks |
 | 16 | `total_bytes` | `total_blocks * block_size` |
 | 24 | `uuid[16]` | Name-based, derived from the packed tree |
-| 40 | `generation` | Bumped by every metadata transaction |
+| 40 | `generation` | Bumped when the superblock itself changes |
 | 44 | `feature_compat` | Read/write-compatible features (0 today) |
 | 48 | `feature_ro_compat` | Read-only-compatible features (0 today) |
 | 52 | `feature_incompat` | Unknown bit means "do not mount" |
@@ -209,6 +209,40 @@ A committed transaction on a read-only device is a mount failure
 (`-EROFS`), not a silent mount with stale metadata.  A journal with no
 committed transaction does not require write access at all.
 
+## Writing a file
+
+Phase 2b replaces the contents of an existing regular file.  It does not
+create, unlink, rename or truncate-by-offset yet; a zero-length
+replacement is a truncate.
+
+The write path lives in `src/fs/jexfs3_write.c` and is shared by the
+kernel and the host tools.  A replacement:
+
+1. validates the old inode and its extent list;
+2. allocates a fresh contiguous run from the block bitmap, never a block
+   the old inode still references;
+3. writes and zero-pads the new data blocks, then flushes them;
+4. builds the new inode (one contiguous inline extent chain, split into
+   65535-block pieces) and the modified block-bitmap block(s);
+5. logs the bitmap and inode as one transaction, then applies and clears
+   it.
+
+New data goes to fresh blocks so a crash before the commit leaves the old
+inode, old blocks and old data intact.  A crash after the commit replays
+the bitmap and inode together, so the new file appears complete.  Blocks
+allocated by a write that never commits stay marked free: their contents
+are garbage, but no inode references them.  One consequence is that a
+rewrite needs free space for the whole new file; the old blocks are not
+available to the allocator until the transaction commits.  Delayed
+allocation in phase 3 can lift that constraint.
+
+The replacement is contiguous, so it needs no extent leaf.  A file that
+would need more than four inline extents (more than 262140 blocks) is
+rejected with `-EFBIG`; that limit is far above the test images.  A file
+written this way can free an old leaf extent block, because the old
+extent list is walked and every block it names returns to the bitmap in
+the same transaction.
+
 ## Host tools
 
 ```bash
@@ -233,17 +267,25 @@ missing or extra entries.  A pending transaction is reported, not
 applied, unless `--replay` is given; replay calls the same code the
 kernel uses at mount.
 
-`j3crash` logs a two-block transaction (a generation bump written to both
-superblock copies), then replays every truncation point of it against a
-scratch copy.  Each prefix stands for a crash boundary; every resulting
-image must hold either the old generation or the new one, never a torn
-pair, and must keep a valid superblock checksum.  One extra case commits
-the journal and then applies only the first target, which is the other
-crash window; replay must finish the transaction and clear the
-descriptor.
+`j3crash` runs two scenarios.  First it logs a two-block transaction (a
+generation bump written to both superblock copies), then replays every
+truncation point of it against a scratch copy.  Each prefix stands for a
+crash boundary; every resulting image must hold either the old generation
+or the new one, never a torn pair, and must keep a valid superblock
+checksum.  One extra case commits the journal and then applies only the
+first target, which is the other crash window; replay must finish the
+transaction and clear the descriptor.
+
+The second scenario crashes the real writer: it calls
+`jexfs3_image_replace_file()` with a callback that fails after every
+possible number of block writes, then replays the surviving journal as a
+mount would.  The target file must be exactly old or exactly new.  It
+does this for an inline-extent file and for a file that frees a leaf
+extent block, so both the data blocks and the leaf are checked against
+the block bitmap by `jexfsck3`.
 
 `make check-v3` builds the test tree and image and runs the verifier.
-`make crash-sim` runs `j3crash`, writes all 33 crash images, and runs the
+`make crash-sim` runs `j3crash`, writes all 57 crash images, and runs the
 full verifier with `--replay` over each one.
 `make FLAVOR=test run-test` packs two images into the v2 test rootfs:
 `/jexfs3.img` (the extent test) and `/jexfs3-journal.img` (a 48-block
@@ -255,29 +297,33 @@ transaction on a read-only device fails with `-EROFS`.
 
 ## Kernel API
 
-`src/include/jexfs3_fs.h` is the read-only driver interface:
+`src/include/jexfs3_fs.h` is the driver interface:
 
 - `jexfs3_mount(dev)` / `jexfs3_unmount()` / `jexfs3_mounted()`
 - `jexfs3_superblock(out)`
 - `jexfs3_lookup(path, &inode)`
 - `jexfs3_read_file(inode, buf, size, offset)`
+- `jexfs3_replace_file(inode, buf, size)`
 - `jexfs3_readdir(inode, &cookie, name, cap, &child, &type)`
 - `jexfs3_verify()`
 
 The device supplies `read_block(ctx, block, buf)`, plus optional
-`write_block` and `flush` callbacks for journal replay.  A single 4 KB
-static cache keeps metadata parsing off the 8 KB kernel stack, and a
-mutex makes the cache safe for concurrent readers.  Mount validates both
-superblocks, replays a committed transaction (re-reading and
-revalidating the superblock afterwards, since a transaction can rewrite
-it), then checks the root inode.  `jexfs3_verify()` walks every allocated
-inode, recomputes its data crc, checks dirent chains and child types, and
-confirms every allocated inode is reachable from the root.
+`write_block` and `flush` callbacks for journal replay and file writes.
+A single 4 KB static cache keeps metadata parsing off the 8 KB kernel
+stack, and a mutex makes the cache safe for concurrent readers and
+serialises writers; a write invalidates the cache afterwards.  Mount
+validates both superblocks, replays a committed transaction (re-reading
+and revalidating the superblock afterwards, since a transaction can
+rewrite it), then checks the root inode.  `jexfs3_verify()` walks every
+allocated inode, recomputes its data crc, checks dirent chains and child
+types, and confirms every allocated inode is reachable from the root.
 
 `src/include/jexfs3_journal.h` exposes the shared journal API
 (`check`, `replay`, `write`, `clear`) used by the kernel, `jexfsck3` and
-`j3crash`.  One implementation of the recovery rules means the verifier
-cannot accept a transaction the kernel would reject.
+`j3crash`.  `src/include/jexfs3_write.h` exposes the shared image writer
+(`jexfs3_image_replace_file`) used by the kernel wrapper and `j3crash`.
+One implementation of each rule means the verifier cannot accept a
+transaction the kernel would reject.
 
 ## Phase status
 
@@ -286,10 +332,11 @@ cannot accept a transaction the kernel would reject.
 | 0 | Disk-first v2 mount, module pages returned to the PMM | done |
 | 1 | Format, `mkjexfs3`, `jexfsck3`, read-only kernel mount | done |
 | 2a | Journal format, shared replay, deterministic crash simulation | done |
-| 2b | Writable kernel path (allocation, metadata transactions) | next |
+| 2b | Writable kernel path (allocation, metadata transactions) | done |
 | 3 | Extent tree, delayed allocation, hashed directories | planned |
 | 4 | v2→v3 converter, persistence rewrite | planned |
 
-The kernel still serves a read-only filesystem: phase 2a replays a
-journal at mount but no kernel code writes a transaction yet.  Writes,
-allocation and the transaction-producing path belong to phase 2b.
+Phase 2b replaces existing regular files.  Creating, unlinking and
+renaming files, offset writes, symbolic links and directory mutation are
+still ahead; the shared writer is the place those operations will build
+on.

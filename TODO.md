@@ -27,7 +27,7 @@ encryption, quotas, multi-device.
 | 0 | Disk-first mount: probe LBA 0 or the delivery tail, mount the disk copy, return the module pages to the PMM (v2 format unchanged) | `free` recovers ~64 MB; audio, suite and delivery round-trip pass | [x] |
 | 1 | `docs/jexfs-v3.md`, `mkjexfs3` + host verifier, read-only v3 mount | Host-built v3 image mounts and every file verifies byte-for-byte | [x] |
 | 2a | Journal format, shared replay, ordered-data rule, deterministic crash simulation | Every truncation point of a logged transaction replays to the old or the new state, never torn; a mid-apply crash is repaired; `make crash-sim` green | [x] |
-| 2b | Writable kernel path: allocation, metadata transactions, ordered data writes | Guest writes survive remount and a planted crash; `jexfsck3` clean | [ ] |
+| 2b | Writable kernel path: allocation, metadata transactions, ordered data writes | Guest writes survive remount and a planted crash; `jexfsck3` clean | [x] |
 | 3 | Extent tree, delayed allocation, hashed directories | Image larger than 64 MB; large-file metadata reads measurably lower | [ ] |
 | 4 | v2→v3 converter, persistence rewrite, docs | Existing `jexos.img` converts; `make deliver` round-trips | [ ] |
 
@@ -47,11 +47,14 @@ check, reads files across an extent boundary, and walks the root
 directory. A second kernel test copies a 48-block journaled image into a
 RAM buffer, logs a two-block transaction, proves a torn copy is ignored,
 proves the committed copy replays once, and proves a pending transaction
-on a read-only device fails with `-EROFS`. `make crash-sim` replays all
-32 truncation points of a real transaction, repairs a mid-apply crash,
-and runs the full verifier over every resulting image. Flipping one byte
-in file data or an inode makes the host verifier fail. Format details are
-in `docs/jexfs-v3.md`.
+on a read-only device fails with `-EROFS`. A third kernel test replaces
+inline-extent and leaf-extent files, truncates one to zero, remounts,
+and reads the new contents back. `make crash-sim` replays all truncation
+points of a real transaction, repairs a mid-apply crash, then crashes the
+real file writer at every block-write boundary for two files and runs the
+full verifier over all 57 resulting images. Flipping one byte in file
+data or an inode makes the host verifier fail. Format details are in
+`docs/jexfs-v3.md`.
 
 ## ✅ Completed Milestones
 
