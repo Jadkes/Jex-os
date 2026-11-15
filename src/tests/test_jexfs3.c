@@ -24,9 +24,11 @@
 #define V3_SPLIT_BYTES (16u * JEXFS3_BLOCK_SIZE)
 
 /*
- * A separate, small image for the journal test: 48 blocks (192 KB) fits
- * in a static buffer, which gives the test a writable device.  The image
- * is built by the host with an 8-block journal and one file.
+ * A separate, small image for the journal and write tests: 48 blocks
+ * (192 KB) fits in a static buffer, which gives the tests a writable
+ * device.  The host builds it with an 8-block journal, hello.txt and a
+ * six-extent big.bin, so replacement can free both data and a leaf
+ * extent block.
  */
 #define V3_JOURNAL_IMAGE_PATH  "/jexfs3-journal.img"
 #define V3_JOURNAL_IMAGE_BLOCKS 48u
@@ -98,6 +100,28 @@ static int memory_write_block(void *ctx, uint32_t block, const void *buf)
 static int memory_flush(void *ctx)
 {
     (void)ctx;
+    return 0;
+}
+
+/* Both journal tests mount this image, one after the other. */
+static uint8_t journal_image[V3_JOURNAL_IMAGE_BYTES] __attribute__((aligned(16)));
+
+static int load_journal_image(void)
+{
+    int fd = jexfs_open(V3_JOURNAL_IMAGE_PATH);
+
+    if (fd < 0)
+        return -1;
+    if (jexfs_get_size(fd) != (int)V3_JOURNAL_IMAGE_BYTES)
+        return -1;
+    for (uint32_t block = 0; block < V3_JOURNAL_IMAGE_BLOCKS; block++) {
+        int got = jexfs_read(fd, journal_image +
+                             (size_t)block * JEXFS3_BLOCK_SIZE,
+                             JEXFS3_BLOCK_SIZE,
+                             block * JEXFS3_BLOCK_SIZE);
+        if (got != (int)JEXFS3_BLOCK_SIZE)
+            return -1;
+    }
     return 0;
 }
 
@@ -290,7 +314,6 @@ static int log_generation_bump(struct memory_image *mem,
 
 static void test_jexfs3_journal_replay(void)
 {
-    static uint8_t image[V3_JOURNAL_IMAGE_BYTES] __attribute__((aligned(16)));
     static uint8_t commit_copy[JEXFS3_BLOCK_SIZE] __attribute__((aligned(16)));
     struct memory_image mem;
     struct jexfs3_device dev;
@@ -299,27 +322,15 @@ static void test_jexfs3_journal_replay(void)
     uint32_t commit_block;
     uint32_t inode;
     uint8_t buf[16];
-    int fd;
     int bytes;
 
-    fd = jexfs_open(V3_JOURNAL_IMAGE_PATH);
-    if (fd < 0) {
+    if (load_journal_image() != 0) {
         test_skip("jexfs3_journal_replay (no image in this flavor)");
         return;
     }
+    bytes = (int)V3_JOURNAL_IMAGE_BYTES;
 
-    bytes = jexfs_get_size(fd);
-    TEST_ASSERT(bytes == (int)V3_JOURNAL_IMAGE_BYTES,
-                "journal test image has the wrong size");
-    for (uint32_t block = 0; block < V3_JOURNAL_IMAGE_BLOCKS; block++) {
-        int got = jexfs_read(fd, image + (size_t)block * JEXFS3_BLOCK_SIZE,
-                             JEXFS3_BLOCK_SIZE,
-                             block * JEXFS3_BLOCK_SIZE);
-        TEST_ASSERT(got == (int)JEXFS3_BLOCK_SIZE,
-                    "journal test image read failed");
-    }
-
-    mem.base = image;
+    mem.base = journal_image;
     mem.blocks = V3_JOURNAL_IMAGE_BLOCKS;
     dev = (struct jexfs3_device){
         .read_block = memory_read_block,
@@ -351,9 +362,9 @@ static void test_jexfs3_journal_replay(void)
 
     /* A transaction without its commit block must be ignored, not
      * half-applied. */
-    memcpy(commit_copy, image + (size_t)commit_block * JEXFS3_BLOCK_SIZE,
+    memcpy(commit_copy, journal_image + (size_t)commit_block * JEXFS3_BLOCK_SIZE,
            JEXFS3_BLOCK_SIZE);
-    memset(image + (size_t)commit_block * JEXFS3_BLOCK_SIZE, 0,
+    memset(journal_image + (size_t)commit_block * JEXFS3_BLOCK_SIZE, 0,
            JEXFS3_BLOCK_SIZE);
     TEST_ASSERT(jexfs3_mount(&dev) == 0, "torn journal blocked the mount");
     TEST_ASSERT(jexfs3_superblock(&sb) == 0, "superblock read failed");
@@ -363,7 +374,7 @@ static void test_jexfs3_journal_replay(void)
     jexfs3_unmount();
 
     /* The same transaction with its commit block must be replayed. */
-    memcpy(image + (size_t)commit_block * JEXFS3_BLOCK_SIZE, commit_copy,
+    memcpy(journal_image + (size_t)commit_block * JEXFS3_BLOCK_SIZE, commit_copy,
            JEXFS3_BLOCK_SIZE);
     TEST_ASSERT(jexfs3_mount(&dev) == 0, "committed journal failed to replay");
     TEST_ASSERT(jexfs3_superblock(&sb) == 0, "superblock read failed");
@@ -383,7 +394,7 @@ static void test_jexfs3_journal_replay(void)
 
     /* A pending transaction on a read-only device is a mount failure:
      * serving stale metadata is worse than refusing to mount. */
-    memcpy(&sb, image, sizeof(sb));
+    memcpy(&sb, journal_image, sizeof(sb));
     TEST_ASSERT(log_generation_bump(&mem, &sb, generation + 2u) == 0,
                 "could not log the read-only transaction");
     dev.write_block = NULL;
@@ -391,6 +402,134 @@ static void test_jexfs3_journal_replay(void)
     TEST_ASSERT(jexfs3_mount(&dev) == -EROFS,
                 "dirty journal mounted on a read-only device");
     TEST_ASSERT(!jexfs3_mounted(), "failed mount left the filesystem mounted");
+}
+
+/*
+ * Write-path test buffers.  The payload spans a partial final block and
+ * the replacement of big.bin frees the old data plus its extent leaf.
+ */
+#define WRITE_TEST_BYTES  (3u * JEXFS3_BLOCK_SIZE + 123u)
+static uint8_t write_payload[WRITE_TEST_BYTES];
+static uint8_t write_readback[WRITE_TEST_BYTES];
+
+static void fill_payload(uint8_t *buf, uint32_t len, uint8_t seed)
+{
+    for (uint32_t i = 0; i < len; i++)
+        buf[i] = (uint8_t)(seed + (i * 7u));
+}
+
+static void test_jexfs3_write(void)
+{
+    struct memory_image mem;
+    struct jexfs3_device dev;
+    uint32_t inode;
+    uint8_t head[16];
+
+    if (load_journal_image() != 0) {
+        test_skip("jexfs3_write (no image in this flavor)");
+        return;
+    }
+
+    mem.base = journal_image;
+    mem.blocks = V3_JOURNAL_IMAGE_BLOCKS;
+    dev = (struct jexfs3_device){
+        .read_block = memory_read_block,
+        .write_block = memory_write_block,
+        .flush = memory_flush,
+        .ctx = &mem,
+        .media_bytes = V3_JOURNAL_IMAGE_BYTES,
+    };
+
+    fill_payload(write_payload, sizeof(write_payload), 0x40);
+
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "write test mount failed");
+    TEST_ASSERT(jexfs3_lookup("/hello.txt", &inode) == 0,
+                "hello.txt missing before write");
+
+    /* Replace the small file with a three-block-plus-tail payload. */
+    TEST_ASSERT(jexfs3_replace_file(inode, write_payload,
+                                    sizeof(write_payload)) == 0,
+                "replace hello.txt failed");
+    memset(write_readback, 0, sizeof(write_readback));
+    TEST_ASSERT(jexfs3_read_file(inode, write_readback,
+                                 sizeof(write_readback), 0) ==
+                (int)sizeof(write_payload),
+                "read after replace was short");
+    TEST_ASSERT(memcmp(write_readback, write_payload,
+                       sizeof(write_payload)) == 0,
+                "read after replace returned wrong bytes");
+    TEST_ASSERT(jexfs3_verify() == 0, "verify failed after replace");
+    jexfs3_unmount();
+
+    /* The write must survive a remount without a journal replay. */
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "remount after write failed");
+    TEST_ASSERT(jexfs3_verify() == 0, "remount after write failed verify");
+    TEST_ASSERT(jexfs3_lookup("/hello.txt", &inode) == 0,
+                "hello.txt missing after remount");
+    memset(write_readback, 0, sizeof(write_readback));
+    TEST_ASSERT(jexfs3_read_file(inode, write_readback,
+                                 sizeof(write_readback), 0) ==
+                (int)sizeof(write_payload),
+                "remounted file short read");
+    TEST_ASSERT(memcmp(write_readback, write_payload,
+                       sizeof(write_payload)) == 0,
+                "remounted file content changed");
+    jexfs3_unmount();
+
+    /* big.bin used six one-block extents and a leaf extent block. */
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "leaf-file mount failed");
+    TEST_ASSERT(jexfs3_lookup("/big.bin", &inode) == 0,
+                "big.bin missing before write");
+    TEST_ASSERT(jexfs3_read_file(inode, head, sizeof(head), 0) ==
+                (int)sizeof(head),
+                "big.bin short read");
+    TEST_ASSERT(buffer_is_byte(head, sizeof(head), 'C'),
+                "big.bin initial content wrong");
+    TEST_ASSERT(jexfs3_replace_file(inode, write_payload,
+                                    sizeof(write_payload)) == 0,
+                "replace big.bin failed");
+    TEST_ASSERT(jexfs3_verify() == 0,
+                "verify failed after replacing a leaf-extent file");
+    jexfs3_unmount();
+
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "remount after leaf replace failed");
+    TEST_ASSERT(jexfs3_lookup("/big.bin", &inode) == 0,
+                "big.bin missing after remount");
+    memset(write_readback, 0, sizeof(write_readback));
+    TEST_ASSERT(jexfs3_read_file(inode, write_readback,
+                                 sizeof(write_readback), 0) ==
+                (int)sizeof(write_payload),
+                "leaf replacement short read");
+    TEST_ASSERT(memcmp(write_readback, write_payload,
+                       sizeof(write_payload)) == 0,
+                "leaf replacement content wrong");
+    TEST_ASSERT(jexfs3_verify() == 0,
+                "leaf replacement failed verify after remount");
+
+    /* Truncating to zero must release every block and read as EOF. */
+    TEST_ASSERT(jexfs3_lookup("/hello.txt", &inode) == 0,
+                "hello.txt missing before truncate");
+    TEST_ASSERT(jexfs3_replace_file(inode, NULL, 0) == 0,
+                "truncate failed");
+    TEST_ASSERT(jexfs3_read_file(inode, write_readback, 1, 0) == 0,
+                "truncated file still had data");
+    TEST_ASSERT(jexfs3_verify() == 0, "verify failed after truncate");
+
+    /* Directories are not replaceable. */
+    TEST_ASSERT(jexfs3_lookup("/", &inode) == 0, "root lookup failed");
+    TEST_ASSERT(jexfs3_replace_file(inode, write_payload, 1) == -EISDIR,
+                "directory replacement was accepted");
+    jexfs3_unmount();
+
+    /* A read-only device must refuse writes instead of ignoring them. */
+    dev.write_block = NULL;
+    dev.flush = NULL;
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "read-only mount failed");
+    TEST_ASSERT(jexfs3_lookup("/big.bin", &inode) == 0,
+                "big.bin missing before read-only check");
+    TEST_ASSERT(jexfs3_replace_file(inode, write_payload, 1) == -EROFS,
+                "read-only device accepted a write");
+    jexfs3_unmount();
 }
 
 void register_jexfs3_tests(void)
@@ -401,4 +540,7 @@ void register_jexfs3_tests(void)
     test_register("jexfs3_journal_replay",
                   "replay a committed transaction and reject a torn one",
                   test_jexfs3_journal_replay);
+    test_register("jexfs3_write",
+                  "replace files, remount, truncate and free a leaf block",
+                  test_jexfs3_write);
 }

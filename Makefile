@@ -354,11 +354,12 @@ $(V3_TEST_IMAGE): $(MKJEXFS3) $(V3_TREE_STAMP)
 $(V3_JOURNAL_TREE_STAMP): Makefile
 	$(Q)rm -rf $(V3_JOURNAL_TREE) && mkdir -p $(V3_JOURNAL_TREE)
 	$(Q)printf 'hello jexfs3\n' > $(V3_JOURNAL_TREE)/hello.txt
+	$(Q)dd if=/dev/zero bs=1000 count=21 2>/dev/null | tr '\0' 'C' > $(V3_JOURNAL_TREE)/big.bin
 	$(Q)touch $@
 
 $(V3_JOURNAL_IMAGE): $(MKJEXFS3) $(V3_JOURNAL_TREE_STAMP)
 	$(Q)printf "  JEXFS3  $@\n"
-	$(Q)./$(MKJEXFS3) $@ $(V3_JOURNAL_BLOCKS) \
+	$(Q)./$(MKJEXFS3) $@ $(V3_JOURNAL_BLOCKS) --split=1 \
 		--journal=$(V3_JOURNAL_LOG) $(V3_JOURNAL_TREE)
 
 # Host-side verification of the same image the kernel mounts.
