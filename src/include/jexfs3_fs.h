@@ -1,12 +1,13 @@
 /**
  * @file jexfs3_fs.h
- * @brief JexFS v3 kernel-side read API.
+ * @brief JexFS v3 kernel-side driver interface.
  *
  * The on-disk format lives in jexfs3.h; this header is the driver
- * interface.  Phase 1 is read-only: a device supplies a block read
- * callback and the driver validates the superblock, inodes, extents and
- * data checksums before serving lookups, directory iteration and file
- * reads.
+ * interface.  A device supplies block read/write callbacks and the driver
+ * validates the superblock, inodes, extents and data checksums before
+ * serving lookups, directory iteration and file reads.  Phase 2b replaces
+ * existing regular files through a journaled bitmap+inode transaction;
+ * creating, unlinking and renaming are later slices.
  */
 
 #ifndef JEXFS3_FS_H
@@ -24,8 +25,9 @@
  * @ctx: caller data passed to every callback
  * @media_bytes: device size in bytes, or 0 when unknown
  *
- * A read-only device is enough when the journal is clean.  A dirty
- * journal needs write_block, because recovery happens at mount.
+ * A read-only device is enough when the journal is clean and no writes
+ * are requested.  A dirty journal needs write_block for recovery; file
+ * replacement needs write_block as well.
  */
 struct jexfs3_device {
     int (*read_block)(void *ctx, uint32_t block, void *buf);
@@ -84,6 +86,21 @@ int jexfs3_lookup(const char *path, uint32_t *inode_out);
  */
 int jexfs3_read_file(uint32_t inode, void *buf, uint32_t size,
                      uint64_t offset);
+
+/**
+ * jexfs3_replace_file - replace a regular file's contents.
+ *
+ * Phase 2b replaces whole files; it does not create, unlink or rename
+ * them.  The new data is written before a journaled bitmap+inode
+ * transaction, so a crash leaves the old file or the complete new one.
+ * The image must have a journal and a writable device.
+ *
+ * @param inode Inode returned by jexfs3_lookup()
+ * @param buf New contents; may be NULL when size is 0
+ * @param size New size in bytes
+ * @return 0 on success, negative errno on failure
+ */
+int jexfs3_replace_file(uint32_t inode, const void *buf, uint64_t size);
 
 /**
  * jexfs3_readdir - iterate one directory entry at a time.

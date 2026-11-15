@@ -1,23 +1,24 @@
 /**
  * @file jexfs3.c
- * @brief JexFS v3 -- read-only kernel driver (phase 1).
+ * @brief JexFS v3 kernel driver -- reads, mount replay and file writes.
  *
  * The on-disk format is defined in jexfs3.h.  Block access goes through
- * a caller-supplied callback, so the same driver will later serve both
- * a file-backed test image and an IDE partition.  A single 4 KB block
- * cache keeps metadata parsing off the 8 KB kernel stack; a mutex makes
- * that cache safe for concurrent readers.
+ * a caller-supplied callback, so the same driver serves both a
+ * file-backed test image and a real disk.  A single 4 KB block cache
+ * keeps metadata parsing off the 8 KB kernel stack; a mutex makes that
+ * cache safe for concurrent readers and serialises writes.
  *
  * Everything is validated on the way in: superblock and inode crc32c,
  * extent bounds and coverage, directory entry chains, and per-inode
- * data checksums.  Writes, journals, and block allocation belong to
- * later phases and are intentionally absent.
+ * data checksums.  The write path lives in jexfs3_write.c so host tools
+ * exercise the same allocation and journal rules as the kernel.
  */
 
 #define pr_fmt(fmt) "[JEXFS3] " fmt
 
 #include "jexfs3_fs.h"
 #include "jexfs3_journal.h"
+#include "jexfs3_write.h"
 #include "kheap.h"
 #include "string.h"
 #include "kernel/mutex.h"
@@ -700,6 +701,49 @@ int jexfs3_read_file(uint32_t index, void *buf, uint32_t size, uint64_t offset)
     if (rc == 0)
         rc = read_nolock(&inode, buf, size, offset);
     (void)data_blocks;
+    mutex_unlock(&fs3_lock);
+    return rc;
+}
+
+/*
+ * fs3_alloc/fs3_free - scratch allocation for the shared write path.
+ *
+ * The writer needs a few 4 KB staging blocks; the kernel supplies its
+ * heap and host tools supply malloc, so the rules themselves stay shared.
+ */
+static void *fs3_alloc(size_t size)
+{
+    return kmalloc(size);
+}
+
+static void fs3_free(void *ptr)
+{
+    kfree(ptr);
+}
+
+int jexfs3_replace_file(uint32_t index, const void *buf, uint64_t size)
+{
+    struct jexfs3_write_io io;
+    int rc;
+
+    if (!buf && size != 0)
+        return -EINVAL;
+    if (!fs3_mounted)
+        return -ENODEV;
+    if (!fs3_dev.write_block)
+        return -EROFS;
+
+    mutex_lock(&fs3_lock);
+    io.read_block = fs3_dev.read_block;
+    io.write_block = fs3_dev.write_block;
+    io.flush = fs3_dev.flush;
+    io.alloc = fs3_alloc;
+    io.free = fs3_free;
+    io.ctx = fs3_dev.ctx;
+
+    rc = jexfs3_image_replace_file(&fs3_sb, &io, index, buf, size);
+    /* The transaction rewrote metadata behind the cache's back. */
+    fs3_cache_valid = 0;
     mutex_unlock(&fs3_lock);
     return rc;
 }
