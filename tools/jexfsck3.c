@@ -455,6 +455,15 @@ static int check_dirent(uint32_t dir_index, uint32_t parent_index,
         report("%s: bad rec_len at offset %u", parent_path, off);
         return -1;
     }
+    if (de->inode == 0) {
+        /* A free entry left by an unlink.  It holds no name and names no
+         * inode, but it still occupies its bytes in the rec_len chain. */
+        if (de->name_len != 0 || de->file_type != 0) {
+            report("%s: malformed free entry at offset %u", parent_path, off);
+            return -1;
+        }
+        return 0;
+    }
     if (de->name_len == 0 || de->name_len > de->rec_len - JEXFS3_DIRENT_MIN) {
         report("%s: bad name_len at offset %u", parent_path, off);
         return -1;
