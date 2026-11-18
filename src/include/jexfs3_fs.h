@@ -90,10 +90,9 @@ int jexfs3_read_file(uint32_t inode, void *buf, uint32_t size,
 /**
  * jexfs3_replace_file - replace a regular file's contents.
  *
- * Phase 2b replaces whole files; it does not create, unlink or rename
- * them.  The new data is written before a journaled bitmap+inode
- * transaction, so a crash leaves the old file or the complete new one.
- * The image must have a journal and a writable device.
+ * The new data is written before a journaled bitmap+inode transaction, so
+ * a crash leaves the old file or the complete new one.  The image must
+ * have a journal and a writable device.
  *
  * @param inode Inode returned by jexfs3_lookup()
  * @param buf New contents; may be NULL when size is 0
@@ -101,6 +100,34 @@ int jexfs3_read_file(uint32_t inode, void *buf, uint32_t size,
  * @return 0 on success, negative errno on failure
  */
 int jexfs3_replace_file(uint32_t inode, const void *buf, uint64_t size);
+
+/**
+ * jexfs3_create_file - create an empty regular file.
+ *
+ * The parent directory must already have room for the entry; directory
+ * growth is a later phase.  The inode bitmap, inode record and directory
+ * entry are one journal transaction.
+ *
+ * @param path Absolute path of the new file
+ * @param inode_out Optional newly allocated inode number
+ * @return 0 on success, -EEXIST when the name is taken, -ENOENT when the
+ *         parent is missing, -ENOSPC when no inode or slot is free,
+ *         negative errno on other failures
+ */
+int jexfs3_create_file(const char *path, uint32_t *inode_out);
+
+/**
+ * jexfs3_unlink_file - remove a regular file.
+ *
+ * Frees the file's data and extent blocks and turns its directory entry
+ * into a free entry, all in one journal transaction.  Directories are
+ * rejected.
+ *
+ * @param path Absolute path of the file to remove
+ * @return 0 on success, -ENOENT when absent, -EISDIR for a directory,
+ *         negative errno on other failures
+ */
+int jexfs3_unlink_file(const char *path);
 
 /**
  * jexfs3_readdir - iterate one directory entry at a time.

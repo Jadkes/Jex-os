@@ -314,46 +314,56 @@ static int readdir_nolock(uint32_t index, uint64_t *offset, char *name,
     if (rc != 0)
         return rc;
     (void)data_blocks;
-    if (pos >= inode.size)
-        return 0;
     if (name_cap < 2)
         return -EINVAL;
 
-    logical = (uint32_t)(pos >> JEXFS3_BLOCK_SHIFT);
-    within = (uint32_t)(pos & JEXFS3_BLOCK_MASK);
-    block_start = (uint64_t)logical << JEXFS3_BLOCK_SHIFT;
+    while (pos < inode.size) {
+        logical = (uint32_t)(pos >> JEXFS3_BLOCK_SHIFT);
+        within = (uint32_t)(pos & JEXFS3_BLOCK_MASK);
+        block_start = (uint64_t)logical << JEXFS3_BLOCK_SHIFT;
 
-    rc = bmap_nolock(&inode, logical, &physical);
-    if (rc != 0)
-        return rc;
-    rc = cache_fill(physical);
-    if (rc != 0)
-        return rc;
+        rc = bmap_nolock(&inode, logical, &physical);
+        if (rc != 0)
+            return rc;
+        rc = cache_fill(physical);
+        if (rc != 0)
+            return rc;
 
-    limit = JEXFS3_BLOCK_SIZE;
-    if (inode.size - block_start < JEXFS3_BLOCK_SIZE)
-        limit = (uint32_t)(inode.size - block_start);
-    if (within + JEXFS3_DIRENT_MIN > limit)
-        return -EINVAL;
+        limit = JEXFS3_BLOCK_SIZE;
+        if (inode.size - block_start < JEXFS3_BLOCK_SIZE)
+            limit = (uint32_t)(inode.size - block_start);
+        if (within + JEXFS3_DIRENT_MIN > limit)
+            return -EINVAL;
 
-    de = (const struct jexfs3_dirent *)(fs3_cache + within);
-    if (de->rec_len < JEXFS3_DIRENT_MIN || within + de->rec_len > limit)
-        return -EINVAL;
-    if (de->name_len == 0 ||
-        de->name_len > de->rec_len - JEXFS3_DIRENT_MIN)
-        return -EINVAL;
-    if (de->name_len >= name_cap)
-        return -ERANGE;
-    if (de->inode >= fs3_sb.inode_count ||
-        de->inode < JEXFS3_ROOT_INODE)
-        return -EINVAL;
+        de = (const struct jexfs3_dirent *)(fs3_cache + within);
+        if (de->rec_len < JEXFS3_DIRENT_MIN ||
+            within + de->rec_len > limit)
+            return -EINVAL;
+        if (de->inode == 0) {
+            /* A tombstone: the chain still covers its bytes, but it
+             * names nothing and readdir skips it. */
+            if (de->name_len != 0 || de->file_type != 0)
+                return -EINVAL;
+            pos += de->rec_len;
+            continue;
+        }
+        if (de->name_len == 0 ||
+            de->name_len > de->rec_len - JEXFS3_DIRENT_MIN)
+            return -EINVAL;
+        if (de->name_len >= name_cap)
+            return -ERANGE;
+        if (de->inode >= fs3_sb.inode_count ||
+            de->inode < JEXFS3_ROOT_INODE)
+            return -EINVAL;
 
-    memcpy(name, de->name, de->name_len);
-    name[de->name_len] = '\0';
-    *child_out = de->inode;
-    *type_out = de->file_type;
-    *offset = pos + de->rec_len;
-    return 1;
+        memcpy(name, de->name, de->name_len);
+        name[de->name_len] = '\0';
+        *child_out = de->inode;
+        *type_out = de->file_type;
+        *offset = pos + de->rec_len;
+        return 1;
+    }
+    return 0;
 }
 
 static int superblock_check(const struct jexfs3_superblock *sb)
@@ -594,21 +604,15 @@ int jexfs3_superblock(struct jexfs3_superblock *out)
     return rc;
 }
 
-int jexfs3_lookup(const char *path, uint32_t *inode_out)
+/*
+ * lookup_nolock - resolve an absolute path.  The caller holds fs3_lock.
+ */
+static int lookup_nolock(const char *path, uint32_t *inode_out)
 {
     char name[JEXFS3_NAME_MAX + 1];
     uint32_t current;
     const char *p;
     int rc;
-
-    if (!path || !inode_out)
-        return -EINVAL;
-    if (!fs3_mounted)
-        return -ENODEV;
-    if (strlen(path) > 4096)
-        return -ENAMETOOLONG;
-
-    mutex_lock(&fs3_lock);
 
     current = fs3_sb.root_inode;
     p = path;
@@ -617,8 +621,7 @@ int jexfs3_lookup(const char *path, uint32_t *inode_out)
 
     if (*p == '\0') {
         *inode_out = current;
-        rc = 0;
-        goto out;
+        return 0;
     }
 
     while (*p) {
@@ -629,10 +632,8 @@ int jexfs3_lookup(const char *path, uint32_t *inode_out)
         int found = 0;
 
         while (*p && *p != '/') {
-            if (len >= JEXFS3_NAME_MAX) {
-                rc = -ENAMETOOLONG;
-                goto out;
-            }
+            if (len >= JEXFS3_NAME_MAX)
+                return -ENAMETOOLONG;
             name[len++] = *p++;
         }
         name[len] = '\0';
@@ -645,7 +646,7 @@ int jexfs3_lookup(const char *path, uint32_t *inode_out)
             rc = readdir_nolock(current, &cookie, entry, sizeof(entry),
                                 &child, &type);
             if (rc < 0)
-                goto out;
+                return rc;
             if (rc == 0)
                 break;
             if (strcmp(entry, name) == 0) {
@@ -653,31 +654,98 @@ int jexfs3_lookup(const char *path, uint32_t *inode_out)
                 break;
             }
         }
-        if (!found) {
-            rc = -ENOENT;
-            goto out;
-        }
+        if (!found)
+            return -ENOENT;
 
         if (*p != '\0') {
             struct jexfs3_inode child_inode;
 
             rc = inode_read_nolock(child, &child_inode);
             if (rc != 0)
-                goto out;
-            if ((child_inode.mode & JEXFS3_TYPE_MASK) != JEXFS3_TYPE_DIR) {
-                rc = -ENOTDIR;
-                goto out;
-            }
+                return rc;
+            if ((child_inode.mode & JEXFS3_TYPE_MASK) != JEXFS3_TYPE_DIR)
+                return -ENOTDIR;
         }
         current = child;
     }
 
     *inode_out = current;
-    rc = 0;
+    return 0;
+}
 
-out:
+int jexfs3_lookup(const char *path, uint32_t *inode_out)
+{
+    int rc;
+
+    if (!path || !inode_out)
+        return -EINVAL;
+    if (!fs3_mounted)
+        return -ENODEV;
+    if (strlen(path) > 4096)
+        return -ENAMETOOLONG;
+
+    mutex_lock(&fs3_lock);
+    rc = lookup_nolock(path, inode_out);
     mutex_unlock(&fs3_lock);
     return rc;
+}
+
+/*
+ * lookup_parent_nolock - split a path into its parent inode and last name.
+ *
+ * A trailing slash is rejected: create and unlink address an entry, not a
+ * directory.  The path prefix is copied because lookup_nolock expects a
+ * terminated string; the copy is short enough for the kernel heap.
+ */
+static int lookup_parent_nolock(const char *path, uint32_t *parent_out,
+                                char *name_out)
+{
+    const char *slash;
+    size_t name_len;
+    uint32_t parent;
+    int rc;
+
+    if (strlen(path) > 4096)
+        return -ENAMETOOLONG;
+    slash = strrchr(path, '/');
+    if (!slash) {
+        parent = fs3_sb.root_inode;
+        name_len = strlen(path);
+        if (name_len == 0 || name_len > JEXFS3_NAME_MAX)
+            return name_len == 0 ? -EINVAL : -ENAMETOOLONG;
+        memcpy(name_out, path, name_len);
+    } else {
+        size_t dir_len = (size_t)(slash - path);
+        char *dir_path;
+
+        if (slash[1] == '\0')
+            return -EINVAL;
+        name_len = strlen(slash + 1);
+        if (name_len == 0 || name_len > JEXFS3_NAME_MAX)
+            return -ENAMETOOLONG;
+        memcpy(name_out, slash + 1, name_len);
+
+        if (dir_len == 0) {
+            parent = fs3_sb.root_inode;
+        } else {
+            dir_path = (char *)kmalloc(dir_len + 1);
+            if (!dir_path)
+                return -ENOMEM;
+            memcpy(dir_path, path, dir_len);
+            dir_path[dir_len] = '\0';
+            rc = lookup_nolock(dir_path, &parent);
+            kfree(dir_path);
+            if (rc != 0)
+                return rc;
+        }
+    }
+    name_out[name_len] = '\0';
+
+    if (strcmp(name_out, ".") == 0 || strcmp(name_out, "..") == 0)
+        return -EINVAL;
+
+    *parent_out = parent;
+    return 0;
 }
 
 int jexfs3_read_file(uint32_t index, void *buf, uint32_t size, uint64_t offset)
@@ -721,6 +789,16 @@ static void fs3_free(void *ptr)
     kfree(ptr);
 }
 
+static void fs3_write_io(struct jexfs3_write_io *io)
+{
+    io->read_block = fs3_dev.read_block;
+    io->write_block = fs3_dev.write_block;
+    io->flush = fs3_dev.flush;
+    io->alloc = fs3_alloc;
+    io->free = fs3_free;
+    io->ctx = fs3_dev.ctx;
+}
+
 int jexfs3_replace_file(uint32_t index, const void *buf, uint64_t size)
 {
     struct jexfs3_write_io io;
@@ -734,16 +812,64 @@ int jexfs3_replace_file(uint32_t index, const void *buf, uint64_t size)
         return -EROFS;
 
     mutex_lock(&fs3_lock);
-    io.read_block = fs3_dev.read_block;
-    io.write_block = fs3_dev.write_block;
-    io.flush = fs3_dev.flush;
-    io.alloc = fs3_alloc;
-    io.free = fs3_free;
-    io.ctx = fs3_dev.ctx;
-
+    fs3_write_io(&io);
     rc = jexfs3_image_replace_file(&fs3_sb, &io, index, buf, size);
     /* The transaction rewrote metadata behind the cache's back. */
     fs3_cache_valid = 0;
+    mutex_unlock(&fs3_lock);
+    return rc;
+}
+
+int jexfs3_create_file(const char *path, uint32_t *inode_out)
+{
+    char name[JEXFS3_NAME_MAX + 1];
+    struct jexfs3_write_io io;
+    uint32_t parent;
+    uint32_t inode = 0;
+    int rc;
+
+    if (!path)
+        return -EINVAL;
+    if (!fs3_mounted)
+        return -ENODEV;
+    if (!fs3_dev.write_block)
+        return -EROFS;
+
+    mutex_lock(&fs3_lock);
+    rc = lookup_parent_nolock(path, &parent, name);
+    if (rc == 0) {
+        fs3_write_io(&io);
+        rc = jexfs3_image_create_file(&fs3_sb, &io, parent, name, &inode);
+        fs3_cache_valid = 0;
+    }
+    mutex_unlock(&fs3_lock);
+
+    if (rc == 0 && inode_out)
+        *inode_out = inode;
+    return rc;
+}
+
+int jexfs3_unlink_file(const char *path)
+{
+    char name[JEXFS3_NAME_MAX + 1];
+    struct jexfs3_write_io io;
+    uint32_t parent;
+    int rc;
+
+    if (!path)
+        return -EINVAL;
+    if (!fs3_mounted)
+        return -ENODEV;
+    if (!fs3_dev.write_block)
+        return -EROFS;
+
+    mutex_lock(&fs3_lock);
+    rc = lookup_parent_nolock(path, &parent, name);
+    if (rc == 0) {
+        fs3_write_io(&io);
+        rc = jexfs3_image_unlink_file(&fs3_sb, &io, parent, name);
+        fs3_cache_valid = 0;
+    }
     mutex_unlock(&fs3_lock);
     return rc;
 }
