@@ -17,6 +17,7 @@ filesystem, and a self-hosting TCC compiler.
 - **HTTP** — `serve` (TCP server) and `fetch` (client); DHCP and DNS clients
 - **Compiler** — self-hosting TCC with `if`/`else`, `while`, `for`, and hex printing
 - **Filesystem** — JexFS on a 64 MB disk image, mounted directly from the drive (the GRUB module copy is released to the PMM at boot); hierarchy, proper errno codes; persistence via `make deliver` (survives reboots from read-only media)
+- **JexFS v3** — the replacement format, built alongside v2: 32-bit block numbers, 4 KB blocks, extents, crc32c over metadata and file data, a backup superblock, and a single-transaction metadata journal. `mkjexfs3` builds images, `jexfsck3` verifies them, and `j3crash` crashes the real writer at every block-write boundary. The kernel mount replays a committed transaction; the writer replaces, creates and unlinks files with data written before one atomic metadata commit. Booting v3 as the live rootfs waits on the v2→v3 converter
 - **Audio** — AC'97 bus-master PCM at 44.1 kHz/16-bit stereo, and `play` for MP3 files decoded straight out of JexFS; MP3s dropped in `rootfs/` are transcoded to the codec's format at image-build time
 - **Multitasking** — round-robin scheduler, `fork`/`waitpid`, signals, per-process page tables
 - **SMP** — both CPUs run the scheduler: ACPI MADT discovery, INIT-SIPI bring-up,
@@ -52,7 +53,7 @@ make FLAVOR=debug iso   # verbose serial boot log
 make FLAVOR=test iso    # build the self-test suite
 make run-test    # headless qemu; exit 33=pass 7=fail 124=hang
 make check-v3    # build and verify the JexFS v3 test image on the host
-make crash-sim   # replay every crash point of a logged v3 journal transaction
+make crash-sim   # crash the v3 writer and journal at every write, then verify each image
 make run-boottime  # boot the timing build with the normal GRUB menu
 make measure-boot  # headless boot timing: kernel ms + host ms incl. GRUB
 ```
@@ -90,7 +91,7 @@ Requires `gcc` (i386), `binutils`, `python3`, `grub2-tools`, and
 - [x] SMP scheduling on all CPUs (spinlocks, per-CPU timers, load spreading)
 - [x] JexFS persistence: `make deliver` builds a hybrid ISO with rootfs appended at the tail; the kernel mounts that tail directly — history and files survive reboots from read-only media
 - [x] Disk-first rootfs: mount the on-disk copy and return the 64 MB GRUB module to the PMM (61,708 → 127,232 KB free on a 128 MB guest)
-- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums; the format, `mkjexfs3`/`jexfsck3`, a read-only kernel mount and journal replay are in (Phases 0–2a done), the writable path and v2→v3 converter are next
+- [ ] JexFS v3: 32-bit block numbers + 4 KB blocks, extent tree, metadata journal + ordered data, crc32c metadata checksums; the format, `mkjexfs3`/`jexfsck3`, a read-only kernel mount, journal replay and the writable path (replace, create, unlink) are in (Phases 0–2c done); extent-tree and directory growth, rename, offset writes and the v2→v3 converter remain
 - [x] TLB shootdown IPIs: `free_kernel_stack()` flushes remote TLBs via IPI before returning frames to PMM
 - [x] 64 MB disk image: `IMG_BLOCKS=65536` blocks, the maximum JexFS can address with 16-bit block numbers
 - [x] Audio: AC'97 44.1 kHz stereo PCM, MP3 playback from JexFS, and build-time MP3 transcoding for `rootfs/`
@@ -138,17 +139,18 @@ on the disk path (from 7.87 s host total), 372 ms on the CD-only path
 treat them as noise, not regressions.
 
 v0.7.9: the kernel now tests itself. `make FLAVOR=test iso` boots
-straight into an in-kernel suite — 31 tests over the allocator, ring
-buffer, sync primitives, printf/string, checksums, kallsyms, lockdep,
-JexFS, JexFS v3, FPU state, MP3 decoding, and SMP stress — and reports
-pass/fail through the isa-debug-exit port so `make run-test` fails hard
-on any regression, hang or panic. Writing the suite paid for itself
-immediately: it caught two kheap lock leaks, undetectable slab double
-free, a stranded ISR depth counter that framed innocent tasks for illegal
-sleeps, JexFS directory scanners that treated zero padding as end-of-
-directory, and a series of real SMP bugs — tasklist lock deadlocks under
-TLB shootdown IRQ windows, mutex handoff orphaning the lock token, and
-iret frame corruption from nested interrupts on PID 2's boot stack.
+straight into an in-kernel suite — 34 tests today, 31 when it landed —
+covering the allocator, ring buffer, sync primitives, printf/string,
+checksums, kallsyms, lockdep, JexFS, JexFS v3 (journal replay, file
+replacement, create/unlink), FPU state, MP3 decoding and SMP stress — and
+reports pass/fail through the isa-debug-exit port so `make run-test`
+fails hard on any regression, hang or panic. Writing the suite paid for
+itself immediately: it caught two kheap lock leaks, undetectable slab
+double free, a stranded ISR depth counter that framed innocent tasks for
+illegal sleeps, JexFS directory scanners that treated zero padding as
+end-of-directory, and a series of real SMP bugs — tasklist lock deadlocks
+under TLB shootdown IRQ windows, mutex handoff orphaning the lock token,
+and iret frame corruption from nested interrupts on PID 2's boot stack.
 
 Persistence works. `make deliver` appends the rootfs at the tail of the
 ISO; booted as an IDE hard disk, the kernel identifies the drive and
@@ -156,14 +158,22 @@ mounts that tail as the live rootfs. Writes go straight there, so history
 and files survive reboots from read-only media without a mirror copy.
 
 JexFS v3 is underway. Phase 0 (disk-first mount), Phase 1 (the format,
-`mkjexfs3`, a host verifier and a read-only kernel mount) and Phase 2a
-(the metadata journal format, shared replay and deterministic crash
-simulation) are in. The format is a real break: 32-bit block numbers and
+`mkjexfs3`, a host verifier and a read-only kernel mount), Phase 2a (the
+metadata journal format, shared replay and deterministic crash
+simulation), and Phases 2b/2c (the writable path: block allocation,
+ordered data writes, and journaled replacement, creation and unlinking of
+files) are in. The format is a real break: 32-bit block numbers and
 4 KB blocks, extents, crc32c metadata and data checksums, a backup
 superblock, and a single-transaction journal whose commit block is the
-durability point. The writable kernel path, the extent tree growth, and
-the v2→v3 converter are the remaining phases. See `docs/jexfs-v3.md` for
-the format and `TODO.md` for the phase table.
+durability point. Creation and unlink run through the same writer as
+replacement, so a crash leaves the old directory state or the complete
+new one; `make crash-sim` checks every block-write boundary of all three
+operations against the full verifier, 91 images in all. The running
+system still boots the v2 rootfs; v3 is exercised by the host tools and
+the kernel self-test until the converter lands. The extent tree,
+directory growth, rename, offset writes and the v2→v3 converter are the
+remaining phases. See `docs/jexfs-v3.md` for the format and `TODO.md` for
+the phase table.
 
 SMP: both CPUs boot, arm their own LAPIC timer, run the scheduler, and
 spread load via shortest-queue forks. The root causes found across this
