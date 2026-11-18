@@ -32,6 +32,9 @@
 #define PATH_MAX_LEN 1024
 #define NAME_MAX_LEN 256
 
+/* Spare inodes let a mounted image create files without rebuilding it. */
+#define INODE_SPARE 16u
+
 struct node {
     char     name[NAME_MAX_LEN];
     char     rel[PATH_MAX_LEN];   /* path from image root, for the UUID */
@@ -509,8 +512,9 @@ int main(int argc, char **argv)
     printf("JexFS v3: %s  blocks=%u  size=%zu bytes\n",
            argv[1], total_blocks, image_size);
 
-    /* Metadata layout. */
-    uint32_t inode_count = next_inode;
+    /* Metadata layout.  Keep spare inodes so the image stays writable
+     * after it is built; their bitmap bits stay clear. */
+    uint32_t inode_count = next_inode + INODE_SPARE;
     uint32_t ib_blocks = (inode_count + 32767u) / 32768u;
     uint32_t bb_blocks = (total_blocks + 32767u) / 32768u;
     uint32_t it_blocks = (inode_count * JEXFS3_INODE_SIZE + JEXFS3_BLOCK_SIZE - 1)
