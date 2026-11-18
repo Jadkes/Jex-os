@@ -1,12 +1,13 @@
 /**
  * @file test_jexfs3.c
- * @brief Read-only JexFS v3 mount self-test.
+ * @brief JexFS v3 mount, journal, write and file-lifecycle self-test.
  *
  * The host build packs a v3 image into the test rootfs as /jexfs3.img.
  * Mount it through a block callback, run the driver's full consistency
  * check, then verify lookups, directory iteration and file contents
- * across an extent boundary.  In flavors without the image the test
- * reports itself skipped.
+ * across an extent boundary.  A smaller RAM-backed image exercises
+ * journal replay, file replacement, creation and unlinking.  In flavors
+ * without the images the tests report themselves skipped.
  */
 
 #include "test_suite.h"
@@ -532,6 +533,127 @@ static void test_jexfs3_write(void)
     jexfs3_unmount();
 }
 
+/*
+ * Lifecycle test: creation adds an inode and a directory entry; unlink
+ * frees both and leaves a tombstone the reader skips.  Every step is
+ * verified and the final state must survive a remount.
+ */
+static int root_has_name(const char *name)
+{
+    uint64_t cookie = 0;
+    char entry[JEXFS3_NAME_MAX + 1];
+    uint32_t child;
+    uint8_t type;
+
+    while (jexfs3_readdir(JEXFS3_ROOT_INODE, &cookie, entry, sizeof(entry),
+                          &child, &type) == 1) {
+        if (strcmp(entry, name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void test_jexfs3_create_unlink(void)
+{
+    struct memory_image mem;
+    struct jexfs3_device dev;
+    uint32_t made;
+    uint32_t second;
+    uint32_t inode;
+    uint8_t readback[32];
+
+    if (load_journal_image() != 0) {
+        test_skip("jexfs3_create_unlink (no image in this flavor)");
+        return;
+    }
+
+    mem.base = journal_image;
+    mem.blocks = V3_JOURNAL_IMAGE_BLOCKS;
+    dev = (struct jexfs3_device){
+        .read_block = memory_read_block,
+        .write_block = memory_write_block,
+        .flush = memory_flush,
+        .ctx = &mem,
+        .media_bytes = V3_JOURNAL_IMAGE_BYTES,
+    };
+
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "create test mount failed");
+    TEST_ASSERT(jexfs3_verify() == 0, "initial verify failed");
+
+    TEST_ASSERT(jexfs3_create_file("/made.txt", &made) == 0,
+                "create failed");
+    TEST_ASSERT(jexfs3_lookup("/made.txt", &inode) == 0,
+                "created file is not in the directory");
+    TEST_ASSERT(inode == made, "lookup returned a different inode");
+    TEST_ASSERT(jexfs3_read_file(made, readback, 1, 0) == 0,
+                "new file was not empty");
+    TEST_ASSERT(jexfs3_create_file("/made.txt", NULL) == -EEXIST,
+                "duplicate create was accepted");
+    TEST_ASSERT(jexfs3_create_file("/hello.txt", NULL) == -EEXIST,
+                "existing name was created again");
+    TEST_ASSERT(jexfs3_create_file("/nodir/child", NULL) == -ENOENT,
+                "create below a missing directory succeeded");
+    TEST_ASSERT(jexfs3_create_file("/hello.txt/child", NULL) == -ENOTDIR,
+                "create below a file succeeded");
+    TEST_ASSERT(jexfs3_create_file("/", NULL) == -EINVAL,
+                "create with an empty name succeeded");
+    TEST_ASSERT(jexfs3_create_file("/.", NULL) == -EINVAL,
+                "create of '.' succeeded");
+    TEST_ASSERT(jexfs3_verify() == 0, "verify failed after create");
+
+    fill_payload(write_payload, 1234, 0x21);
+    TEST_ASSERT(jexfs3_replace_file(made, write_payload, 1234) == 0,
+                "writing the new file failed");
+    memset(readback, 0, sizeof(readback));
+    TEST_ASSERT(jexfs3_read_file(made, readback, sizeof(readback), 0) ==
+                (int)sizeof(readback),
+                "new file read was short");
+    TEST_ASSERT(memcmp(readback, write_payload, sizeof(readback)) == 0,
+                "new file content is wrong");
+
+    TEST_ASSERT(jexfs3_create_file("/second.txt", &second) == 0,
+                "second create failed");
+    TEST_ASSERT(second != made, "inode number was reused");
+    TEST_ASSERT(jexfs3_verify() == 0, "verify failed after second create");
+
+    TEST_ASSERT(jexfs3_unlink_file("/made.txt") == 0, "unlink failed");
+    TEST_ASSERT(jexfs3_lookup("/made.txt", &inode) == -ENOENT,
+                "unlinked file still resolves");
+    TEST_ASSERT(jexfs3_unlink_file("/made.txt") == -ENOENT,
+                "double unlink succeeded");
+    TEST_ASSERT(jexfs3_unlink_file("/") == -EINVAL,
+                "unlink of an empty name succeeded");
+    TEST_ASSERT(jexfs3_unlink_file("/nope") == -ENOENT,
+                "unlink of a missing name succeeded");
+    TEST_ASSERT(!root_has_name("made.txt"),
+                "unlinked name still shows in readdir");
+    TEST_ASSERT(root_has_name("second.txt"),
+                "surviving file vanished from readdir");
+    TEST_ASSERT(jexfs3_verify() == 0, "verify failed after unlink");
+    jexfs3_unmount();
+
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "remount after lifecycle failed");
+    TEST_ASSERT(jexfs3_verify() == 0, "lifecycle verify after remount failed");
+    TEST_ASSERT(jexfs3_lookup("/made.txt", &inode) == -ENOENT,
+                "unlinked file came back after remount");
+    TEST_ASSERT(jexfs3_lookup("/second.txt", &inode) == 0,
+                "second.txt vanished after remount");
+    TEST_ASSERT(inode == second, "second.txt changed inode");
+    TEST_ASSERT(jexfs3_read_file(second, readback, 1, 0) == 0,
+                "second.txt was not empty after remount");
+    jexfs3_unmount();
+
+    /* A read-only device must refuse both lifecycle operations. */
+    dev.write_block = NULL;
+    dev.flush = NULL;
+    TEST_ASSERT(jexfs3_mount(&dev) == 0, "read-only lifecycle mount failed");
+    TEST_ASSERT(jexfs3_create_file("/third.txt", NULL) == -EROFS,
+                "read-only device created a file");
+    TEST_ASSERT(jexfs3_unlink_file("/second.txt") == -EROFS,
+                "read-only device unlinked a file");
+    jexfs3_unmount();
+}
+
 void register_jexfs3_tests(void)
 {
     test_register("jexfs3_readonly",
@@ -543,4 +665,7 @@ void register_jexfs3_tests(void)
     test_register("jexfs3_write",
                   "replace files, remount, truncate and free a leaf block",
                   test_jexfs3_write);
+    test_register("jexfs3_create_unlink",
+                  "create, write and unlink files across a remount",
+                  test_jexfs3_create_unlink);
 }

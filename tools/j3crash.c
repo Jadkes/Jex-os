@@ -3,7 +3,7 @@
  * @brief Crash simulator for the JexFS v3 journal and file writer.
  *
  * Purpose: prove that a transaction is all-or-nothing without booting
- * QEMU.  Two scenarios run:
+ * QEMU.  Three scenarios run:
  *
  *   1. A two-block superblock generation bump is logged, then copied back
  *      into a scratch image one byte-range at a time.  Replay must leave
@@ -11,8 +11,11 @@
  *   2. jexfs3_image_replace_file() rewrites a real file through a write
  *      callback that fails after N writes.  Reboot replay must leave the
  *      old file or the complete new one.
+ *   3. jexfs3_image_create_file() and jexfs3_image_unlink_file() change
+ *      the directory and the inode bitmap.  Reboot replay must leave the
+ *      file absent and complete, or present with its old contents.
  *
- * Both scenarios use the same journal and writer code the kernel uses,
+ * All scenarios use the same journal and writer code the kernel uses,
  * so they test the real rules rather than a model of them.
  *
  * Usage:
@@ -577,6 +580,151 @@ static void check_write_case(uint32_t budget, uint32_t inode,
     free(crash);
 }
 
+/*
+ * Lifecycle crash scenarios: run the real create and unlink writer with
+ * a write budget, replay whatever survived, and require the directory to
+ * hold either the old state or the complete new one.
+ */
+static void check_create_case(uint32_t budget, uint32_t *done_out)
+{
+    uint8_t *crash = (uint8_t *)malloc(image_size);
+    struct crash_call call;
+    struct jexfs3_write_io wio;
+    struct jexfs3_journal_io jio;
+    struct jexfs3_journal_info info;
+    uint32_t created = 0;
+    uint32_t found;
+    uint64_t size = 0;
+    uint32_t crc = 0;
+    char path[1024];
+    int write_rc;
+    int replay_rc;
+    int meta_rc;
+
+    if (!crash)
+        die("out of memory for a create crash image");
+    memcpy(crash, base, image_size);
+
+    call.img = crash;
+    call.budget = budget;
+    call.done = 0;
+
+    wio.read_block = crash_read_block;
+    wio.write_block = crash_write_limited;
+    wio.flush = crash_flush;
+    wio.alloc = crash_alloc;
+    wio.free = crash_free;
+    wio.ctx = &call;
+    write_rc = jexfs3_image_create_file(&sb, &wio, sb.root_inode, "new.txt",
+                                        &created);
+    if (done_out)
+        *done_out = call.done;
+
+    jio.read_block = crash_read_block;
+    jio.write_block = crash_image_write;
+    jio.flush = crash_flush;
+    jio.ctx = &call;
+    replay_rc = jexfs3_journal_replay(&sb, &jio, &info);
+
+    found = find_file_inode(crash, "new.txt");
+    meta_rc = found ? read_file_meta(crash, found, &size, &crc) : -1;
+
+    cases++;
+    if (replay_rc != 0) {
+        fprintf(stderr, "  FAIL create budget=%u: replay returned %d\n",
+                budget, replay_rc);
+        failures++;
+    } else if (found == 0 && write_rc == 0) {
+        fprintf(stderr, "  FAIL create budget=%u: success left no entry\n",
+                budget);
+        failures++;
+    } else if (found != 0 &&
+               (meta_rc != 0 || size != 0 || crc != 0)) {
+        fprintf(stderr, "  FAIL create budget=%u: new file is not empty\n",
+                budget);
+        failures++;
+    }
+
+    if (out_dir) {
+        snprintf(path, sizeof(path), "%s/create-%03d-%05u.img",
+                 out_dir, cases, budget);
+        write_image(path, crash);
+    }
+    printf("  create budget %6u: %s%s\n", budget,
+           found ? "file present" : "no file",
+           write_rc == 0 ? " (complete)" : "");
+    free(crash);
+}
+
+static void check_unlink_case(uint32_t budget, uint32_t inode,
+                              uint64_t old_size, uint32_t old_crc,
+                              uint32_t *done_out, const char *name)
+{
+    uint8_t *crash = (uint8_t *)malloc(image_size);
+    struct crash_call call;
+    struct jexfs3_write_io wio;
+    struct jexfs3_journal_io jio;
+    struct jexfs3_journal_info info;
+    uint32_t found;
+    uint64_t size = 0;
+    uint32_t crc = 0;
+    char path[1024];
+    int write_rc;
+    int replay_rc;
+    int meta_rc;
+    int is_old;
+
+    if (!crash)
+        die("out of memory for an unlink crash image");
+    memcpy(crash, base, image_size);
+
+    call.img = crash;
+    call.budget = budget;
+    call.done = 0;
+
+    wio.read_block = crash_read_block;
+    wio.write_block = crash_write_limited;
+    wio.flush = crash_flush;
+    wio.alloc = crash_alloc;
+    wio.free = crash_free;
+    wio.ctx = &call;
+    write_rc = jexfs3_image_unlink_file(&sb, &wio, sb.root_inode, name);
+    if (done_out)
+        *done_out = call.done;
+
+    jio.read_block = crash_read_block;
+    jio.write_block = crash_image_write;
+    jio.flush = crash_flush;
+    jio.ctx = &call;
+    replay_rc = jexfs3_journal_replay(&sb, &jio, &info);
+
+    found = find_file_inode(crash, name);
+    meta_rc = found ? read_file_meta(crash, found, &size, &crc) : -1;
+    is_old = found != 0 && meta_rc == 0 && found == inode &&
+             size == old_size && crc == old_crc;
+
+    cases++;
+    if (replay_rc != 0) {
+        fprintf(stderr, "  FAIL unlink budget=%u: replay returned %d\n",
+                budget, replay_rc);
+        failures++;
+    } else if (found != 0 && (!is_old || write_rc == 0)) {
+        fprintf(stderr, "  FAIL unlink budget=%u: file survived unexpectedly\n",
+                budget);
+        failures++;
+    }
+
+    if (out_dir) {
+        snprintf(path, sizeof(path), "%s/unlink-%03d-%05u.img",
+                 out_dir, cases, budget);
+        write_image(path, crash);
+    }
+    printf("  unlink budget %6u: %s%s\n", budget,
+           found ? "file present" : "no file",
+           write_rc == 0 ? " (complete)" : "");
+    free(crash);
+}
+
 int main(int argc, char **argv)
 {
     uint32_t targets[2];
@@ -660,6 +808,43 @@ int main(int argc, char **argv)
             for (uint32_t n = 0; n < total; n++)
                 check_write_case(n, inode, old_size, old_crc,
                                  sizeof(write_payload), new_crc, NULL);
+        }
+    }
+
+    /*
+     * Third scenario: file lifecycle.  Create allocates an inode and a
+     * directory entry; unlink frees the file's blocks, clears the inode
+     * bit and turns the dirent into a free entry.  Every crash budget
+     * must replay to exactly the old or the new directory state.
+     */
+    {
+        uint32_t total = 0;
+
+        printf("j3crash: create path, new.txt in root\n");
+        check_create_case(UINT32_MAX, &total);
+        printf("j3crash: create path uses %u block writes\n", total);
+        for (uint32_t n = 0; n < total; n++)
+            check_create_case(n, NULL);
+    }
+
+    {
+        static const char *const names[] = { "hello.txt", "data.bin" };
+
+        for (unsigned f = 0; f < sizeof(names) / sizeof(names[0]); f++) {
+            uint32_t total = 0;
+            uint32_t inode = find_file_inode(base, names[f]);
+            uint64_t size;
+            uint32_t crc;
+
+            if (inode == 0 || read_file_meta(base, inode, &size, &crc) != 0)
+                die("lifecycle test file not found in the image");
+
+            printf("j3crash: unlink path, %s inode %u, %llu bytes\n",
+                   names[f], inode, (unsigned long long)size);
+            check_unlink_case(UINT32_MAX, inode, size, crc, &total, names[f]);
+            printf("j3crash: unlink path uses %u block writes\n", total);
+            for (uint32_t n = 0; n < total; n++)
+                check_unlink_case(n, inode, size, crc, NULL, names[f]);
         }
     }
 
