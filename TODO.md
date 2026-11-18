@@ -28,12 +28,15 @@ encryption, quotas, multi-device.
 | 1 | `docs/jexfs-v3.md`, `mkjexfs3` + host verifier, read-only v3 mount | Host-built v3 image mounts and every file verifies byte-for-byte | [x] |
 | 2a | Journal format, shared replay, ordered-data rule, deterministic crash simulation | Every truncation point of a logged transaction replays to the old or the new state, never torn; a mid-apply crash is repaired; `make crash-sim` green | [x] |
 | 2b | Writable kernel path: allocation, metadata transactions, ordered data writes | Guest writes survive remount and a planted crash; `jexfsck3` clean | [x] |
+| 2c | File lifecycle: create and unlink with journalled inode and directory metadata | Create/unlink survive remount and every crash boundary; `jexfsck3` clean | [x] |
 | 3 | Extent tree, delayed allocation, hashed directories | Image larger than 64 MB; large-file metadata reads measurably lower | [ ] |
 | 4 | v2→v3 converter, persistence rewrite, docs | Existing `jexos.img` converts; `make deliver` round-trips | [ ] |
 
 Phase 1 is done. `src/include/jexfs3.h` defines the 4 KB-block format;
 `tools/mkjexfs3.c` packs a tree (inline extents, with a 255-entry leaf
-when a file needs more than four) and `tools/jexfsck3.c` validates both
+when a file needs more than four) and reserves 16 spare inodes with clear
+bitmap bits so a built image can accept new files; `tools/jexfsck3.c`
+validates both
 superblocks, layout, inode/extent checksums, extent coverage and bounds,
 dirent chains, link counts, bitmaps and data crcs, then compares every
 file against its source byte-for-byte. The kernel reader in
@@ -49,10 +52,13 @@ RAM buffer, logs a two-block transaction, proves a torn copy is ignored,
 proves the committed copy replays once, and proves a pending transaction
 on a read-only device fails with `-EROFS`. A third kernel test replaces
 inline-extent and leaf-extent files, truncates one to zero, remounts,
-and reads the new contents back. `make crash-sim` replays all truncation
-points of a real transaction, repairs a mid-apply crash, then crashes the
-real file writer at every block-write boundary for two files and runs the
-full verifier over all 57 resulting images. Flipping one byte in file
+and reads the new contents back. A fourth creates two files, writes one
+through the replacement path, unlinks it, proves readdir skips the free
+entry, remounts, and checks that a read-only device refuses both
+lifecycle calls. `make crash-sim` replays all truncation points of a real
+transaction, repairs a mid-apply crash, then crashes the real file
+writer, creator and unlinker at every block-write boundary and runs the
+full verifier over all 91 resulting images. Flipping one byte in file
 data or an inode makes the host verifier fail. Format details are in
 `docs/jexfs-v3.md`.
 

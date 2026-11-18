@@ -11,7 +11,9 @@ metadata journal: its on-disk format, a shared replay path used by the
 kernel and the host verifier, and deterministic crash simulation.  Phase
 2b adds the writable kernel path: block allocation, ordered data writes
 and a journaled metadata transaction that replaces an existing file.
-Images may still carry no journal, in which case they remain read-only.
+Phase 2c adds file creation and unlinking, including inode allocation and
+the free-entry form of a directory entry.  Images may still carry no
+journal, in which case they remain read-only.
 
 ## Block layout
 
@@ -144,6 +146,14 @@ is normally a whole number of blocks.  Every directory starts with `.`
 (pointing at itself) and `..` (pointing at its parent; the root points at
 itself).  Names are 1..255 bytes and are not NUL-terminated on disk.
 
+A dirent with `inode == 0` is free space.  It keeps its `rec_len`, so the
+chain still covers its bytes, but `name_len` and `file_type` are zero and
+readers skip it.  Unlinking turns an entry into this form instead of
+shifting later entries or shrinking the directory, which keeps deletion
+to one block image and one journal transaction.  Creating a file reuses a
+free entry whole when it fits, or splits the unused tail of an existing
+entry.
+
 ## Checksums
 
 All checksums are Castagnoli crc32c (`0x82F63B78` reflected polynomial):
@@ -209,11 +219,12 @@ A committed transaction on a read-only device is a mount failure
 (`-EROFS`), not a silent mount with stale metadata.  A journal with no
 committed transaction does not require write access at all.
 
-## Writing a file
+## Writing files
 
-Phase 2b replaces the contents of an existing regular file.  It does not
-create, unlink, rename or truncate-by-offset yet; a zero-length
-replacement is a truncate.
+Phase 2b replaces the contents of an existing regular file; phase 2c
+creates and unlinks them.  Offset writes, rename, directory creation and
+truncate-by-offset are still ahead; a zero-length replacement is a
+truncate.
 
 The write path lives in `src/fs/jexfs3_write.c` and is shared by the
 kernel and the host tools.  A replacement:
@@ -224,8 +235,8 @@ kernel and the host tools.  A replacement:
 3. writes and zero-pads the new data blocks, then flushes them;
 4. builds the new inode (one contiguous inline extent chain, split into
    65535-block pieces) and the modified block-bitmap block(s);
-5. logs the bitmap and inode as one transaction, then applies and clears
-   it.
+5. logs the changed bitmap block(s) and inode as one transaction, then
+   applies and clears it.
 
 New data goes to fresh blocks so a crash before the commit leaves the old
 inode, old blocks and old data intact.  A crash after the commit replays
@@ -243,6 +254,28 @@ written this way can free an old leaf extent block, because the old
 extent list is walked and every block it names returns to the bitmap in
 the same transaction.
 
+Creation and unlinking share the same staging rules:
+
+- Creating a file picks the lowest free inode, writes a zero-length inode
+  record, claims its inode-bitmap bit and adds a dirent to the parent,
+  then recomputes the parent's data crc.  All of those blocks are one
+  transaction, so a crash leaves the file absent or complete.
+- Unlinking finds the dirent, checks the inode is an unshared regular
+  file, turns the dirent into a free entry, returns the file's data and
+  extent blocks to the block bitmap, clears the inode-bitmap bit and
+  updates the parent crc, again in one transaction.  The inode record is
+  left on disk; a clear bitmap bit means it is not in use.
+- The parent directory must already have a free entry or enough unused
+  tail in an existing entry.  Growing a directory (allocating data
+  blocks and updating its extent list) is not implemented yet, so a full
+  directory fails with `-ENOSPC` rather than being resized.
+
+Both operations stage every metadata block they touch and commit them
+together, so the inode bitmap, block bitmap, inode records and directory
+cannot disagree after a crash.  The journal can hold 64 data blocks; an
+operation that would need more (a very wide block bitmap or a parent
+directory in another inode-table block) fails with `-ENOSPC`.
+
 ## Host tools
 
 ```bash
@@ -257,7 +290,9 @@ blocks, which is how the test image gets a file with five extents and a
 leaf block; production images leave it unset so files are one extent when
 possible.  `--journal=N` reserves N blocks (0, or at least 4) and writes
 an empty journal header.  The builder refuses files that need more than
-255 extents (a deeper tree is phase 3).
+255 extents (a deeper tree is phase 3).  It reserves 16 spare inodes past
+the packed tree, with their bitmap bits clear, so a freshly built image
+can accept new files without being rebuilt.
 
 `jexfsck3` validates both superblocks, the layout, every used inode and
 extent checksum, coverage and bounds, directory chains and link counts,
@@ -267,8 +302,8 @@ missing or extra entries.  A pending transaction is reported, not
 applied, unless `--replay` is given; replay calls the same code the
 kernel uses at mount.
 
-`j3crash` runs two scenarios.  First it logs a two-block transaction (a
-generation bump written to both superblock copies), then replays every
+`j3crash` runs three scenarios.  First it logs a two-block transaction
+(a generation bump written to both superblock copies), then replays every
 truncation point of it against a scratch copy.  Each prefix stands for a
 crash boundary; every resulting image must hold either the old generation
 or the new one, never a torn pair, and must keep a valid superblock
@@ -284,8 +319,14 @@ does this for an inline-extent file and for a file that frees a leaf
 extent block, so both the data blocks and the leaf are checked against
 the block bitmap by `jexfsck3`.
 
+The third scenario does the same for `jexfs3_image_create_file()` and
+`jexfs3_image_unlink_file()`.  A crashed create must leave no dirent or
+an empty file; a crashed unlink must keep the file with its old contents
+or remove it completely.  The verifier then checks the inode and block
+bitmaps and the directory chain of every resulting image.
+
 `make check-v3` builds the test tree and image and runs the verifier.
-`make crash-sim` runs `j3crash`, writes all 57 crash images, and runs the
+`make crash-sim` runs `j3crash`, writes all 91 crash images, and runs the
 full verifier with `--replay` over each one.
 `make FLAVOR=test run-test` packs two images into the v2 test rootfs:
 `/jexfs3.img` (the extent test) and `/jexfs3-journal.img` (a 48-block
@@ -293,7 +334,11 @@ image with an 8-block journal).  The kernel test mounts the first image,
 then copies the second into a RAM buffer so it can log a transaction, tear
 off its commit block, mount (must ignore it), restore the commit, mount
 again (must replay it exactly once), and finally confirm that a pending
-transaction on a read-only device fails with `-EROFS`.
+transaction on a read-only device fails with `-EROFS`.  A further test
+creates two files, writes one through `jexfs3_replace_file()`, unlinks
+it, walks the directory (the free entry must not appear), remounts and
+confirms the surviving file, and checks that a read-only device refuses
+create and unlink.
 
 ## Kernel API
 
@@ -304,6 +349,8 @@ transaction on a read-only device fails with `-EROFS`.
 - `jexfs3_lookup(path, &inode)`
 - `jexfs3_read_file(inode, buf, size, offset)`
 - `jexfs3_replace_file(inode, buf, size)`
+- `jexfs3_create_file(path, &inode)`
+- `jexfs3_unlink_file(path)`
 - `jexfs3_readdir(inode, &cookie, name, cap, &child, &type)`
 - `jexfs3_verify()`
 
@@ -321,7 +368,8 @@ types, and confirms every allocated inode is reachable from the root.
 `src/include/jexfs3_journal.h` exposes the shared journal API
 (`check`, `replay`, `write`, `clear`) used by the kernel, `jexfsck3` and
 `j3crash`.  `src/include/jexfs3_write.h` exposes the shared image writer
-(`jexfs3_image_replace_file`) used by the kernel wrapper and `j3crash`.
+(`jexfs3_image_replace_file`, `jexfs3_image_create_file`,
+`jexfs3_image_unlink_file`) used by the kernel wrapper and `j3crash`.
 One implementation of each rule means the verifier cannot accept a
 transaction the kernel would reject.
 
@@ -333,10 +381,11 @@ transaction the kernel would reject.
 | 1 | Format, `mkjexfs3`, `jexfsck3`, read-only kernel mount | done |
 | 2a | Journal format, shared replay, deterministic crash simulation | done |
 | 2b | Writable kernel path (allocation, metadata transactions) | done |
+| 2c | File lifecycle: create and unlink | done |
 | 3 | Extent tree, delayed allocation, hashed directories | planned |
 | 4 | v2→v3 converter, persistence rewrite | planned |
 
-Phase 2b replaces existing regular files.  Creating, unlinking and
-renaming files, offset writes, symbolic links and directory mutation are
-still ahead; the shared writer is the place those operations will build
-on.
+Phase 2b replaces existing regular files and phase 2c creates and
+unlinks them.  Renaming files, offset writes, directory creation and
+removal, symbolic links and hard links are still ahead; the shared
+writer is the place those operations will build on.
